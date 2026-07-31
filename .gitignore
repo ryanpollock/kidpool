@@ -10,3 +10,8 @@ supabase/.temp/
 .vercel/
 .vercel
 .env*
+
+# Design QA artifacts (kept locally, not needed in repo)
+design-reference*.png
+design-comparison*.png
+implementation-*.png

@@ -1,5 +1,7 @@
 # Design QA
 
+> Note: Reference images referenced below are kept locally (gitignored) and are not in the repository.
+
 ## Evidence
 
 - Source visual truth: `/Users/ryanpollock/Code/clarendon-presidio carpool/carpool-app/design-reference.png`

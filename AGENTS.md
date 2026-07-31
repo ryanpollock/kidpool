@@ -77,3 +77,35 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 - Fixed phone chrome should not animate with pushed screens. Screen content can animate; the status bar, camera cutout, and preview chrome should stay put.
 - Keep the keyboard below the home indicator/safe area layer in z-index, and above ordinary app UI while visible.
 - Keep the home indicator as the topmost safe-area layer in the z-index above everything else in the prototype.
+
+## Testing
+
+Run these before considering any change complete:
+
+```bash
+npm test                    # 58 foundation + 34 scheduling + 4 sites = 96 tests (no live DB)
+npm run test:integration   # 13 tests against live Supabase (needs service key in macOS keychain)
+npm run test:runtime       # Playwright: 8 mobile-runtime + 12 E2E tests
+npx tsc --noEmit           # TypeScript check
+npm run check:runtime      # Mobile runtime integrity (28 protected files)
+npm run build              # Full production build
+```
+
+All 121 tests must pass before pushing to `main`.
+
+### Dev test-auth bypass
+
+In development mode (`import.meta.env.DEV`), the app accepts `?testAuth=email|password` as a URL parameter to sign in with email/password instead of Google OAuth. This is stripped from production builds. Used by `tests/app-e2e.spec.ts` to create and sign in test users without OAuth.
+
+### Integration test data cleanup
+
+Integration and E2E tests create auth users and DB rows with `@test.kidpool` and `@e2e.kidpool` email domains. The cleanup functions delete ALL data for the pilot group (`c1000000-0000-4000-8000-000000000001`) — not just `deadbeef`-prefixed IDs — because the `weeks` table has a `unique(group_id, starts_on)` constraint that blocks inserts if stale weeks from other tests remain.
+
+## Deployment
+
+- **GitHub repo:** `ryanpollock/kidpool` (public)
+- **Vercel project:** `kidpool` — connected to GitHub, auto-deploys `main` branch
+- **Production URL:** `https://kidpool-sf.vercel.app`
+- **Supabase:** `ujcrnrcgbvzyqosykkjy` — auth `site_url` set to `https://kidpool-sf.vercel.app`
+
+Push to `main` triggers Vercel auto-deploy. The Edge Function (`generate-schedule`) deploys separately via `supabase functions deploy`. See `OPS.md` for the full runbook.
