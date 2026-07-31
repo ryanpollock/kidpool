@@ -504,12 +504,14 @@ function OnboardingScreen({
         <header className="page-title">
           <span className="eyebrow">Standard week</span>
           <h1>Your typical week</h1>
-          <p>These fill in automatically each week. You can still adjust any week.</p>
+          <p>Set your family's defaults for a normal school week. New weeks start with these — you can still adjust any week before submitting.</p>
         </header>
+        <p className="standard-week-intro">Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickup is 5:15 PM from Presidio.</p>
 
         {onboardingChildren.length > 0 ? (
           <div className="standard-week-subsection">
             <h3 className="standard-week-label">Rides for</h3>
+            <p className="standard-week-caption">Which days does your child need a ride? Tap to toggle each trip.</p>
             <RideNeedsGrid
               children={onboardingChildren}
               needs={rideNeeds}
@@ -521,6 +523,7 @@ function OnboardingScreen({
 
         <div className="standard-week-subsection">
           <h3 className="standard-week-label">Your driving</h3>
+          <p className="standard-week-caption">Tell us when you're available to drive.</p>
           <DrivePreferenceGrid
             preferences={driveDefaults}
             onChange={setDriveDefaults}
@@ -679,6 +682,8 @@ function nextMonday(): string {
 }
 
 const TEMPLATE_DAYS = [1, 2, 3, 4, 5];
+const MORNING_LABEL = "8:40 AM";
+const AFTERNOON_LABEL = "5:15 PM";
 
 function emptyDriveDefaults(): DefaultDrivePref[] {
   return TEMPLATE_DAYS.flatMap((day) =>
@@ -713,6 +718,11 @@ function DrivePreferenceGrid({
 
   return (
     <div className="drive-template-grid" data-testid="drive-preference-grid">
+      <div className="drive-template-header" aria-hidden="true">
+        <span />
+        <span className="drive-template-header-label">AM<small>{MORNING_LABEL}</small></span>
+        <span className="drive-template-header-label">PM<small>{AFTERNOON_LABEL}</small></span>
+      </div>
       {TEMPLATE_DAYS.map((day) => {
         const dayLabel = WEEKDAY_LABELS[day];
         return (
@@ -751,6 +761,7 @@ function DrivePreferenceGrid({
           </div>
         );
       })}
+      <p className="drive-template-caption">Prefer = you'd like to drive · Can = you can if needed · Can't = not available</p>
     </div>
   );
 }
@@ -780,6 +791,11 @@ function RideNeedsGrid({
 
   return (
     <div className="ride-needs-grid" data-testid="ride-needs-grid">
+      <div className="ride-needs-header" aria-hidden="true">
+        <span />
+        <span className="drive-template-header-label">AM<small>{MORNING_LABEL}</small></span>
+        <span className="drive-template-header-label">PM<small>{AFTERNOON_LABEL}</small></span>
+      </div>
       {children.map((child) => (
         <div className="ride-needs-child" key={child.id}>
           <strong className="ride-needs-name">{child.first_name}</strong>
@@ -812,6 +828,7 @@ function RideNeedsGrid({
           })}
         </div>
       ))}
+      <p className="drive-template-caption">Tap AM or PM for each day your child needs a ride.</p>
     </div>
   );
 }
@@ -2129,7 +2146,7 @@ function AccountScreen({
         <div className="section-heading-row">
           <h2 id="standard-week-heading">Standard week</h2>
         </div>
-        <p className="household-static">These fill in automatically each week. You can still adjust any week.</p>
+        <p className="household-static">Set your family's defaults for a normal school week. New weeks start with these — you can still adjust any week before submitting. Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickup is 5:15 PM from Presidio.</p>
         {driveDefaultsLoading || rideNeedsLoading ? (
           <p className="household-static">Loading…</p>
         ) : (
@@ -2137,6 +2154,7 @@ function AccountScreen({
             {(setup?.children.length ?? 0) > 0 ? (
               <div className="standard-week-subsection">
                 <h3 className="standard-week-label">Rides for</h3>
+                <p className="standard-week-caption">Which days does your child need a ride? Tap to toggle each trip.</p>
                 <RideNeedsGrid
                   children={setup?.children ?? []}
                   needs={rideNeeds}
@@ -2148,6 +2166,7 @@ function AccountScreen({
 
             <div className="standard-week-subsection">
               <h3 className="standard-week-label">Your driving</h3>
+              <p className="standard-week-caption">Tell us when you're available to drive.</p>
               <DrivePreferenceGrid
                 preferences={driveDefaults}
                 onChange={setDriveDefaults}
