@@ -1,4 +1,4 @@
-export { CarpoolRepository, type HouseholdSetup } from "./carpool-repository";
+export { CarpoolRepository, type HouseholdSetup, type WeekWithTrips, type CheckinDetails, type TripOverview, type HouseholdCheckinStatus, type WeekOverview } from "./carpool-repository";
 export { getSupabaseClient, isSupabaseConfigured } from "./client";
 export type {
   AppRole,

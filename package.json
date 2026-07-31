@@ -7,7 +7,7 @@
     "check:runtime": "node scripts/check-mobile-runtime.mjs",
     "update:runtime-lock": "node scripts/update-mobile-runtime-lock.mjs",
     "test:runtime": "playwright test",
-    "test:foundation": "node --test tests/foundation.test.mjs tests/auth-flow.test.mjs tests/household-setup.test.mjs",
+    "test:foundation": "node --test tests/foundation.test.mjs tests/auth-flow.test.mjs tests/household-setup.test.mjs tests/weekly-checkin.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs",
     "test": "npm run test:foundation && npm run test:sites",
     "predev": "npm run check:runtime",

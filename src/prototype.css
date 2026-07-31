@@ -1362,7 +1362,7 @@ button {
 
 .coverage-row {
   display: grid;
-  grid-template-columns: 1fr 70px 70px;
+  grid-template-columns: 1fr 60px 50px 60px;
   align-items: center;
   min-height: 39px;
   border-bottom: 1px solid var(--line);
@@ -1372,6 +1372,199 @@ button {
 .coverage-row span:last-child {
   text-align: right;
   font-weight: 750;
+}
+
+.neutral {
+  color: var(--ink-soft) !important;
+}
+
+.empty-state {
+  margin-top: 24px;
+  padding: 20px;
+  border-radius: 14px;
+  background: var(--muted);
+  text-align: center;
+  display: grid;
+  gap: 14px;
+}
+
+.empty-state p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.checkin-day {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.checkin-day:first-of-type {
+  margin-top: 12px;
+}
+
+.checkin-day-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.checkin-day-header strong {
+  font-size: 13px;
+}
+
+.checkin-day-header span {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.checkin-trip {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 14px;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+}
+
+.checkin-trip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.checkin-trip-header small {
+  margin-left: auto;
+  font-size: 9px;
+}
+
+.checkin-rides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.ride-pill {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 100px;
+  background: white;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ride-pill--on {
+  background: var(--teal-pale);
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.ride-pill:disabled {
+  opacity: 0.6;
+}
+
+.drive-cycle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  width: 100%;
+}
+
+.drive-cycle span:first-child {
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+
+.drive-cycle--prefer {
+  background: var(--teal-pale);
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.drive-cycle--can {
+  background: var(--amber-pale);
+  border-color: #e2c889;
+  color: var(--amber);
+}
+
+.drive-cycle--cannot {
+  color: var(--ink-soft);
+}
+
+.drive-cycle:disabled {
+  opacity: 0.7;
+}
+
+.checkin-max-drives {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.checkin-max-drives .auth-field {
+  margin-top: 0;
+}
+
+.coordinator-section {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.household-status-list {
+  display: grid;
+  gap: 8px;
+}
+
+.household-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+}
+
+.household-status-row strong {
+  font-size: 12px;
+}
+
+.status-chip {
+  padding: 3px 10px;
+  border-radius: 100px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.status-chip--submitted {
+  background: var(--teal-pale);
+  color: var(--teal);
+}
+
+.status-chip--draft {
+  background: var(--amber-pale);
+  color: var(--amber);
+}
+
+.status-chip--not_started {
+  background: var(--muted);
+  color: var(--ink-soft);
 }
 
 @media (max-width: 390px) {

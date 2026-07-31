@@ -45,9 +45,9 @@ test("Exchange 3 plan screen reflects real household data with safe fallbacks", 
   const source = await readFile(prototypeUrl, "utf8");
 
   assert.match(source, /setup: HouseholdSetup \| null/);
-  assert.match(source, /No vehicle set up/);
-  assert.match(source, /Add a vehicle in your account/);
-  assert.match(source, /setup\?\.children\.find/);
+  assert.match(source, /No vehicle/);
+  assert.match(source, /Add one in your account/);
+  assert.match(source, /setup\?\.children/);
   assert.match(source, /setup\?\.vehicles\.find/);
 });
 

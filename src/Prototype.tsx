@@ -22,20 +22,15 @@ import { KeyboardInput, MobileScroll } from "./mobile";
 import {
   CarpoolRepository,
   getSupabaseClient,
+  type CheckinDetails,
   type HouseholdSetup,
   type Tables,
+  type WeekOverview,
+  type WeekWithTrips,
 } from "./lib/supabase";
+import type { DrivePreference } from "./lib/supabase/database.types";
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
-type DrivePreference = "prefer" | "available" | "no";
-
-type DayPlan = {
-  day: string;
-  date: string;
-  morningRide: boolean;
-  afternoonRide: boolean;
-  drive: DrivePreference;
-};
 
 type IdentityState = {
   profile: Tables<"profiles">;
@@ -280,14 +275,6 @@ function OnboardingScreen({
   );
 }
 
-const initialPlans: DayPlan[] = [
-  { day: "Mon", date: "Aug 3", morningRide: true, afternoonRide: true, drive: "prefer" },
-  { day: "Tue", date: "Aug 4", morningRide: true, afternoonRide: true, drive: "no" },
-  { day: "Wed", date: "Aug 5", morningRide: true, afternoonRide: false, drive: "available" },
-  { day: "Thu", date: "Aug 6", morningRide: true, afternoonRide: true, drive: "available" },
-  { day: "Fri", date: "Aug 7", morningRide: true, afternoonRide: true, drive: "no" },
-];
-
 const weeklyTrips = [
   { day: "Mon", date: "Aug 3", am: "You drive", pm: "Priya drives", status: "covered" },
   { day: "Tue", date: "Aug 4", am: "Miguel drives", pm: "Needs driver", status: "uncovered" },
@@ -295,6 +282,38 @@ const weeklyTrips = [
   { day: "Thu", date: "Aug 6", am: "Lee drives", pm: "You drive", status: "covered" },
   { day: "Fri", date: "Aug 7", am: "Priya drives", pm: "Sam drives", status: "covered" },
 ];
+
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function formatTripDate(serviceDate: string) {
+  const date = new Date(serviceDate + "T00:00:00");
+  const weekday = WEEKDAY_LABELS[date.getDay()];
+  const month = MONTH_LABELS[date.getMonth()];
+  const day = date.getDate();
+  return { weekday, short: `${month} ${day}`, full: `${weekday}, ${month} ${day}` };
+}
+
+function cycleDrivePreference(pref: DrivePreference): DrivePreference {
+  if (pref === "prefer") return "can";
+  if (pref === "can") return "cannot";
+  return "prefer";
+}
+
+function preferenceLabel(pref: DrivePreference): string {
+  if (pref === "prefer") return "Prefer to drive";
+  if (pref === "can") return "Can if needed";
+  return "Unavailable";
+}
+
+function nextMonday(): string {
+  const today = new Date();
+  const day = today.getDay();
+  const daysUntilMonday = day === 0 ? 1 : 8 - day;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() + daysUntilMonday);
+  return monday.toISOString().slice(0, 10);
+}
 
 function AssignmentRow({
   period,
@@ -477,103 +496,292 @@ function ReviewScreen({
 }
 
 function PlanScreen({
-  plans,
-  setPlans,
-  submitted,
-  onSubmit,
+  week,
+  weekLoading,
+  weekError,
+  checkin,
+  checkinDetails,
+  checkinLoading,
   setup,
+  repository,
+  driverProfileId,
+  groupId,
+  onReloadCheckin,
+  isCoordinator,
+  onCreateWeek,
 }: {
-  plans: DayPlan[];
-  setPlans: (next: DayPlan[]) => void;
-  submitted: boolean;
-  onSubmit: () => void;
+  week: WeekWithTrips | null;
+  weekLoading: boolean;
+  weekError: string | null;
+  checkin: Tables<"weekly_checkins"> | null;
+  checkinDetails: CheckinDetails | null;
+  checkinLoading: boolean;
   setup: HouseholdSetup | null;
+  repository: CarpoolRepository;
+  driverProfileId: string;
+  groupId: string;
+  onReloadCheckin: () => void;
+  isCoordinator: boolean;
+  onCreateWeek: () => void;
 }) {
-  const updatePlan = (index: number, update: Partial<DayPlan>) => {
-    setPlans(plans.map((plan, planIndex) => planIndex === index ? { ...plan, ...update } : plan));
-  };
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [maxDrives, setMaxDrives] = useState("2");
 
-  const cycleDrive = (preference: DrivePreference): DrivePreference => {
-    if (preference === "prefer") return "available";
-    if (preference === "available") return "no";
-    return "prefer";
-  };
-
-  const firstChild = setup?.children.find((child) => child.active) ?? null;
+  const submitted = checkin?.status === "submitted";
+  const children = setup?.children ?? [];
   const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
-  const ridesLabel = firstChild ? `${firstChild.first_name}’s rides` : "Your rides";
-  const vehicleLabel = activeVehicle ? activeVehicle.label : "No vehicle set up";
-  const vehicleSeats = activeVehicle ? `${activeVehicle.child_passenger_capacity} passenger seats` : "Add a vehicle in your account";
-  const vehicleNote = activeVehicle ? "Includes your children when riding" : "Open your account to add one";
+
+  useEffect(() => {
+    if (checkin) setMaxDrives(String(checkin.max_drives || 2));
+  }, [checkin]);
+
+  if (weekLoading) {
+    return (
+      <div className="screen-content plan-screen" data-testid="plan-screen">
+        <header className="page-title">
+          <span className="eyebrow">Saturday check-in</span>
+          <h1>Plan next week</h1>
+        </header>
+        <p className="helper-copy">Loading the upcoming week…</p>
+      </div>
+    );
+  }
+
+  if (weekError) {
+    return (
+      <div className="screen-content plan-screen" data-testid="plan-screen">
+        <header className="page-title">
+          <span className="eyebrow">Saturday check-in</span>
+          <h1>Plan next week</h1>
+        </header>
+        <div className="auth-error" role="alert">{weekError}</div>
+        <button className="primary-button" onClick={onReloadCheckin}>Try again</button>
+      </div>
+    );
+  }
+
+  if (!week) {
+    return (
+      <div className="screen-content plan-screen" data-testid="plan-screen">
+        <header className="page-title">
+          <span className="eyebrow">Saturday check-in</span>
+          <h1>Plan next week</h1>
+        </header>
+        <div className="empty-state">
+          <p>No week has been created yet.</p>
+          {isCoordinator ? (
+            <button className="primary-button" data-testid="create-week-plan" onClick={onCreateWeek}>
+              Create next week
+            </button>
+          ) : (
+            <p className="helper-copy">A coordinator needs to create the week first. Check back soon.</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (children.length === 0) {
+    return (
+      <div className="screen-content plan-screen" data-testid="plan-screen">
+        <header className="page-title">
+          <span className="eyebrow">Saturday check-in</span>
+          <h1>Plan next week</h1>
+          <p>{formatTripDate(week.week.starts_on).short} – {formatTripDate(week.week.starts_on).short}</p>
+        </header>
+        <div className="empty-state">
+          <p>Add your children in your account first, then come back to plan the week.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const tripsByDate = new Map<string, Tables<"trips">[]>();
+  for (const trip of week.trips) {
+    const existing = tripsByDate.get(trip.service_date) ?? [];
+    existing.push(trip);
+    tripsByDate.set(trip.service_date, existing);
+  }
+  const sortedDates = [...tripsByDate.keys()].sort();
+
+  const rideMap = new Map<string, boolean>();
+  for (const req of checkinDetails?.rideRequests ?? []) {
+    rideMap.set(`${req.trip_id}:${req.child_id}`, req.needs_ride);
+  }
+
+  const driveMap = new Map<string, DrivePreference>();
+  for (const avail of checkinDetails?.driverAvailability ?? []) {
+    if (avail.driver_profile_id === driverProfileId) {
+      driveMap.set(avail.trip_id, avail.preference);
+    }
+  }
+
+  const toggleRide = async (tripId: string, childId: string) => {
+    if (submitted || !checkin) return;
+    const key = `${tripId}:${childId}`;
+    const current = rideMap.get(key) ?? false;
+    try {
+      await repository.upsertRideRequest(checkin.id, tripId, childId, !current, groupId);
+      onReloadCheckin();
+    } catch (error) {
+      setSubmitError(readableError(error));
+    }
+  };
+
+  const toggleDrive = async (tripId: string) => {
+    if (submitted || !checkin) return;
+    const current = driveMap.get(tripId) ?? "cannot";
+    const next = cycleDrivePreference(current);
+    if (next !== "cannot" && !activeVehicle) {
+      setSubmitError("Add a vehicle in your account before volunteering to drive.");
+      return;
+    }
+    try {
+      await repository.upsertDriverAvailability(
+        checkin.id, tripId, driverProfileId,
+        activeVehicle?.id ?? null, next, groupId,
+      );
+      onReloadCheckin();
+    } catch (error) {
+      setSubmitError(readableError(error));
+    }
+  };
+
+  const submit = async () => {
+    if (!checkin) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await repository.submitCheckin(checkin.id, Number(maxDrives) || 0);
+      onReloadCheckin();
+    } catch (error) {
+      setSubmitError(readableError(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const reopen = async () => {
+    if (!checkin) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await repository.reopenCheckin(checkin.id);
+      onReloadCheckin();
+    } catch (error) {
+      setSubmitError(readableError(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="screen-content plan-screen" data-testid="plan-screen">
       <header className="page-title">
         <span className="eyebrow">Saturday check-in</span>
         <h1>Plan next week</h1>
-        <p>Aug 3–7 · Prefilled from your normal routine</p>
+        <p>{formatTripDate(week.week.starts_on).short} – {formatTripDate(sortedDates[sortedDates.length - 1] ?? week.week.starts_on).short}</p>
       </header>
 
       {submitted ? (
         <div className="success-banner">
           <CheckCircledIcon width="24" height="24" />
-          <span><strong>Week submitted</strong><small>We’ll send proposed drives Sunday morning.</small></span>
+          <span><strong>Week submitted</strong><small>Your check-in is locked. Reopen to make changes.</small></span>
         </div>
       ) : null}
 
-      <section className="planning-section">
-        <div className="section-heading-row"><h2>{ridesLabel}</h2><span>Tap to change</span></div>
-        <div className="day-plan-list">
-          {plans.map((plan, index) => (
-            <div className="day-plan-row" key={plan.day}>
-              <div className="day-label"><strong>{plan.day}</strong><span>{plan.date}</span></div>
+      {submitError ? <div className="auth-error" role="alert">{submitError}</div> : null}
+
+      {sortedDates.map((serviceDate) => {
+        const dateTrips = tripsByDate.get(serviceDate) ?? [];
+        const dateInfo = formatTripDate(serviceDate);
+        const morningTrip = dateTrips.find((trip) => trip.direction === "morning");
+        const afternoonTrip = dateTrips.find((trip) => trip.direction === "afternoon");
+
+        const renderTrip = (trip: Tables<"trips"> | undefined, direction: "morning" | "afternoon") => {
+          if (!trip) return null;
+          const PeriodIcon = direction === "morning" ? SunIcon : MoonIcon;
+          return (
+            <div className="checkin-trip" key={trip.id}>
+              <div className="checkin-trip-header">
+                <PeriodIcon width="16" height="16" />
+                <span>{direction === "morning" ? "Morning" : "Afternoon"}</span>
+                <small>{trip.meeting_time} · {trip.origin} → {trip.destination}</small>
+              </div>
+              <div className="checkin-rides">
+                {children.map((child) => {
+                  const key = `${trip.id}:${child.id}`;
+                  const riding = rideMap.get(key) ?? false;
+                  return (
+                    <button
+                      key={child.id}
+                      className={riding ? "ride-pill ride-pill--on" : "ride-pill"}
+                      disabled={submitted}
+                      onClick={() => void toggleRide(trip.id, child.id)}
+                      aria-pressed={riding}
+                    >
+                      {child.first_name}
+                    </button>
+                  );
+                })}
+              </div>
               <button
-                className={plan.morningRide ? "ride-toggle ride-toggle--on" : "ride-toggle"}
-                onClick={() => updatePlan(index, { morningRide: !plan.morningRide })}
-                aria-pressed={plan.morningRide}
-                aria-label={`${plan.day} morning ride`}
+                className={`drive-cycle drive-cycle--${driveMap.get(trip.id) ?? "cannot"}`}
+                disabled={submitted}
+                onClick={() => void toggleDrive(trip.id)}
               >
-                <SunIcon /> AM
-              </button>
-              <button
-                className={plan.afternoonRide ? "ride-toggle ride-toggle--on" : "ride-toggle"}
-                onClick={() => updatePlan(index, { afternoonRide: !plan.afternoonRide })}
-                aria-pressed={plan.afternoonRide}
-                aria-label={`${plan.day} afternoon ride`}
-              >
-                <MoonIcon /> PM
+                <span>You</span>
+                <span>{preferenceLabel(driveMap.get(trip.id) ?? "cannot")}</span>
               </button>
             </div>
-          ))}
-        </div>
-      </section>
+          );
+        };
 
-      <section className="planning-section">
-        <div className="section-heading-row"><h2>Your driving availability</h2><span>Max 2 drives</span></div>
-        <p className="helper-copy">Tap each day to cycle through prefer, can if needed, and unavailable.</p>
-        <div className="drive-preference-list">
-          {plans.map((plan, index) => (
-            <button
-              key={plan.day}
-              className={`preference-row preference-row--${plan.drive}`}
-              onClick={() => updatePlan(index, { drive: cycleDrive(plan.drive) })}
-            >
-              <span><strong>{plan.day}, {plan.date}</strong><small>Any direction</small></span>
-              <span>{plan.drive === "prefer" ? "Prefer to drive" : plan.drive === "available" ? "Can if needed" : "Unavailable"}</span>
-            </button>
-          ))}
-        </div>
-      </section>
+        return (
+          <section className="checkin-day" key={serviceDate}>
+            <div className="checkin-day-header">
+              <strong>{dateInfo.weekday}</strong>
+              <span>{dateInfo.short}</span>
+            </div>
+            {renderTrip(morningTrip, "morning")}
+            {renderTrip(afternoonTrip, "afternoon")}
+          </section>
+        );
+      })}
+
+      {!submitted ? (
+        <section className="checkin-max-drives">
+          <label className="auth-field">
+            <span>Max drives this week</span>
+            <KeyboardInput
+              value={maxDrives}
+              onChange={(event) => setMaxDrives(event.target.value.replace(/[^0-9]/g, ""))}
+              inputMode="numeric"
+              placeholder="2"
+              autoComplete="off"
+            />
+          </label>
+        </section>
+      ) : null}
 
       <div className="vehicle-summary">
         <span><DashboardIcon /></span>
-        <span><strong>{vehicleLabel} · {vehicleSeats}</strong><small>{vehicleNote}</small></span>
-        <ChevronRightIcon />
+        <span>
+          <strong>{activeVehicle ? `${activeVehicle.label} · ${activeVehicle.child_passenger_capacity} seats` : "No vehicle"}</strong>
+          <small>{activeVehicle ? "Includes your children when riding" : "Add one in your account to drive"}</small>
+        </span>
       </div>
 
-      <button className="primary-button" data-testid="submit-plan" onClick={onSubmit}>
-        {submitted ? "Update my week" : "Submit my week"}
-      </button>
+      {submitted ? (
+        <button className="secondary-button" disabled={submitting} onClick={() => void reopen()}>
+          {submitting ? "Reopening…" : "Reopen my check-in"}
+        </button>
+      ) : (
+        <button className="primary-button" data-testid="submit-plan" disabled={submitting || checkinLoading} onClick={() => void submit()}>
+          {submitting ? "Submitting…" : "Submit my week"}
+        </button>
+      )}
     </div>
   );
 }
@@ -611,59 +819,119 @@ function WeekScreen({ driverConfirmed }: { driverConfirmed: boolean }) {
 }
 
 function CoordinatorScreen({
-  backupRequested,
-  onRequestBackup,
+  week,
+  weekLoading,
+  overview,
+  overviewLoading,
+  isCoordinator,
+  onCreateWeek,
+  creatingWeek,
 }: {
-  backupRequested: boolean;
-  onRequestBackup: () => void;
+  week: WeekWithTrips | null;
+  weekLoading: boolean;
+  overview: WeekOverview | null;
+  overviewLoading: boolean;
+  isCoordinator: boolean;
+  onCreateWeek: () => void;
+  creatingWeek: boolean;
 }) {
+  if (weekLoading) {
+    return (
+      <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
+        <header className="page-title">
+          <span className="eyebrow">Coordinator view</span>
+          <h1>Weekly coverage</h1>
+        </header>
+        <p className="helper-copy">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!week) {
+    return (
+      <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
+        <header className="page-title">
+          <span className="eyebrow">Coordinator view</span>
+          <h1>Weekly coverage</h1>
+        </header>
+        <div className="empty-state">
+          <p>No week has been created yet.</p>
+          {isCoordinator ? (
+            <button className="primary-button" data-testid="create-week-coord" disabled={creatingWeek} onClick={onCreateWeek}>
+              {creatingWeek ? "Creating…" : "Create next week"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  const startDate = formatTripDate(week.week.starts_on);
+  const lastTripDate = week.trips[week.trips.length - 1]?.service_date ?? week.week.starts_on;
+  const endDate = formatTripDate(lastTripDate);
+
+  const submittedCount = overview?.households.filter((h) => h.status === "submitted").length ?? 0;
+  const draftCount = overview?.households.filter((h) => h.status === "draft").length ?? 0;
+  const notStartedCount = overview?.households.filter((h) => h.status === "not_started").length ?? 0;
+
   return (
     <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
       <header className="page-title">
         <span className="eyebrow">Coordinator view</span>
         <h1>Weekly coverage</h1>
-        <p>Aug 3–7 · Confirmed seats only</p>
+        <p>{startDate.short} – {endDate.short}</p>
       </header>
 
       <section className="coverage-summary">
-        <div><strong>9</strong><span>Covered trips</span></div>
-        <div className="coverage-summary--alert"><strong>1</strong><span>Needs action</span></div>
+        <div><strong>{submittedCount}</strong><span>Submitted</span></div>
+        <div><strong>{draftCount}</strong><span>In progress</span></div>
+        <div className="coverage-summary--alert"><strong>{notStartedCount}</strong><span>Not started</span></div>
       </section>
 
-      <section className="shortfall-panel">
-        <div className="shortfall-heading">
-          <span><ExclamationTriangleIcon /></span>
-          <div><strong>Tuesday afternoon</strong><small>Presidio → Midtown Terrace</small></div>
-          <span className="shortfall-count">3 seats short</span>
-        </div>
-        <div className="capacity-line">
-          <span><i style={{ width: "62%" }} /></span>
-          <small>8 of 11 seats confirmed</small>
-        </div>
-        <div className="unassigned-list">
-          <span>Unassigned riders</span>
-          <strong>Alex M. · Jordan K. · Sam R.</strong>
-        </div>
-        <button className="primary-button" onClick={onRequestBackup}>
-          {backupRequested ? <CheckIcon /> : <GroupIcon />}
-          {backupRequested ? "Backup request sent" : "Request backup drivers"}
+      {isCoordinator ? (
+        <button className="secondary-button" data-testid="create-week-coord" disabled={creatingWeek} onClick={onCreateWeek}>
+          {creatingWeek ? "Creating…" : "Create next week"}
         </button>
-        <small className="deadline-note"><ClockIcon /> Recovery deadline: Monday at 8:00 PM</small>
+      ) : null}
+
+      <section className="coordinator-section">
+        <div className="section-heading-row"><h2>Household responses</h2></div>
+        <div className="household-status-list">
+          {overview?.households.length ? overview.households.map((h) => (
+            <div className="household-status-row" key={h.household.id}>
+              <strong>{h.household.name}</strong>
+              <span className={`status-chip status-chip--${h.status}`}>
+                {h.status === "submitted" ? "Submitted" : h.status === "draft" ? "In progress" : "Not started"}
+              </span>
+            </div>
+          )) : (
+            <p className="helper-copy">No households yet.</p>
+          )}
+        </div>
       </section>
 
-      <section className="coverage-table">
-        <div className="section-heading-row"><h2>All trips</h2><span>Confirmed seats</span></div>
-        {[
-          ["Mon · AM", "12 / 12", "Covered"],
-          ["Mon · PM", "10 / 10", "Covered"],
-          ["Tue · AM", "12 / 12", "Covered"],
-          ["Tue · PM", "8 / 11", "Uncovered"],
-          ["Wed · AM", "11 / 11", "Covered"],
-        ].map(([trip, seats, status]) => (
-          <div className="coverage-row" key={trip}>
-            <strong>{trip}</strong><span>{seats}</span><span className={status === "Covered" ? "positive" : "negative"}>{status}</span>
-          </div>
-        ))}
+      <section className="coordinator-section">
+        <div className="section-heading-row"><h2>Trip demand</h2><span>Riders · seats</span></div>
+        <div className="coverage-table">
+          {overview?.trips.length ? overview.trips.map((tripOverview) => {
+            const tripDate = formatTripDate(tripOverview.trip.service_date);
+            const direction = tripOverview.trip.direction === "morning" ? "AM" : "PM";
+            const covered = tripOverview.seatCount >= tripOverview.riderCount && tripOverview.riderCount > 0;
+            const noRiders = tripOverview.riderCount === 0;
+            return (
+              <div className="coverage-row" key={tripOverview.trip.id}>
+                <strong>{tripDate.weekday} · {direction}</strong>
+                <span>{tripOverview.riderCount} riders</span>
+                <span>{tripOverview.seatCount} seats</span>
+                <span className={noRiders ? "neutral" : covered ? "positive" : "negative"}>
+                  {noRiders ? "No riders" : covered ? "Covered" : "Short"}
+                </span>
+              </div>
+            );
+          }) : (
+            <p className="helper-copy">No trips yet.</p>
+          )}
+        </div>
       </section>
     </div>
   );
@@ -942,15 +1210,21 @@ export default function Prototype() {
   const [householdSetup, setHouseholdSetup] = useState<HouseholdSetup | null>(null);
   const [householdLoading, setHouseholdLoading] = useState(false);
   const [householdError, setHouseholdError] = useState<string | null>(null);
+  const [weekData, setWeekData] = useState<WeekWithTrips | null>(null);
+  const [weekLoading, setWeekLoading] = useState(false);
+  const [weekError, setWeekError] = useState<string | null>(null);
+  const [checkin, setCheckin] = useState<Tables<"weekly_checkins"> | null>(null);
+  const [checkinDetails, setCheckinDetails] = useState<CheckinDetails | null>(null);
+  const [checkinLoading, setCheckinLoading] = useState(false);
+  const [overview, setOverview] = useState<WeekOverview | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [creatingWeek, setCreatingWeek] = useState(false);
   const [authWorking, setAuthWorking] = useState(false);
   const [authError, setAuthError] = useState<string | null>(() => oauthErrorFromLocation());
   const [activeTab, setActiveTab] = useState<AppTab>("home");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [driverConfirmed, setDriverConfirmed] = useState(false);
-  const [plans, setPlans] = useState(initialPlans);
-  const [planSubmitted, setPlanSubmitted] = useState(false);
-  const [backupRequested, setBackupRequested] = useState(false);
 
   const loadIdentity = useCallback(async () => {
     setIdentityLoading(true);
@@ -990,6 +1264,78 @@ export default function Prototype() {
   useEffect(() => {
     if (identity?.membership) void loadHousehold();
   }, [identity?.membership, loadHousehold]);
+
+  const loadWeek = useCallback(async () => {
+    if (!identity?.group) return;
+    setWeekLoading(true);
+    setWeekError(null);
+    try {
+      const data = await repository.getLatestWeek(identity.group.id);
+      setWeekData(data);
+    } catch (error) {
+      setWeekError(readableError(error));
+    } finally {
+      setWeekLoading(false);
+    }
+  }, [identity?.group, repository]);
+
+  const loadCheckin = useCallback(async () => {
+    if (!identity?.membership || !weekData) return;
+    setCheckinLoading(true);
+    try {
+      const checkinRow = await repository.getOrCreateCheckin(
+        weekData.week.id, identity.membership.household_id, identity.group.id,
+      );
+      setCheckin(checkinRow);
+      const details = await repository.getCheckinDetails(checkinRow.id);
+      setCheckinDetails(details);
+    } catch (error) {
+      setCheckin(null);
+      setCheckinDetails(null);
+    } finally {
+      setCheckinLoading(false);
+    }
+  }, [identity?.membership, identity?.group, weekData, repository]);
+
+  const loadOverview = useCallback(async () => {
+    if (!identity?.group || !weekData) return;
+    setOverviewLoading(true);
+    try {
+      const data = await repository.getWeekOverview(weekData.week.id, identity.group.id);
+      setOverview(data);
+    } catch {
+      setOverview(null);
+    } finally {
+      setOverviewLoading(false);
+    }
+  }, [identity?.group, weekData, repository]);
+
+  useEffect(() => {
+    if (identity?.membership) void loadWeek();
+  }, [identity?.membership, loadWeek]);
+
+  useEffect(() => {
+    if (weekData) void loadCheckin();
+  }, [weekData, loadCheckin]);
+
+  useEffect(() => {
+    if (activeTab === "coordinate" && weekData) void loadOverview();
+  }, [activeTab, weekData, loadOverview]);
+
+  const createWeek = useCallback(async () => {
+    if (!identity?.group) return;
+    setCreatingWeek(true);
+    try {
+      await repository.createWeekWithTrips(
+        identity.group.id, nextMonday(),
+        identity.group.meeting_point, identity.group.school_name,
+      );
+      await loadWeek();
+    } catch {
+    } finally {
+      setCreatingWeek(false);
+    }
+  }, [identity?.group, repository, loadWeek]);
 
   useEffect(() => {
     let mounted = true;
@@ -1068,6 +1414,7 @@ export default function Prototype() {
   };
 
   const renderContent = () => {
+    if (!identity) return null;
     if (accountOpen && identity) {
       return (
         <AccountScreen
@@ -1099,11 +1446,19 @@ export default function Prototype() {
     if (activeTab === "plan") {
       return (
         <PlanScreen
-          plans={plans}
-          setPlans={setPlans}
-          submitted={planSubmitted}
-          onSubmit={() => setPlanSubmitted(true)}
+          week={weekData}
+          weekLoading={weekLoading}
+          weekError={weekError}
+          checkin={checkin}
+          checkinDetails={checkinDetails}
+          checkinLoading={checkinLoading}
           setup={householdSetup}
+          repository={repository}
+          driverProfileId={identity.profile.id}
+          groupId={identity.group.id}
+          onReloadCheckin={() => void loadCheckin()}
+          isCoordinator={identity.membership?.role === "coordinator"}
+          onCreateWeek={() => void createWeek()}
         />
       );
     }
@@ -1113,7 +1468,17 @@ export default function Prototype() {
     }
 
     if (activeTab === "coordinate") {
-      return <CoordinatorScreen backupRequested={backupRequested} onRequestBackup={() => setBackupRequested(true)} />;
+      return (
+        <CoordinatorScreen
+          week={weekData}
+          weekLoading={weekLoading}
+          overview={overview}
+          overviewLoading={overviewLoading}
+          isCoordinator={identity.membership?.role === "coordinator"}
+          onCreateWeek={() => void createWeek()}
+          creatingWeek={creatingWeek}
+        />
+      );
     }
 
     return (
