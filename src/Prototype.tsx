@@ -34,6 +34,16 @@ import type { AssignmentStatus, DrivePreference } from "./lib/supabase/database.
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
 
+function CarIcon({ width = 18, height = 18 }: { width?: number | string; height?: number | string }) {
+  return (
+    <svg width={width} height={height} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M5 17h14M3 17l1.5-6.5a2 2 0 0 1 2-1.5h11a2 2 0 0 1 2 1.5L21 17M7 17v2M17 17v2M5 13h14" />
+      <circle cx="7.5" cy="17" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="16.5" cy="17" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 type IdentityState = {
   profile: Tables<"profiles">;
   group: Tables<"groups">;
@@ -391,6 +401,7 @@ function HomeScreen({
   onAccount,
   onRetryAssignments,
   working,
+  avatarUrl,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -402,6 +413,7 @@ function HomeScreen({
   onAccount: () => void;
   onRetryAssignments: () => void;
   working: boolean;
+  avatarUrl: string | null;
 }) {
   const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = myAssignments.filter((a) => a.assignment.status === "confirmed");
@@ -412,14 +424,14 @@ function HomeScreen({
     <div className="screen-content home-screen" data-testid="home-screen">
       <header className="app-header">
         <div className="brand-lockup">
-          <span className="brand-mark"><PersonIcon width="18" height="18" /></span>
+          <span className="brand-mark"><CarIcon width="18" height="18" /></span>
           <span>
             <strong>Midtown Carpool</strong>
             <small>Presidio Middle School</small>
           </span>
         </div>
         <button className="avatar-button" aria-label="Open household profile" onClick={onAccount}>
-          <AvatarIcon width="19" height="19" />
+          {avatarUrl ? <img src={avatarUrl} alt="" /> : <AvatarIcon width="19" height="19" />}
         </button>
       </header>
 
@@ -2037,6 +2049,7 @@ export default function Prototype() {
         onAccount={() => setAccountOpen(true)}
         onRetryAssignments={() => void loadMyAssignments()}
         working={confirmWorking}
+        avatarUrl={identity.profile.avatar_url}
       />
     );
   };
