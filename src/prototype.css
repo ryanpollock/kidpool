@@ -1577,3 +1577,62 @@ button {
     font-size: 39px;
   }
 }
+
+.trip-rosters {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 9px;
+  margin-top: 6px;
+  padding-left: 30px;
+}
+
+.trip-roster {
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: white;
+}
+
+.roster-driver {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.roster-driver strong {
+  font-size: 12px;
+}
+
+.roster-driver small {
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.roster-children {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.roster-children span {
+  padding: 3px 9px;
+  border-radius: 100px;
+  background: var(--teal-pale);
+  color: var(--teal);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.roster-empty {
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-style: italic;
+}
+
+.coordinator-generate {
+  margin-top: 16px;
+  display: grid;
+  gap: 9px;
+}

@@ -46,6 +46,34 @@ export type WeekOverview = {
   households: HouseholdCheckinStatus[];
 };
 
+export type ScheduleRosterEntry = {
+  driverAssignment: Tables<"driver_assignments">;
+  driverProfile: Tables<"profiles">;
+  vehicle: Tables<"vehicles">;
+  children: Tables<"children">[];
+};
+
+export type ScheduleVersionWithRosters = {
+  version: Tables<"schedule_versions">;
+  trips: Tables<"trips">[];
+  rostersByTrip: Map<string, ScheduleRosterEntry[]>;
+};
+
+export type GenerateScheduleResult = {
+  success: boolean;
+  version?: { id: string; version_number: number };
+  algorithm?: string;
+  trips?: Array<{
+    trip_id: string;
+    rider_count: number;
+    assigned_rider_count: number;
+    uncovered_rider_count: number;
+    driver_count: number;
+    uncovered: boolean;
+  }>;
+  error?: string;
+};
+
 function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
   if (result.error) throw new Error(result.error.message);
   return result.data;
@@ -688,5 +716,128 @@ export class CarpoolRepository {
         driver_response: response,
       }),
     );
+  }
+
+  async getGroupRoster(groupId: string): Promise<{
+    children: Tables<"children">[];
+    vehicles: Tables<"vehicles">[];
+    profiles: Tables<"profiles">[];
+    memberships: Tables<"memberships">[];
+  }> {
+    const [children, vehicles, memberships] = await Promise.all([
+      unwrapRequired(
+        await this.client
+          .from("children")
+          .select("*")
+          .eq("group_id", groupId)
+          .eq("active", true)
+          .order("first_name"),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("vehicles")
+          .select("*")
+          .eq("group_id", groupId)
+          .eq("active", true)
+          .order("label"),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("memberships")
+          .select("*")
+          .eq("group_id", groupId)
+          .eq("status", "active"),
+      ),
+    ]);
+
+    const profileIds = [...new Set(memberships.map((m) => m.profile_id))];
+    const profiles = profileIds.length
+      ? unwrapRequired(
+          await this.client
+            .from("profiles")
+            .select("*")
+            .in("id", profileIds),
+        )
+      : [];
+
+    return { children, vehicles, profiles, memberships };
+  }
+
+  async generateDraftSchedule(weekId: string): Promise<GenerateScheduleResult> {
+    const result = await this.client.functions.invoke("generate-schedule", {
+      body: { weekId },
+    });
+    if (result.error) {
+      return { success: false, error: result.error.message };
+    }
+    return result.data as GenerateScheduleResult;
+  }
+
+async getLatestScheduleVersion(
+    weekId: string,
+    groupId: string,
+    trips: Tables<"trips">[],
+    children: Tables<"children">[],
+    vehicles: Tables<"vehicles">[],
+    profiles: Tables<"profiles">[],
+  ): Promise<ScheduleVersionWithRosters | null> {
+    const version = unwrap(
+      await this.client
+        .from("schedule_versions")
+        .select("*")
+        .eq("week_id", weekId)
+        .eq("group_id", groupId)
+        .order("version_number", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    );
+    if (!version) return null;
+
+    const [driverAssignments, riderAssignments] = await Promise.all([
+      unwrapRequired(
+        await this.client
+          .from("driver_assignments")
+          .select("*")
+          .eq("schedule_version_id", version.id)
+          .eq("group_id", groupId)
+          .order("driver_profile_id"),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("rider_assignments")
+          .select("*")
+          .eq("schedule_version_id", version.id)
+          .eq("group_id", groupId),
+      ),
+    ]);
+
+    const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
+    const childById = new Map(children.map((c) => [c.id, c]));
+    const profileById = new Map(profiles.map((p) => [p.id, p]));
+    const ridersByAssignment = new Map<string, Tables<"children">[]>();
+    for (const rider of riderAssignments) {
+      const existing = ridersByAssignment.get(rider.driver_assignment_id) ?? [];
+      const child = childById.get(rider.child_id);
+      if (child) existing.push(child);
+      ridersByAssignment.set(rider.driver_assignment_id, existing);
+    }
+
+    const rostersByTrip = new Map<string, ScheduleRosterEntry[]>();
+    for (const assignment of driverAssignments) {
+      const profile = profileById.get(assignment.driver_profile_id);
+      const vehicle = vehicleById.get(assignment.vehicle_id);
+      if (!profile || !vehicle) continue;
+      const entry: ScheduleRosterEntry = {
+        driverAssignment: assignment,
+        driverProfile: profile,
+        vehicle,
+        children: ridersByAssignment.get(assignment.id) ?? [],
+      };
+      const existing = rostersByTrip.get(assignment.trip_id) ?? [];
+      existing.push(entry);
+      rostersByTrip.set(assignment.trip_id, existing);
+    }
+
+    return { version, trips, rostersByTrip };
   }
 }

@@ -24,6 +24,7 @@ import {
   getSupabaseClient,
   type CheckinDetails,
   type HouseholdSetup,
+  type ScheduleVersionWithRosters,
   type Tables,
   type WeekOverview,
   type WeekWithTrips,
@@ -274,14 +275,6 @@ function OnboardingScreen({
     </div>
   );
 }
-
-const weeklyTrips = [
-  { day: "Mon", date: "Aug 3", am: "You drive", pm: "Priya drives", status: "covered" },
-  { day: "Tue", date: "Aug 4", am: "Miguel drives", pm: "Needs driver", status: "uncovered" },
-  { day: "Wed", date: "Aug 5", am: "Jordan drives", pm: "Not riding", status: "covered" },
-  { day: "Thu", date: "Aug 6", am: "Lee drives", pm: "You drive", status: "covered" },
-  { day: "Fri", date: "Aug 7", am: "Priya drives", pm: "Sam drives", status: "covered" },
-];
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -786,33 +779,185 @@ function PlanScreen({
   );
 }
 
-function WeekScreen({ driverConfirmed }: { driverConfirmed: boolean }) {
+function WeekScreen({
+  week,
+  weekLoading,
+  schedule,
+  scheduleLoading,
+  isCoordinator,
+  onGenerate,
+  generating,
+  generateError,
+}: {
+  week: WeekWithTrips | null;
+  weekLoading: boolean;
+  schedule: ScheduleVersionWithRosters | null;
+  scheduleLoading: boolean;
+  isCoordinator: boolean;
+  onGenerate: () => void;
+  generating: boolean;
+  generateError: string | null;
+}) {
+  if (weekLoading) {
+    return (
+      <div className="screen-content week-screen" data-testid="week-screen">
+        <header className="page-title">
+          <span className="eyebrow">Family schedule</span>
+          <h1>This week</h1>
+        </header>
+        <p className="helper-copy">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!week) {
+    return (
+      <div className="screen-content week-screen" data-testid="week-screen">
+        <header className="page-title">
+          <span className="eyebrow">Family schedule</span>
+          <h1>This week</h1>
+        </header>
+        <div className="empty-state">
+          <p>No week has been created yet.</p>
+          {isCoordinator ? (
+            <button className="primary-button" data-testid="generate-schedule-empty" disabled={generating} onClick={onGenerate}>
+              {generating ? "Working…" : "Generate schedule"}
+            </button>
+          ) : (
+            <p className="helper-copy">A coordinator needs to create the week first.</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const startDate = formatTripDate(week.week.starts_on);
+  const lastTripDate = week.trips[week.trips.length - 1]?.service_date ?? week.week.starts_on;
+  const endDate = formatTripDate(lastTripDate);
+
+  if (scheduleLoading) {
+    return (
+      <div className="screen-content week-screen" data-testid="week-screen">
+        <header className="page-title">
+          <span className="eyebrow">Family schedule</span>
+          <h1>{startDate.short} – {endDate.short}</h1>
+        </header>
+        <p className="helper-copy">Loading schedule…</p>
+      </div>
+    );
+  }
+
+  if (!schedule) {
+    return (
+      <div className="screen-content week-screen" data-testid="week-screen">
+        <header className="page-title">
+          <span className="eyebrow">Family schedule</span>
+          <h1>{startDate.short} – {endDate.short}</h1>
+        </header>
+        <div className="empty-state">
+          <p>No draft schedule yet.</p>
+          {isCoordinator ? (
+            <>
+              {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
+              <button className="primary-button" data-testid="generate-schedule" disabled={generating} onClick={onGenerate}>
+                {generating ? "Generating…" : "Generate draft schedule"}
+              </button>
+            </>
+          ) : (
+            <p className="helper-copy">A coordinator needs to generate the draft.</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const tripsByDate = new Map<string, Tables<"trips">[]>();
+  for (const trip of week.trips) {
+    const existing = tripsByDate.get(trip.service_date) ?? [];
+    existing.push(trip);
+    tripsByDate.set(trip.service_date, existing);
+  }
+  const sortedDates = [...tripsByDate.keys()].sort();
+
+  const coveredCount = sortedDates.reduce((count, date) => {
+    const dateTrips = tripsByDate.get(date) ?? [];
+    for (const trip of dateTrips) {
+      const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
+      const hasUncovered = rosters.length === 0;
+      if (!hasUncovered) count++;
+    }
+    return count;
+  }, 0);
+  const totalTrips = week.trips.length;
+  const uncoveredCount = totalTrips - coveredCount;
+
   return (
     <div className="screen-content week-screen" data-testid="week-screen">
       <header className="page-title">
         <span className="eyebrow">Family schedule</span>
-        <h1>Aug 3–7</h1>
-        <p>{driverConfirmed ? "Your drives are confirmed" : "2 drives still need your confirmation"}</p>
+        <h1>{startDate.short} – {endDate.short}</h1>
+        <p>Draft v{schedule.version.version_number} · {schedule.version.algorithm_version}</p>
       </header>
+
+      {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
+
       <div className="week-status-strip">
-        <span><CheckCircledIcon /> 9 covered</span>
-        <span><ExclamationTriangleIcon /> 1 uncovered</span>
+        <span><CheckCircledIcon /> {coveredCount} covered</span>
+        {uncoveredCount > 0 ? <span><ExclamationTriangleIcon /> {uncoveredCount} needs assignment</span> : null}
       </div>
+
+      {isCoordinator ? (
+        <button className="secondary-button" data-testid="regenerate-schedule" disabled={generating} onClick={onGenerate}>
+          {generating ? "Regenerating…" : "Regenerate draft"}
+        </button>
+      ) : null}
+
       <div className="week-list">
-        {weeklyTrips.map((trip) => (
-          <article className="week-day" key={trip.day}>
-            <div className="week-date"><strong>{trip.day}</strong><span>{trip.date}</span></div>
-            <div className="leg">
-              <SunIcon /><span><small>Morning</small><strong>{trip.am}</strong></span>
-              {trip.am === "You drive" ? <span className={driverConfirmed ? "mini-status mini-status--confirmed" : "mini-status"}>{driverConfirmed ? "Confirmed" : "Tentative"}</span> : null}
-            </div>
-            <div className={`leg ${trip.status === "uncovered" ? "leg--alert" : ""}`}>
-              <MoonIcon /><span><small>Afternoon</small><strong>{trip.pm}</strong></span>
-              {trip.pm === "You drive" ? <span className={driverConfirmed ? "mini-status mini-status--confirmed" : "mini-status"}>{driverConfirmed ? "Confirmed" : "Tentative"}</span> : null}
-              {trip.status === "uncovered" ? <span className="mini-status mini-status--alert">3 seats short</span> : null}
-            </div>
-          </article>
-        ))}
+        {sortedDates.map((serviceDate) => {
+          const dateTrips = tripsByDate.get(serviceDate) ?? [];
+          const dateInfo = formatTripDate(serviceDate);
+          return (
+            <article className="week-day" key={serviceDate}>
+              <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
+              {dateTrips.map((trip) => {
+                const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
+                const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
+                const uncovered = rosters.length === 0;
+                return (
+                  <div className={`leg ${uncovered ? "leg--alert" : ""}`} key={trip.id}>
+                    <PeriodIcon />
+                    <span>
+                      <small>{trip.direction === "morning" ? "Morning" : "Afternoon"}</small>
+                      <strong>{trip.meeting_time} · {trip.origin} → {trip.destination}</strong>
+                    </span>
+                    {uncovered ? (
+                      <span className="mini-status mini-status--alert">No drivers</span>
+                    ) : (
+                      <span className="mini-status mini-status--confirmed">{rosters.length} car{rosters.length !== 1 ? "s" : ""}</span>
+                    )}
+                    {!uncovered ? (
+                      <div className="trip-rosters">
+                        {rosters.map((entry) => (
+                          <div className="trip-roster" key={entry.driverAssignment.id}>
+                            <div className="roster-driver">
+                              <strong>{entry.driverProfile.full_name}</strong>
+                              <small>{entry.vehicle.label} · {entry.vehicle.child_passenger_capacity} seats</small>
+                            </div>
+                            <div className="roster-children">
+                              {entry.children.length ? entry.children.map((child) => (
+                                <span key={child.id}>{child.first_name} {child.last_name}</span>
+                              )) : <span className="roster-empty">No riders assigned</span>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </article>
+          );
+        })}
       </div>
     </div>
   );
@@ -826,6 +971,9 @@ function CoordinatorScreen({
   isCoordinator,
   onCreateWeek,
   creatingWeek,
+  onGenerate,
+  generating,
+  generateError,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -834,6 +982,9 @@ function CoordinatorScreen({
   isCoordinator: boolean;
   onCreateWeek: () => void;
   creatingWeek: boolean;
+  onGenerate: () => void;
+  generating: boolean;
+  generateError: string | null;
 }) {
   if (weekLoading) {
     return (
@@ -892,6 +1043,16 @@ function CoordinatorScreen({
         <button className="secondary-button" data-testid="create-week-coord" disabled={creatingWeek} onClick={onCreateWeek}>
           {creatingWeek ? "Creating…" : "Create next week"}
         </button>
+      ) : null}
+
+      {isCoordinator && week ? (
+        <div className="coordinator-generate">
+          {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
+          <button className="primary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
+            {generating ? "Generating…" : "Generate draft schedule"}
+          </button>
+          <small className="helper-copy">Creates a new draft version using {`greedy-v1`}. Existing drafts are superseded.</small>
+        </div>
       ) : null}
 
       <section className="coordinator-section">
@@ -1218,6 +1379,10 @@ export default function Prototype() {
   const [checkinLoading, setCheckinLoading] = useState(false);
   const [overview, setOverview] = useState<WeekOverview | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
+  const [schedule, setSchedule] = useState<ScheduleVersionWithRosters | null>(null);
+  const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
   const [creatingWeek, setCreatingWeek] = useState(false);
   const [authWorking, setAuthWorking] = useState(false);
   const [authError, setAuthError] = useState<string | null>(() => oauthErrorFromLocation());
@@ -1321,6 +1486,46 @@ export default function Prototype() {
   useEffect(() => {
     if (activeTab === "coordinate" && weekData) void loadOverview();
   }, [activeTab, weekData, loadOverview]);
+
+  const loadSchedule = useCallback(async () => {
+    if (!identity?.group || !weekData) return;
+    setScheduleLoading(true);
+    try {
+      const roster = await repository.getGroupRoster(identity.group.id);
+      const version = await repository.getLatestScheduleVersion(
+        weekData.week.id, identity.group.id, weekData.trips,
+        roster.children, roster.vehicles, roster.profiles,
+      );
+      setSchedule(version);
+    } catch {
+      setSchedule(null);
+    } finally {
+      setScheduleLoading(false);
+    }
+  }, [identity?.group, weekData, repository]);
+
+  useEffect(() => {
+    if (weekData) void loadSchedule();
+  }, [weekData, loadSchedule]);
+
+  const generateSchedule = useCallback(async () => {
+    if (!weekData) return;
+    setGenerating(true);
+    setGenerateError(null);
+    try {
+      const result = await repository.generateDraftSchedule(weekData.week.id);
+      if (!result.success) {
+        setGenerateError(result.error ?? "Failed to generate schedule.");
+      } else {
+        await loadSchedule();
+        await loadOverview();
+      }
+    } catch (error) {
+      setGenerateError(readableError(error));
+    } finally {
+      setGenerating(false);
+    }
+  }, [weekData, repository, loadSchedule, loadOverview]);
 
   const createWeek = useCallback(async () => {
     if (!identity?.group) return;
@@ -1464,7 +1669,18 @@ export default function Prototype() {
     }
 
     if (activeTab === "week") {
-      return <WeekScreen driverConfirmed={driverConfirmed} />;
+      return (
+        <WeekScreen
+          week={weekData}
+          weekLoading={weekLoading}
+          schedule={schedule}
+          scheduleLoading={scheduleLoading}
+          isCoordinator={identity.membership?.role === "coordinator"}
+          onGenerate={() => void generateSchedule()}
+          generating={generating}
+          generateError={generateError}
+        />
+      );
     }
 
     if (activeTab === "coordinate") {
@@ -1477,6 +1693,9 @@ export default function Prototype() {
           isCoordinator={identity.membership?.role === "coordinator"}
           onCreateWeek={() => void createWeek()}
           creatingWeek={creatingWeek}
+          onGenerate={() => void generateSchedule()}
+          generating={generating}
+          generateError={generateError}
         />
       );
     }
