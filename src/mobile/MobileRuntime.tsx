@@ -1,10 +1,22 @@
 import { useEffect, type PropsWithChildren } from "react";
-import { MobileDeviceProvider, useMobileDevice } from "./Device";
+import { browserDevice, MobileDeviceProvider, useMobileDevice } from "./Device";
 import { KeyboardDock, KeyboardProvider, useKeyboard } from "./Keyboard";
 import { PhoneFrame } from "./PhoneFrame";
 import { HomeIndicator, StatusBar } from "./components";
 
 export function MobileRuntime({ children }: PropsWithChildren) {
+  if (import.meta.env.PROD) {
+    return (
+      <MobileDeviceProvider device={browserDevice}>
+        <KeyboardProvider>
+          <div className="mobile-runtime-frameless">
+            <MobileAppViewport>{children}</MobileAppViewport>
+          </div>
+        </KeyboardProvider>
+      </MobileDeviceProvider>
+    );
+  }
+
   return (
     <MobileDeviceProvider>
       <PhoneFrame>

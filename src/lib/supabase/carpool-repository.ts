@@ -4,6 +4,7 @@ import type {
   ConfirmationResponse,
   Database,
   DrivePreference,
+  Json,
   Tables,
   TablesInsert,
 } from "./database.types";
@@ -97,6 +98,34 @@ function unwrapRequired<T>(
 
 export class CarpoolRepository {
   constructor(private readonly client: SupabaseClient<Database>) {}
+
+  /**
+   * Best-effort audit trail append. Audit failures are swallowed so the
+   * user's primary action is never blocked by an audit write. The RLS
+   * policy on audit_events requires actor_profile_id = auth.uid().
+   */
+  private async recordAudit(
+    groupId: string,
+    action: string,
+    entityType: string,
+    entityId: string | null = null,
+    details: Json = {},
+  ): Promise<void> {
+    try {
+      const userResult = await this.client.auth.getUser();
+      if (userResult.error || !userResult.data.user) return;
+      await this.client.from("audit_events").insert({
+        group_id: groupId,
+        actor_profile_id: userResult.data.user.id,
+        action,
+        entity_type: entityType,
+        entity_id: entityId,
+        details,
+      });
+    } catch {
+      // Best-effort: do not surface audit failures to the user.
+    }
+  }
 
   async getCurrentProfile() {
     const userResult = await this.client.auth.getUser();
@@ -245,7 +274,7 @@ export class CarpoolRepository {
       throw new Error("Enter your child's first and last name.");
     }
 
-    return unwrapRequired(
+    const created = unwrapRequired<Tables<"children">>(
       await this.client
         .from("children")
         .insert({
@@ -258,37 +287,62 @@ export class CarpoolRepository {
         .select("*")
         .single(),
     );
+    await this.recordAudit(
+      groupId,
+      "child_added",
+      "child",
+      created.id,
+      { household_id: householdId, first_name: trimmedFirst, last_name: trimmedLast },
+    );
+    return created;
   }
 
   async updateChild(childId: string, updates: { firstName?: string; lastName?: string }) {
+    const updatePayload: Partial<{ first_name: string; last_name: string }> = {};
     if (updates.firstName !== undefined) {
       const trimmed = updates.firstName.trim();
       if (!trimmed) throw new Error("First name cannot be empty.");
-      unwrap(
-        await this.client
-          .from("children")
-          .update({ first_name: trimmed })
-          .eq("id", childId),
-      );
+      updatePayload.first_name = trimmed;
     }
     if (updates.lastName !== undefined) {
       const trimmed = updates.lastName.trim();
       if (!trimmed) throw new Error("Last name cannot be empty.");
-      unwrap(
-        await this.client
-          .from("children")
-          .update({ last_name: trimmed })
-          .eq("id", childId),
-      );
+      updatePayload.last_name = trimmed;
     }
+    if (Object.keys(updatePayload).length === 0) return;
+
+    const updated = unwrapRequired<Tables<"children">>(
+      await this.client
+        .from("children")
+        .update(updatePayload)
+        .eq("id", childId)
+        .select("*")
+        .single(),
+    );
+    await this.recordAudit(
+      updated.group_id,
+      "child_updated",
+      "child",
+      childId,
+      { updates },
+    );
   }
 
   async deactivateChild(childId: string) {
-    unwrap(
+    const updated = unwrapRequired<Tables<"children">>(
       await this.client
         .from("children")
         .update({ active: false })
-        .eq("id", childId),
+        .eq("id", childId)
+        .select("*")
+        .single(),
+    );
+    await this.recordAudit(
+      updated.group_id,
+      "child_removed",
+      "child",
+      childId,
+      { first_name: updated.first_name, last_name: updated.last_name },
     );
   }
 
@@ -328,7 +382,7 @@ export class CarpoolRepository {
     };
 
     if (existing) {
-      return unwrapRequired(
+      const updated = unwrapRequired<Tables<"vehicles">>(
         await this.client
           .from("vehicles")
           .update(payload)
@@ -336,9 +390,17 @@ export class CarpoolRepository {
           .select("*")
           .single(),
       );
+      await this.recordAudit(
+        groupId,
+        "vehicle_updated",
+        "vehicle",
+        updated.id,
+        { label: trimmedLabel, child_passenger_capacity: fields.childPassengerCapacity },
+      );
+      return updated;
     }
 
-    return unwrapRequired(
+    const created = unwrapRequired<Tables<"vehicles">>(
       await this.client
         .from("vehicles")
         .insert({
@@ -350,6 +412,14 @@ export class CarpoolRepository {
         .select("*")
         .single(),
     );
+    await this.recordAudit(
+      groupId,
+      "vehicle_added",
+      "vehicle",
+      created.id,
+      { household_id: householdId, label: trimmedLabel, child_passenger_capacity: fields.childPassengerCapacity },
+    );
+    return created;
   }
 
   async listWeeks(groupId: string) {
@@ -429,6 +499,13 @@ export class CarpoolRepository {
     );
 
     const trips = await this.listTripsForWeek(week.id);
+    await this.recordAudit(
+      groupId,
+      "week_created",
+      "week",
+      week.id,
+      { starts_on: startsOn, trip_count: trips.length },
+    );
     return { week, trips };
   }
 
@@ -495,7 +572,7 @@ export class CarpoolRepository {
     if (userResult.error) throw new Error(userResult.error.message);
     if (!userResult.data.user) throw new Error("Sign in again to continue.");
 
-    unwrapRequired(
+    const updated = unwrapRequired<Tables<"weekly_checkins">>(
       await this.client
         .from("weekly_checkins")
         .update({
@@ -508,10 +585,17 @@ export class CarpoolRepository {
         .select("*")
         .single(),
     );
+    await this.recordAudit(
+      updated.group_id,
+      "checkin_submitted",
+      "weekly_checkin",
+      checkinId,
+      { max_drives: maxDrives },
+    );
   }
 
   async reopenCheckin(checkinId: string) {
-    unwrap(
+    const updated = unwrapRequired<Tables<"weekly_checkins">>(
       await this.client
         .from("weekly_checkins")
         .update({
@@ -519,7 +603,15 @@ export class CarpoolRepository {
           submitted_by: null,
           submitted_at: null,
         })
-        .eq("id", checkinId),
+        .eq("id", checkinId)
+        .select("*")
+        .single(),
+    );
+    await this.recordAudit(
+      updated.group_id,
+      "checkin_reopened",
+      "weekly_checkin",
+      checkinId,
     );
   }
 
@@ -787,7 +879,7 @@ export class CarpoolRepository {
   }
 
   async publishSchedule(scheduleVersionId: string): Promise<void> {
-    unwrapRequired(
+    const updated = unwrapRequired<Tables<"schedule_versions">>(
       await this.client
         .from("schedule_versions")
         .update({
@@ -797,6 +889,13 @@ export class CarpoolRepository {
         .eq("id", scheduleVersionId)
         .select("*")
         .single(),
+    );
+    await this.recordAudit(
+      updated.group_id,
+      "schedule_published",
+      "schedule_version",
+      scheduleVersionId,
+      { version_number: updated.version_number, week_id: updated.week_id },
     );
   }
 

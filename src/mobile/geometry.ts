@@ -65,4 +65,28 @@ export const pixelGeometry = {
   },
 } as const satisfies MobileDeviceGeometry;
 
+export const browserGeometry = {
+  // Frameless geometry for production: fills the real viewport. Safe areas
+  // are handled by CSS env(safe-area-inset-*), and the native keyboard
+  // replaces the simulated KeyboardDock, so all values are zero.
+  device: {
+    width: 0,
+    height: 0,
+  },
+  screen: {
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    radius: 0,
+  },
+  safeArea: {
+    top: 0,
+    bottom: 0,
+  },
+  keyboard: {
+    height: 0,
+  },
+} as const satisfies MobileDeviceGeometry;
+
 export type IPhoneGeometry = typeof iphoneGeometry;

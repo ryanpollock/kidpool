@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
   AvatarIcon,
@@ -52,6 +52,39 @@ function oauthErrorFromLocation() {
   const search = new URLSearchParams(window.location.search);
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   return search.get("error_description") ?? hash.get("error_description");
+}
+
+type AppErrorBoundaryProps = { children: React.ReactNode };
+type AppErrorBoundaryState = { error: Error | null };
+
+class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
+  constructor(props: AppErrorBoundaryProps) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="error-boundary" data-testid="error-boundary" role="alert">
+          <span className="error-boundary-mark"><ExclamationTriangleIcon width="28" height="28" /></span>
+          <h1>Something went wrong.</h1>
+          <p className="helper-copy">We hit an unexpected error while loading the carpool.</p>
+          <button
+            className="primary-button"
+            onClick={() => this.setState({ error: null })}
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 function AuthLoadingScreen() {
@@ -350,20 +383,24 @@ function AssignmentRow({
 function HomeScreen({
   myAssignments,
   assignmentsLoading,
+  assignmentsError,
   schedulePublished,
   onConfirmAll,
   onReview,
   onCoverage,
   onAccount,
+  onRetryAssignments,
   working,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
+  assignmentsError: string | null;
   schedulePublished: boolean;
   onConfirmAll: () => void;
   onReview: () => void;
   onCoverage: () => void;
   onAccount: () => void;
+  onRetryAssignments: () => void;
   working: boolean;
 }) {
   const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
@@ -388,6 +425,13 @@ function HomeScreen({
 
       {assignmentsLoading ? (
         <p className="helper-copy">Loading your drives…</p>
+      ) : assignmentsError ? (
+        <section className="confirmation-hero confirmation-hero--done">
+          <span className="eyebrow">This week</span>
+          <h1>We couldn’t load your drives</h1>
+          <div className="auth-error" role="alert">{assignmentsError}</div>
+          <button className="primary-button" data-testid="retry-load-assignments" onClick={onRetryAssignments}>Try again</button>
+        </section>
       ) : noAssignments ? (
         <section className="confirmation-hero confirmation-hero--done">
           <span className="eyebrow">This week</span>
@@ -568,6 +612,7 @@ function PlanScreen({
   driverProfileId,
   groupId,
   onReloadCheckin,
+  onReloadWeek,
   isCoordinator,
   onCreateWeek,
 }: {
@@ -582,6 +627,7 @@ function PlanScreen({
   driverProfileId: string;
   groupId: string;
   onReloadCheckin: () => void;
+  onReloadWeek: () => void;
   isCoordinator: boolean;
   onCreateWeek: () => void;
 }) {
@@ -617,7 +663,7 @@ function PlanScreen({
           <h1>Plan next week</h1>
         </header>
         <div className="auth-error" role="alert">{weekError}</div>
-        <button className="primary-button" onClick={onReloadCheckin}>Try again</button>
+        <button className="primary-button" data-testid="retry-load-week" onClick={onReloadWeek}>Try again</button>
       </div>
     );
   }
@@ -850,21 +896,29 @@ function PlanScreen({
 function WeekScreen({
   week,
   weekLoading,
+  weekError,
   schedule,
   scheduleLoading,
+  scheduleError,
   isCoordinator,
   onGenerate,
   generating,
   generateError,
+  onReloadWeek,
+  onReloadSchedule,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
+  weekError: string | null;
   schedule: ScheduleVersionWithRosters | null;
   scheduleLoading: boolean;
+  scheduleError: string | null;
   isCoordinator: boolean;
   onGenerate: () => void;
   generating: boolean;
   generateError: string | null;
+  onReloadWeek: () => void;
+  onReloadSchedule: () => void;
 }) {
   if (weekLoading) {
     return (
@@ -874,6 +928,19 @@ function WeekScreen({
           <h1>This week</h1>
         </header>
         <p className="helper-copy">Loading…</p>
+      </div>
+    );
+  }
+
+  if (weekError) {
+    return (
+      <div className="screen-content week-screen" data-testid="week-screen">
+        <header className="page-title">
+          <span className="eyebrow">Family schedule</span>
+          <h1>This week</h1>
+        </header>
+        <div className="auth-error" role="alert">{weekError}</div>
+        <button className="primary-button" data-testid="retry-load-week" onClick={onReloadWeek}>Try again</button>
       </div>
     );
   }
@@ -911,6 +978,19 @@ function WeekScreen({
           <h1>{startDate.short} – {endDate.short}</h1>
         </header>
         <p className="helper-copy">Loading schedule…</p>
+      </div>
+    );
+  }
+
+  if (scheduleError) {
+    return (
+      <div className="screen-content week-screen" data-testid="week-screen">
+        <header className="page-title">
+          <span className="eyebrow">Family schedule</span>
+          <h1>{startDate.short} – {endDate.short}</h1>
+        </header>
+        <div className="auth-error" role="alert">{scheduleError}</div>
+        <button className="primary-button" data-testid="retry-load-schedule" onClick={onReloadSchedule}>Try again</button>
       </div>
     );
   }
@@ -1041,31 +1121,41 @@ function WeekScreen({
 function CoordinatorScreen({
   week,
   weekLoading,
+  weekError,
   overview,
   overviewLoading,
+  overviewError,
   isCoordinator,
   onCreateWeek,
   creatingWeek,
+  createWeekError,
   onGenerate,
   generating,
   generateError,
   scheduleStatus,
   onPublish,
   publishing,
+  onReloadWeek,
+  onReloadOverview,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
+  weekError: string | null;
   overview: WeekOverview | null;
   overviewLoading: boolean;
+  overviewError: string | null;
   isCoordinator: boolean;
   onCreateWeek: () => void;
   creatingWeek: boolean;
+  createWeekError: string | null;
   onGenerate: () => void;
   generating: boolean;
   generateError: string | null;
   scheduleStatus: "draft" | "published" | null;
   onPublish: () => void;
   publishing: boolean;
+  onReloadWeek: () => void;
+  onReloadOverview: () => void;
 }) {
   if (weekLoading) {
     return (
@@ -1079,6 +1169,19 @@ function CoordinatorScreen({
     );
   }
 
+  if (weekError) {
+    return (
+      <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
+        <header className="page-title">
+          <span className="eyebrow">Coordinator view</span>
+          <h1>Weekly coverage</h1>
+        </header>
+        <div className="auth-error" role="alert">{weekError}</div>
+        <button className="primary-button" data-testid="retry-load-week" onClick={onReloadWeek}>Try again</button>
+      </div>
+    );
+  }
+
   if (!week) {
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
@@ -1088,6 +1191,7 @@ function CoordinatorScreen({
         </header>
         <div className="empty-state">
           <p>No week has been created yet.</p>
+          {createWeekError ? <div className="auth-error" role="alert">{createWeekError}</div> : null}
           {isCoordinator ? (
             <button className="primary-button" data-testid="create-week-coord" disabled={creatingWeek} onClick={onCreateWeek}>
               {creatingWeek ? "Creating…" : "Create next week"}
@@ -1114,11 +1218,20 @@ function CoordinatorScreen({
         <p>{startDate.short} – {endDate.short}</p>
       </header>
 
-      <section className="coverage-summary">
-        <div><strong>{submittedCount}</strong><span>Submitted</span></div>
-        <div><strong>{draftCount}</strong><span>In progress</span></div>
-        <div className="coverage-summary--alert"><strong>{notStartedCount}</strong><span>Not started</span></div>
-      </section>
+      {createWeekError ? <div className="auth-error" role="alert">{createWeekError}</div> : null}
+
+      {overviewError ? (
+        <section className="coverage-summary coverage-summary--error">
+          <div className="auth-error" role="alert">{overviewError}</div>
+          <button className="secondary-button" data-testid="retry-load-overview" onClick={onReloadOverview}>Retry overview</button>
+        </section>
+      ) : (
+        <section className="coverage-summary">
+          <div><strong>{submittedCount}</strong><span>Submitted</span></div>
+          <div><strong>{draftCount}</strong><span>In progress</span></div>
+          <div className="coverage-summary--alert"><strong>{notStartedCount}</strong><span>Not started</span></div>
+        </section>
+      )}
 
       {isCoordinator ? (
         <button className="secondary-button" data-testid="create-week-coord" disabled={creatingWeek} onClick={onCreateWeek}>
@@ -1479,15 +1592,19 @@ export default function Prototype() {
   const [checkinLoading, setCheckinLoading] = useState(false);
   const [overview, setOverview] = useState<WeekOverview | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
   const [schedule, setSchedule] = useState<ScheduleVersionWithRosters | null>(null);
   const [scheduleLoading, setScheduleLoading] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
   const [myAssignments, setMyAssignments] = useState<MyDriverAssignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
   const [confirmWorking, setConfirmWorking] = useState(false);
   const [creatingWeek, setCreatingWeek] = useState(false);
+  const [createWeekError, setCreateWeekError] = useState<string | null>(null);
   const [authWorking, setAuthWorking] = useState(false);
   const [authError, setAuthError] = useState<string | null>(() => oauthErrorFromLocation());
   const [activeTab, setActiveTab] = useState<AppTab>("home");
@@ -1568,11 +1685,13 @@ export default function Prototype() {
   const loadOverview = useCallback(async () => {
     if (!identity?.group || !weekData) return;
     setOverviewLoading(true);
+    setOverviewError(null);
     try {
       const data = await repository.getWeekOverview(weekData.week.id, identity.group.id);
       setOverview(data);
-    } catch {
+    } catch (error) {
       setOverview(null);
+      setOverviewError(readableError(error));
     } finally {
       setOverviewLoading(false);
     }
@@ -1593,6 +1712,7 @@ export default function Prototype() {
   const loadSchedule = useCallback(async () => {
     if (!identity?.group || !weekData) return;
     setScheduleLoading(true);
+    setScheduleError(null);
     try {
       const roster = await repository.getGroupRoster(identity.group.id);
       const version = await repository.getLatestScheduleVersion(
@@ -1600,8 +1720,9 @@ export default function Prototype() {
         roster.children, roster.vehicles, roster.profiles,
       );
       setSchedule(version);
-    } catch {
+    } catch (error) {
       setSchedule(null);
+      setScheduleError(readableError(error));
     } finally {
       setScheduleLoading(false);
     }
@@ -1633,6 +1754,7 @@ export default function Prototype() {
   const loadMyAssignments = useCallback(async () => {
     if (!identity?.group || !schedule) return;
     setAssignmentsLoading(true);
+    setAssignmentsError(null);
     try {
       const roster = await repository.getGroupRoster(identity.group.id);
       const assignments = await repository.getMyDriverAssignments(
@@ -1644,8 +1766,9 @@ export default function Prototype() {
         roster.vehicles,
       );
       setMyAssignments(assignments);
-    } catch {
+    } catch (error) {
       setMyAssignments([]);
+      setAssignmentsError(readableError(error));
     } finally {
       setAssignmentsLoading(false);
     }
@@ -1687,13 +1810,15 @@ export default function Prototype() {
   const createWeek = useCallback(async () => {
     if (!identity?.group) return;
     setCreatingWeek(true);
+    setCreateWeekError(null);
     try {
       await repository.createWeekWithTrips(
         identity.group.id, nextMonday(),
         identity.group.meeting_point, identity.group.school_name,
       );
       await loadWeek();
-    } catch {
+    } catch (error) {
+      setCreateWeekError(readableError(error));
     } finally {
       setCreatingWeek(false);
     }
@@ -1820,6 +1945,7 @@ export default function Prototype() {
           driverProfileId={identity.profile.id}
           groupId={identity.group.id}
           onReloadCheckin={() => void loadCheckin()}
+          onReloadWeek={() => void loadWeek()}
           isCoordinator={identity.membership?.role === "coordinator"}
           onCreateWeek={() => void createWeek()}
         />
@@ -1831,12 +1957,16 @@ export default function Prototype() {
         <WeekScreen
           week={weekData}
           weekLoading={weekLoading}
+          weekError={weekError}
           schedule={schedule}
           scheduleLoading={scheduleLoading}
+          scheduleError={scheduleError}
           isCoordinator={identity.membership?.role === "coordinator"}
           onGenerate={() => void generateSchedule()}
           generating={generating}
           generateError={generateError}
+          onReloadWeek={() => void loadWeek()}
+          onReloadSchedule={() => void loadSchedule()}
         />
       );
     }
@@ -1846,17 +1976,22 @@ export default function Prototype() {
         <CoordinatorScreen
           week={weekData}
           weekLoading={weekLoading}
+          weekError={weekError}
           overview={overview}
           overviewLoading={overviewLoading}
+          overviewError={overviewError}
           isCoordinator={identity.membership?.role === "coordinator"}
           onCreateWeek={() => void createWeek()}
           creatingWeek={creatingWeek}
+          createWeekError={createWeekError}
           onGenerate={() => void generateSchedule()}
           generating={generating}
           generateError={generateError}
           scheduleStatus={schedule?.version.status === "published" ? "published" : schedule?.version.status === "draft" ? "draft" : null}
           onPublish={() => void publishSchedule()}
           publishing={publishing}
+          onReloadWeek={() => void loadWeek()}
+          onReloadOverview={() => void loadOverview()}
         />
       );
     }
@@ -1865,11 +2000,13 @@ export default function Prototype() {
       <HomeScreen
         myAssignments={myAssignments}
         assignmentsLoading={assignmentsLoading}
+        assignmentsError={assignmentsError}
         schedulePublished={schedule?.version.status === "published"}
         onConfirmAll={() => void confirmAll()}
         onReview={() => setReviewOpen(true)}
         onCoverage={() => navigate("week")}
         onAccount={() => setAccountOpen(true)}
+        onRetryAssignments={() => void loadMyAssignments()}
         working={confirmWorking}
       />
     );
@@ -1948,11 +2085,13 @@ export default function Prototype() {
 
   return (
     <div className="prototype-shell">
-      <MobileScroll className="app-screen">
-        <main className="app-main" aria-label="Midtown Carpool app">
-          {renderContent()}
-        </main>
-      </MobileScroll>
+      <AppErrorBoundary>
+        <MobileScroll className="app-screen">
+          <main className="app-main" aria-label="Midtown Carpool app">
+            {renderContent()}
+          </main>
+        </MobileScroll>
+      </AppErrorBoundary>
       {!reviewOpen && !accountOpen ? (
         <nav className="bottom-nav" aria-label="Primary navigation">
           {navItems.map(({ id, label, icon: Icon }) => (

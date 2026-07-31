@@ -7,3 +7,6 @@ playwright-report/
 !.env.example
 .supabase/
 supabase/.temp/
+.vercel/
+.vercel
+.env*

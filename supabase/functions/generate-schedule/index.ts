@@ -230,6 +230,24 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    const assignmentCount = outputs.trips.reduce(
+      (sum, t) => sum + t.assignments.length,
+      0,
+    );
+    await supabase.from("audit_events").insert({
+      group_id: groupId,
+      actor_profile_id: userId,
+      action: "schedule_generated",
+      entity_type: "schedule_version",
+      entity_id: newVersion.id,
+      details: {
+        version_number: newVersion.version_number,
+        week_id: weekId,
+        assignment_count: assignmentCount,
+        algorithm: ALGORITHM_VERSION,
+      },
+    });
+
     return new Response(
       JSON.stringify({
         success: true,

@@ -256,6 +256,47 @@ button {
   bottom: var(--device-safe-area-bottom, 48px);
 }
 
+/* ── Frameless production runtime ──────────────────────────────────
+   In production the phone-frame is stripped. The app fills the real
+   viewport on mobile and centers in a phone-width column on desktop.
+   Real safe areas come from CSS env(safe-area-inset-*).
+*/
+.mobile-runtime-frameless {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: #ffffff;
+  --device-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.mobile-runtime-frameless .mobile-app-viewport {
+  --device-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Restore normal cursors — the simulated phone-cursor is a dev-only
+   feature. */
+.mobile-runtime-frameless .mobile-scroll[data-dragging="true"] {
+  cursor: default;
+}
+
+/* Desktop: center the app in a phone-width column so it stays usable. */
+@media (min-width: 600px) {
+  .mobile-runtime-frameless {
+    position: relative;
+    width: 100%;
+    max-width: 420px;
+    height: 100dvh;
+    margin: 0 auto;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.08);
+  }
+
+  body {
+    background: #f5f5f5;
+  }
+}
+
 .flow-stack {
   --flow-header-height: 0px;
   --flow-header-content-height: 0px;
