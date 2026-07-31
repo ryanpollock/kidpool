@@ -64,17 +64,21 @@ Deno.serve(async (req: Request) => {
       return jsonError("Only coordinators can generate schedules.", 403);
     }
 
-    const [tripsRes, checkinsRes, rideRequestsRes, availabilityRes, vehiclesRes, childrenRes, membershipsRes] = await Promise.all([
+    const [tripsRes, checkinsRes, vehiclesRes, childrenRes, membershipsRes] = await Promise.all([
       supabase.from("trips").select("id, service_date, direction, week_id, group_id").eq("week_id", weekId).eq("group_id", groupId).order("service_date").order("direction"),
       supabase.from("weekly_checkins").select("id, household_id, max_drives").eq("week_id", weekId).eq("group_id", groupId),
-      supabase.from("ride_requests").select("trip_id, child_id, needs_ride, group_id").in("trip_id", tripsRes.data?.map((t: { id: string }) => t.id) ?? []),
-      supabase.from("driver_availability").select("trip_id, driver_profile_id, vehicle_id, preference, group_id").in("trip_id", tripsRes.data?.map((t: { id: string }) => t.id) ?? []),
       supabase.from("vehicles").select("id, household_id, label, child_passenger_capacity, active, group_id").eq("group_id", groupId).eq("active", true),
       supabase.from("children").select("id, household_id, first_name, last_name, active, group_id").eq("group_id", groupId).eq("active", true),
       supabase.from("memberships").select("profile_id, household_id, status, group_id").eq("group_id", groupId).eq("status", "active"),
     ]);
 
     if (tripsRes.error || !tripsRes.data) return jsonError("Failed to load trips.", 500);
+
+    const tripIds = tripsRes.data.map((t: { id: string }) => t.id);
+    const [rideRequestsRes, availabilityRes] = await Promise.all([
+      supabase.from("ride_requests").select("trip_id, child_id, needs_ride, group_id").in("trip_id", tripIds),
+      supabase.from("driver_availability").select("trip_id, driver_profile_id, vehicle_id, preference, group_id").in("trip_id", tripIds),
+    ]);
 
     const profileIds = (membershipsRes.data ?? []).map((m: { profile_id: string }) => m.profile_id);
     const profilesRes = profileIds.length
