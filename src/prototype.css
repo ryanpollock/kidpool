@@ -1247,6 +1247,7 @@ button {
 .leg > span:nth-child(2) {
   display: grid;
   gap: 3px;
+  min-width: 0;
 }
 
 .leg small {
