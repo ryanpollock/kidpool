@@ -194,6 +194,17 @@ export class CarpoolRepository {
     return created;
   }
 
+  async listGroupHouseholdNames(groupId: string): Promise<string[]> {
+    const rows = unwrapRequired(
+      await this.client
+        .from("households")
+        .select("name")
+        .eq("group_id", groupId)
+        .order("name"),
+    );
+    return rows.map((r: { name: string }) => r.name);
+  }
+
   async joinHousehold(groupId: string, joinCode: string) {
     return unwrap(
       await this.client.rpc("join_household_by_code", {

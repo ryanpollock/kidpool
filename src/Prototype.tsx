@@ -178,6 +178,8 @@ function OnboardingScreen({
   const [createdCode, setCreatedCode] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [existingNames, setExistingNames] = useState<string[]>([]);
+  const [nameWarning, setNameWarning] = useState<string | null>(null);
 
   const saveProfile = async () => {
     const normalizedName = fullName.trim().replace(/\s+/g, " ");
@@ -215,6 +217,35 @@ function OnboardingScreen({
     } finally {
       setWorking(false);
     }
+  };
+
+  const checkNameMatch = (typed: string) => {
+    if (!typed.trim() || existingNames.length === 0) {
+      setNameWarning(null);
+      return;
+    }
+    const typedLower = typed.trim().toLowerCase();
+    for (const existing of existingNames) {
+      const existingLower = existing.trim().toLowerCase();
+      const firstWordTyped = typedLower.split(/\s+/)[0];
+      const firstWordExisting = existingLower.split(/\s+/)[0];
+      if (
+        firstWordTyped === firstWordExisting ||
+        typedLower.includes(existingLower) ||
+        existingLower.includes(typedLower)
+      ) {
+        setNameWarning(
+          `A household called "${existing}" already exists. If that's yours, ask them for your join code instead.`,
+        );
+        return;
+      }
+    }
+    setNameWarning(null);
+  };
+
+  const onHouseholdNameChange = (value: string) => {
+    setHouseholdName(value);
+    checkNameMatch(value);
   };
 
   if (createdCode) {
@@ -261,7 +292,13 @@ function OnboardingScreen({
       {mode === "choose" ? (
         <div className="onboarding-choice">
           <p>Are you setting up your household, or joining one another parent already created?</p>
-          <button className="choice-card" onClick={() => setMode("create")}>
+          <button className="choice-card" onClick={async () => {
+            try {
+              const names = await repository.listGroupHouseholdNames(identity.group.id);
+              setExistingNames(names);
+            } catch { /* silent — worst case, no warning shows */ }
+            setMode("create");
+          }}>
             <span><HomeIcon /></span>
             <span><strong>Create my household</strong><small>I’m the first parent from my family</small></span>
             <ChevronRightIcon />
@@ -271,21 +308,23 @@ function OnboardingScreen({
             <span><strong>Join my household</strong><small>I received a code from another parent</small></span>
             <ChevronRightIcon />
           </button>
+          <p>Not sure which to choose? If your spouse already signed up, ask them for your household code. If you&apos;re the first in your family, create a new household and share the code with them.</p>
         </div>
       ) : null}
 
       {mode === "create" ? (
         <div className="onboarding-action">
-          <button className="back-link" onClick={() => setMode("choose")}>← Back</button>
+          <button className="back-link" onClick={() => { setMode("choose"); setNameWarning(null); }}>← Back</button>
           <label className="auth-field">
             <span>Household name</span>
             <KeyboardInput
               value={householdName}
-              onChange={(event) => setHouseholdName(event.target.value)}
+              onChange={(event) => onHouseholdNameChange(event.target.value)}
               placeholder="For example, Pollock family"
               autoComplete="off"
             />
           </label>
+          {nameWarning ? <div className="name-warning" role="note">{nameWarning}</div> : null}
           {error ? <div className="auth-error" role="alert">{error}</div> : null}
           <button className="primary-button" disabled={working} onClick={() => void createHousehold()}>
             {working ? "Creating household…" : "Create household"}

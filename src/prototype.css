@@ -348,6 +348,16 @@ button {
   margin-top: 13px;
 }
 
+.name-warning {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--amber-pale);
+  color: var(--amber);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .onboarding-signout {
   display: block;
   margin: 24px auto 0;
