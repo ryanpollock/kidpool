@@ -30,7 +30,7 @@ import {
   type WeekOverview,
   type WeekWithTrips,
 } from "./lib/supabase";
-import type { AssignmentStatus, DefaultDrivePref, DrivePreference } from "./lib/supabase/database.types";
+import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference } from "./lib/supabase/database.types";
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
 
@@ -518,6 +518,67 @@ function DrivePreferenceGrid({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function RideNeedsGrid({
+  children,
+  needs,
+  onChange,
+  disabled,
+}: {
+  children: Tables<"children">[];
+  needs: DefaultRideNeed[];
+  onChange: (next: DefaultRideNeed[]) => void;
+  disabled: boolean;
+}) {
+  const toggle = (childId: string, day: number, direction: "morning" | "afternoon") => {
+    if (disabled) return;
+    const existing = needs.find(
+      (n) => n.child_id === childId && n.day === day && n.direction === direction,
+    );
+    if (existing) {
+      onChange(needs.map((n) => (n === existing ? { ...n, needs_ride: !n.needs_ride } : n)));
+    } else {
+      onChange([...needs, { child_id: childId, day, direction, needs_ride: true }]);
+    }
+  };
+
+  return (
+    <div className="ride-needs-grid" data-testid="ride-needs-grid">
+      {children.map((child) => (
+        <div className="ride-needs-child" key={child.id}>
+          <strong className="ride-needs-name">{child.first_name}</strong>
+          {TEMPLATE_DAYS.map((day) => {
+            const dayLabel = WEEKDAY_LABELS[day];
+            return (
+              <div className="ride-needs-row" key={day}>
+                <span className="ride-needs-day">{dayLabel}</span>
+                {(["morning", "afternoon"] as const).map((direction) => {
+                  const entry = needs.find(
+                    (n) => n.child_id === child.id && n.day === day && n.direction === direction,
+                  );
+                  const riding = entry?.needs_ride ?? false;
+                  return (
+                    <button
+                      key={direction}
+                      className={riding ? "ride-pill ride-pill--on" : "ride-pill"}
+                      disabled={disabled}
+                      onClick={() => toggle(child.id, day, direction)}
+                      aria-pressed={riding}
+                      aria-label={`${child.first_name} ${dayLabel} ${direction}`}
+                      type="button"
+                    >
+                      {direction === "morning" ? "AM" : "PM"}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }
@@ -1564,6 +1625,11 @@ function AccountScreen({
   const [driveDefaultsSaving, setDriveDefaultsSaving] = useState(false);
   const [driveDefaultsError, setDriveDefaultsError] = useState<string | null>(null);
 
+  const [rideNeeds, setRideNeeds] = useState<DefaultRideNeed[]>([]);
+  const [rideNeedsLoading, setRideNeedsLoading] = useState(true);
+  const [standardWeekSaving, setStandardWeekSaving] = useState(false);
+  const [standardWeekError, setStandardWeekError] = useState<string | null>(null);
+
   const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
 
   useEffect(() => {
@@ -1578,26 +1644,37 @@ function AccountScreen({
     let mounted = true;
     (async () => {
       try {
-        const defaults = await repository.getDefaultDrivePreferences(profile.id);
-        if (mounted && defaults.length > 0) setDriveDefaults(defaults);
+        const [defaults, needs] = await Promise.all([
+          repository.getDefaultDrivePreferences(profile.id),
+          repository.getDefaultRideNeeds(householdId),
+        ]);
+        if (mounted) {
+          if (defaults.length > 0) setDriveDefaults(defaults);
+          const childIds = new Set((setup?.children ?? []).map((c) => c.id));
+          setRideNeeds(needs.filter((n) => childIds.has(n.child_id)));
+        }
       } catch {
         /* silent — defaults stay empty */
       } finally {
-        if (mounted) setDriveDefaultsLoading(false);
+        if (mounted) {
+          setDriveDefaultsLoading(false);
+          setRideNeedsLoading(false);
+        }
       }
     })();
     return () => { mounted = false; };
-  }, [repository, profile.id]);
+  }, [repository, profile.id, householdId, setup]);
 
-  const saveDriveDefaults = async () => {
-    setDriveDefaultsSaving(true);
-    setDriveDefaultsError(null);
+  const saveStandardWeek = async () => {
+    setStandardWeekSaving(true);
+    setStandardWeekError(null);
     try {
+      await repository.saveDefaultRideNeeds(householdId, rideNeeds);
       await repository.saveDefaultDrivePreferences(driveDefaults);
     } catch (nextError) {
-      setDriveDefaultsError(readableError(nextError));
+      setStandardWeekError(readableError(nextError));
     } finally {
-      setDriveDefaultsSaving(false);
+      setStandardWeekSaving(false);
     }
   };
 
@@ -1815,32 +1892,48 @@ function AccountScreen({
         </div>
       </section>
 
-      <section className="household-section" aria-labelledby="drive-defaults-heading">
+      <section className="household-section" aria-labelledby="standard-week-heading">
         <div className="section-heading-row">
-          <h2 id="drive-defaults-heading">Standard driving preferences</h2>
+          <h2 id="standard-week-heading">Standard week</h2>
         </div>
         <p className="household-static">These fill in automatically each week. You can still adjust any week.</p>
-        {driveDefaultsLoading ? (
+        {driveDefaultsLoading || rideNeedsLoading ? (
           <p className="household-static">Loading…</p>
         ) : (
           <>
-            <DrivePreferenceGrid
-              preferences={driveDefaults}
-              onChange={setDriveDefaults}
-              hasVehicle={!!activeVehicle}
-              disabled={driveDefaultsSaving}
-            />
-            {!activeVehicle ? (
-              <p className="helper-copy">Add a vehicle above to unlock driving preferences.</p>
+            {(setup?.children.length ?? 0) > 0 ? (
+              <div className="standard-week-subsection">
+                <h3 className="standard-week-label">Rides for</h3>
+                <RideNeedsGrid
+                  children={setup?.children ?? []}
+                  needs={rideNeeds}
+                  onChange={setRideNeeds}
+                  disabled={standardWeekSaving}
+                />
+              </div>
             ) : null}
-            {driveDefaultsError ? <div className="auth-error" role="alert">{driveDefaultsError}</div> : null}
+
+            <div className="standard-week-subsection">
+              <h3 className="standard-week-label">Your driving</h3>
+              <DrivePreferenceGrid
+                preferences={driveDefaults}
+                onChange={setDriveDefaults}
+                hasVehicle={!!activeVehicle}
+                disabled={standardWeekSaving}
+              />
+              {!activeVehicle ? (
+                <p className="helper-copy">Add a vehicle above to unlock driving preferences.</p>
+              ) : null}
+            </div>
+
+            {standardWeekError ? <div className="auth-error" role="alert">{standardWeekError}</div> : null}
             <button
               className="primary-button"
-              disabled={driveDefaultsSaving}
-              onClick={() => void saveDriveDefaults()}
-              data-testid="save-drive-defaults"
+              disabled={standardWeekSaving}
+              onClick={() => void saveStandardWeek()}
+              data-testid="save-standard-week"
             >
-              {driveDefaultsSaving ? "Saving…" : "Save preferences"}
+              {standardWeekSaving ? "Saving…" : "Save standard week"}
             </button>
           </>
         )}
@@ -1973,6 +2066,16 @@ export default function Prototype() {
       );
       setCheckin(checkinRow);
       let details = await repository.getCheckinDetails(checkinRow.id);
+      let needsReload = false;
+
+      if (details.rideRequests.length === 0 && (householdSetup?.children.length ?? 0) > 0) {
+        await repository.applyDefaultRideNeeds(
+          checkinRow.id, identity.membership.household_id,
+          weekData.trips, householdSetup!.children,
+          identity.group.id, identity.profile.id,
+        );
+        needsReload = true;
+      }
 
       if (details.driverAvailability.length === 0) {
         const activeVehicle = householdSetup?.vehicles.find((v) => v.active) ?? null;
@@ -1980,6 +2083,10 @@ export default function Prototype() {
           checkinRow.id, identity.profile.id, weekData.trips,
           activeVehicle?.id ?? null, identity.group.id,
         );
+        needsReload = true;
+      }
+
+      if (needsReload) {
         details = await repository.getCheckinDetails(checkinRow.id);
       }
 

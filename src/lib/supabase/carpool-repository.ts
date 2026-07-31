@@ -4,6 +4,7 @@ import type {
   ConfirmationResponse,
   Database,
   DefaultDrivePref,
+  DefaultRideNeed,
   DrivePreference,
   Json,
   Tables,
@@ -210,6 +211,72 @@ export class CarpoolRepository {
           match.preference, groupId,
         );
       }
+    }
+  }
+
+  async getDefaultRideNeeds(householdId: string): Promise<DefaultRideNeed[]> {
+    const row = unwrap(
+      await this.client
+        .from("households")
+        .select("default_ride_needs")
+        .eq("id", householdId)
+        .maybeSingle(),
+    );
+    if (!row) return [];
+    const needs = row.default_ride_needs;
+    if (!Array.isArray(needs)) return [];
+    return needs as unknown as DefaultRideNeed[];
+  }
+
+  async saveDefaultRideNeeds(householdId: string, needs: DefaultRideNeed[]): Promise<void> {
+    const userResult = await this.client.auth.getUser();
+    if (userResult.error) throw new Error(userResult.error.message);
+    if (!userResult.data.user) throw new Error("Sign in again to continue.");
+
+    unwrap(
+      await this.client
+        .from("households")
+        .update({ default_ride_needs: needs })
+        .eq("id", householdId),
+    );
+  }
+
+  async applyDefaultRideNeeds(
+    checkinId: string,
+    householdId: string,
+    trips: Tables<"trips">[],
+    children: Tables<"children">[],
+    groupId: string,
+    createdBy: string,
+  ): Promise<void> {
+    const defaults = await this.getDefaultRideNeeds(householdId);
+    if (defaults.length === 0) return;
+
+    const rows: TablesInsert<"ride_requests">[] = [];
+    for (const trip of trips) {
+      const tripDate = new Date(trip.service_date + "T00:00:00");
+      const isoDay = tripDate.getDay() === 0 ? 7 : tripDate.getDay();
+      for (const child of children) {
+        const match = defaults.find(
+          (d) => d.child_id === child.id && d.day === isoDay && d.direction === trip.direction,
+        );
+        rows.push({
+          group_id: groupId,
+          checkin_id: checkinId,
+          trip_id: trip.id,
+          child_id: child.id,
+          needs_ride: match?.needs_ride ?? false,
+          created_by: createdBy,
+        });
+      }
+    }
+
+    if (rows.length > 0) {
+      unwrap(
+        await this.client
+          .from("ride_requests")
+          .upsert(rows, { onConflict: "trip_id,child_id" }),
+      );
     }
   }
 

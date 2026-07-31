@@ -35,6 +35,13 @@ export type DefaultDrivePref = {
   preference: DrivePreference;
 };
 
+export type DefaultRideNeed = {
+  child_id: string;
+  day: number;
+  direction: TripDirection;
+  needs_ride: boolean;
+};
+
 export type ProfileRow = Timestamps & {
   id: string;
   email: string;
@@ -57,6 +64,7 @@ export type HouseholdRow = Timestamps & {
   group_id: string;
   name: string;
   created_by: string;
+  default_ride_needs: DefaultRideNeed[] | null;
 };
 
 export type MembershipRow = Timestamps & {
@@ -234,6 +242,7 @@ export type Database = {
           group_id: string;
           name: string;
           created_by: string;
+          default_ride_needs?: DefaultRideNeed[] | null;
           created_at?: string;
           updated_at?: string;
         }
