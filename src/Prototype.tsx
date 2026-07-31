@@ -378,12 +378,6 @@ function weekLabel(startsOn: string): string {
   return `Week of ${start.short} – ${end.short}`;
 }
 
-function cycleDrivePreference(pref: DrivePreference): DrivePreference {
-  if (pref === "prefer") return "can";
-  if (pref === "can") return "cannot";
-  return "prefer";
-}
-
 function preferenceLabel(pref: DrivePreference): string {
   if (pref === "prefer") return "Prefer to drive";
   if (pref === "can") return "Can if needed";
@@ -688,7 +682,7 @@ function PlanScreen({
   repository: CarpoolRepository;
   driverProfileId: string;
   groupId: string;
-  onReloadCheckin: () => void;
+  onReloadCheckin: () => Promise<void>;
   onReloadWeek: () => void;
   isCoordinator: boolean;
   onCreateWeek: () => void;
@@ -696,6 +690,7 @@ function PlanScreen({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [maxDrives, setMaxDrives] = useState("2");
+  const [pendingDrive, setPendingDrive] = useState<Record<string, DrivePreference>>({});
 
   const submitted = checkin?.status === "submitted";
   const children = setup?.children ?? [];
@@ -798,22 +793,27 @@ function PlanScreen({
     }
   };
 
-  const toggleDrive = async (tripId: string) => {
+  const setDrivePreference = async (tripId: string, pref: DrivePreference) => {
     if (submitted || !checkin) return;
-    const current = driveMap.get(tripId) ?? "cannot";
-    const next = cycleDrivePreference(current);
-    if (next !== "cannot" && !activeVehicle) {
+    if (pref !== "cannot" && !activeVehicle) {
       setSubmitError("Add a vehicle in your account before volunteering to drive.");
       return;
     }
+    setPendingDrive((prev) => ({ ...prev, [tripId]: pref }));
     try {
       await repository.upsertDriverAvailability(
         checkin.id, tripId, driverProfileId,
-        activeVehicle?.id ?? null, next, groupId,
+        activeVehicle?.id ?? null, pref, groupId,
       );
-      onReloadCheckin();
+      await onReloadCheckin();
     } catch (error) {
       setSubmitError(readableError(error));
+    } finally {
+      setPendingDrive((prev) => {
+        const next = { ...prev };
+        delete next[tripId];
+        return next;
+      });
     }
   };
 
@@ -895,14 +895,29 @@ function PlanScreen({
                   );
                 })}
               </div>
-              <button
-                className={`drive-cycle drive-cycle--${driveMap.get(trip.id) ?? "cannot"}`}
-                disabled={submitted}
-                onClick={() => void toggleDrive(trip.id)}
+              <div
+                className="drive-segments"
+                role="group"
+                aria-label={`Your driving for ${direction === "morning" ? "morning" : "afternoon"}`}
               >
-                <span>You</span>
-                <span>{preferenceLabel(driveMap.get(trip.id) ?? "cannot")}</span>
-              </button>
+                {(["prefer", "can", "cannot"] as const).map((pref) => {
+                  const currentPref = pendingDrive[trip.id] ?? driveMap.get(trip.id) ?? "cannot";
+                  const active = currentPref === pref;
+                  const busy = pendingDrive[trip.id] !== undefined;
+                  return (
+                    <button
+                      key={pref}
+                      className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
+                      disabled={submitted || busy}
+                      onClick={() => void setDrivePreference(trip.id, pref)}
+                      aria-pressed={active}
+                      aria-label={preferenceLabel(pref)}
+                    >
+                      {pref === "prefer" ? "Prefer" : pref === "can" ? "Can" : "Can't"}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           );
         };
@@ -2066,7 +2081,7 @@ export default function Prototype() {
           repository={repository}
           driverProfileId={identity.profile.id}
           groupId={identity.group.id}
-          onReloadCheckin={() => void loadCheckin()}
+          onReloadCheckin={loadCheckin}
           onReloadWeek={() => void loadWeek()}
           isCoordinator={identity.membership?.role === "coordinator"}
           onCreateWeek={() => void createWeek()}

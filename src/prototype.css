@@ -1526,44 +1526,45 @@ button {
   opacity: 0.6;
 }
 
-.drive-cycle {
+.drive-segments {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
+  gap: 4px;
   width: 100%;
 }
 
-.drive-cycle span:first-child {
+.drive-segment {
+  flex: 1;
+  padding: 8px 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
   color: var(--ink-soft);
-  text-transform: uppercase;
-  font-size: 9px;
-  letter-spacing: 0.05em;
+  text-align: center;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.drive-cycle--prefer {
+.drive-segment--active.drive-segment--prefer {
   background: var(--teal-pale);
   border-color: var(--teal);
   color: var(--teal);
 }
 
-.drive-cycle--can {
+.drive-segment--active.drive-segment--can {
   background: var(--amber-pale);
   border-color: #e2c889;
   color: var(--amber);
 }
 
-.drive-cycle--cannot {
-  color: var(--ink-soft);
+.drive-segment--active.drive-segment--cannot {
+  background: var(--muted);
+  border-color: var(--ink-soft);
+  color: var(--ink);
 }
 
-.drive-cycle:disabled {
-  opacity: 0.7;
+.drive-segment:disabled {
+  opacity: 0.6;
 }
 
 .checkin-max-drives {

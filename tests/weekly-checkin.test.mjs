@@ -50,7 +50,7 @@ test("Exchange 4 plan screen is DB-backed with real week, trips, and check-in", 
   assert.match(source, /reopenCheckin/);
   assert.match(source, /rideMap/);
   assert.match(source, /driveMap/);
-  assert.match(source, /cycleDrivePreference/);
+  assert.match(source, /setDrivePreference/);
   assert.match(source, /preferenceLabel/);
 });
 
