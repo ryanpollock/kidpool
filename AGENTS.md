@@ -101,6 +101,15 @@ In development mode (`import.meta.env.DEV`), the app accepts `?testAuth=email|pa
 
 Integration and E2E tests create auth users and DB rows with `@test.kidpool` and `@e2e.kidpool` email domains. The cleanup functions delete ALL data for the pilot group (`c1000000-0000-4000-8000-000000000001`) — not just `deadbeef`-prefixed IDs — because the `weeks` table has a `unique(group_id, starts_on)` constraint that blocks inserts if stale weeks from other tests remain.
 
+### Hard-deleting a real user account
+
+```bash
+npm run delete-user <email>          # aborts if household has other active members
+npm run delete-user <email> --force  # deletes entire household including co-parents
+```
+
+Deletes profile, auth user, household, children, vehicles, checkins, assignments, and audit events in FK-safe order. `schedule_versions.generated_by` is set to NULL (published schedules preserved). Requires Supabase CLI linked to the project. See `scripts/delete-user.mjs`.
+
 ## Deployment
 
 - **GitHub repo:** `ryanpollock/kidpool` (public)

@@ -170,6 +170,7 @@ limit 100;
 - No emergency contact details are stored in the MVP.
 - Household data export: query all tables where `household_id = '<uuid>'`.
 - Household data deletion: set `memberships.status = 'removed'` and `children.active = false`. The household record is retained for audit history.
+- Hard-delete a user account (testing/reset): `npm run delete-user <email>` — removes profile, auth user, household, children, vehicles, checkins, assignments, and audit events in FK-safe order. Add `--force` if the household has co-parents. See `scripts/delete-user.mjs`.
 - End-of-school-year archival: export all tables, then delete child and vehicle records. Retain `audit_events` for one school year, then delete on a documented schedule.
 - A plain-language privacy notice should be shared with participating families before the pilot.
 
