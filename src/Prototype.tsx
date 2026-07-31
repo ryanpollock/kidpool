@@ -370,6 +370,14 @@ function formatTripDate(serviceDate: string) {
   return { weekday, short: `${month} ${day}`, full: `${weekday}, ${month} ${day}` };
 }
 
+function weekLabel(startsOn: string): string {
+  const start = formatTripDate(startsOn);
+  const endDate = new Date(startsOn + "T00:00:00");
+  endDate.setDate(endDate.getDate() + 4);
+  const end = formatTripDate(endDate.toISOString().slice(0, 10));
+  return `Week of ${start.short} – ${end.short}`;
+}
+
 function cycleDrivePreference(pref: DrivePreference): DrivePreference {
   if (pref === "prefer") return "can";
   if (pref === "can") return "cannot";
@@ -441,6 +449,7 @@ function HomeScreen({
   onRetryAssignments,
   working,
   avatarUrl,
+  weekStartsOn,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -453,11 +462,13 @@ function HomeScreen({
   onRetryAssignments: () => void;
   working: boolean;
   avatarUrl: string | null;
+  weekStartsOn: string | null;
 }) {
   const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = myAssignments.filter((a) => a.assignment.status === "confirmed");
   const allConfirmed = tentative.length === 0 && confirmed.length > 0;
   const noAssignments = myAssignments.length === 0;
+  const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
 
   return (
     <div className="screen-content home-screen" data-testid="home-screen">
@@ -478,14 +489,14 @@ function HomeScreen({
         <p className="helper-copy">Loading your drives…</p>
       ) : assignmentsError ? (
         <section className="confirmation-hero confirmation-hero--done">
-          <span className="eyebrow">This week</span>
+          <span className="eyebrow">{weekEyebrow}</span>
           <h1>We couldn’t load your drives</h1>
           <div className="auth-error" role="alert">{assignmentsError}</div>
           <button className="primary-button" data-testid="retry-load-assignments" onClick={onRetryAssignments}>Try again</button>
         </section>
       ) : noAssignments ? (
         <section className="confirmation-hero confirmation-hero--done">
-          <span className="eyebrow">This week</span>
+          <span className="eyebrow">{weekEyebrow}</span>
           <h1>No drives assigned</h1>
           <p className="hero-support">You haven’t been assigned to drive this week. Check the full schedule for details.</p>
         </section>
@@ -957,6 +968,7 @@ function WeekScreen({
   generateError,
   onReloadWeek,
   onReloadSchedule,
+  weekStartsOn,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -970,13 +982,15 @@ function WeekScreen({
   generateError: string | null;
   onReloadWeek: () => void;
   onReloadSchedule: () => void;
+  weekStartsOn: string | null;
 }) {
+  const weekHeading = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   if (weekLoading) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
         <header className="page-title">
           <span className="eyebrow">Family schedule</span>
-          <h1>This week</h1>
+          <h1>{weekHeading}</h1>
         </header>
         <p className="helper-copy">Loading…</p>
       </div>
@@ -988,7 +1002,7 @@ function WeekScreen({
       <div className="screen-content week-screen" data-testid="week-screen">
         <header className="page-title">
           <span className="eyebrow">Family schedule</span>
-          <h1>This week</h1>
+          <h1>{weekHeading}</h1>
         </header>
         <div className="auth-error" role="alert">{weekError}</div>
         <button className="primary-button" data-testid="retry-load-week" onClick={onReloadWeek}>Try again</button>
@@ -1001,7 +1015,7 @@ function WeekScreen({
       <div className="screen-content week-screen" data-testid="week-screen">
         <header className="page-title">
           <span className="eyebrow">Family schedule</span>
-          <h1>This week</h1>
+          <h1>{weekHeading}</h1>
         </header>
         <div className="empty-state">
           <p>No week has been created yet.</p>
@@ -2081,6 +2095,7 @@ export default function Prototype() {
           generateError={generateError}
           onReloadWeek={() => void loadWeek()}
           onReloadSchedule={() => void loadSchedule()}
+          weekStartsOn={weekData?.week.starts_on ?? null}
         />
       );
     }
@@ -2123,6 +2138,7 @@ export default function Prototype() {
         onRetryAssignments={() => void loadMyAssignments()}
         working={confirmWorking}
         avatarUrl={identity.profile.avatar_url}
+        weekStartsOn={weekData?.week.starts_on ?? null}
       />
     );
   };
