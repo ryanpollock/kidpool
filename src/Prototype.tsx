@@ -1364,6 +1364,10 @@ function AccountScreen({
   const [vehicleWorking, setVehicleWorking] = useState(false);
   const [vehicleError, setVehicleError] = useState<string | null>(null);
 
+  const [joinCode, setJoinCode] = useState<string | null>(null);
+  const [codeWorking, setCodeWorking] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
+
   const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
 
   useEffect(() => {
@@ -1440,6 +1444,19 @@ function AccountScreen({
       setVehicleError(readableError(nextError));
     } finally {
       setVehicleWorking(false);
+    }
+  };
+
+  const regenerateCode = async () => {
+    setCodeWorking(true);
+    setCodeError(null);
+    try {
+      const code = await repository.regenerateJoinCode(householdId);
+      setJoinCode(code);
+    } catch (nextError) {
+      setCodeError(readableError(nextError));
+    } finally {
+      setCodeWorking(false);
     }
   };
 
@@ -1573,6 +1590,23 @@ function AccountScreen({
             {vehicleWorking ? "Saving…" : activeVehicle ? "Update vehicle" : "Add vehicle"}
           </button>
         </div>
+      </section>
+
+      <section className="household-section" aria-labelledby="invite-section-heading">
+        <div className="section-heading-row">
+          <h2 id="invite-section-heading">Invite another parent</h2>
+        </div>
+        <p className="household-static">Share this code with another parent in your household. They&apos;ll sign in with their own Google account, then enter it once during setup.</p>
+        {joinCode ? (
+          <div className="join-code-card" data-testid="join-code-display">
+            <small>Household join code</small>
+            <strong>{joinCode}</strong>
+          </div>
+        ) : null}
+        {codeError ? <div className="auth-error" role="alert">{codeError}</div> : null}
+        <button className="secondary-button" disabled={codeWorking} onClick={() => void regenerateCode()}>
+          {codeWorking ? "Generating…" : joinCode ? "Generate new code" : "Get join code"}
+        </button>
       </section>
 
       <section className="account-info">

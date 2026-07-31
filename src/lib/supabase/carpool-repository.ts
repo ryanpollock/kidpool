@@ -203,6 +203,15 @@ export class CarpoolRepository {
     );
   }
 
+  async regenerateJoinCode(householdId: string): Promise<string> {
+    return unwrapRequired(
+      await this.client.rpc("regenerate_join_code", {
+        target_household_id: householdId,
+      }),
+      "Failed to generate join code.",
+    );
+  }
+
   async getHouseholdSetup(householdId: string): Promise<HouseholdSetup | null> {
     const household = unwrap(
       await this.client

@@ -443,6 +443,10 @@ export type Database = {
         Args: { target_group_id: string; supplied_join_code: string };
         Returns: string;
       };
+      regenerate_join_code: {
+        Args: { target_household_id: string };
+        Returns: string;
+      };
       respond_to_driver_assignment: {
         Args: {
           target_assignment_id: string;
