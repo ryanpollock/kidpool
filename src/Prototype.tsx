@@ -22,6 +22,7 @@ import { KeyboardInput, MobileScroll } from "./mobile";
 import {
   CarpoolRepository,
   getSupabaseClient,
+  type HouseholdSetup,
   type Tables,
 } from "./lib/supabase";
 
@@ -480,11 +481,13 @@ function PlanScreen({
   setPlans,
   submitted,
   onSubmit,
+  setup,
 }: {
   plans: DayPlan[];
   setPlans: (next: DayPlan[]) => void;
   submitted: boolean;
   onSubmit: () => void;
+  setup: HouseholdSetup | null;
 }) {
   const updatePlan = (index: number, update: Partial<DayPlan>) => {
     setPlans(plans.map((plan, planIndex) => planIndex === index ? { ...plan, ...update } : plan));
@@ -495,6 +498,13 @@ function PlanScreen({
     if (preference === "available") return "no";
     return "prefer";
   };
+
+  const firstChild = setup?.children.find((child) => child.active) ?? null;
+  const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
+  const ridesLabel = firstChild ? `${firstChild.first_name}’s rides` : "Your rides";
+  const vehicleLabel = activeVehicle ? activeVehicle.label : "No vehicle set up";
+  const vehicleSeats = activeVehicle ? `${activeVehicle.child_passenger_capacity} passenger seats` : "Add a vehicle in your account";
+  const vehicleNote = activeVehicle ? "Includes your children when riding" : "Open your account to add one";
 
   return (
     <div className="screen-content plan-screen" data-testid="plan-screen">
@@ -512,7 +522,7 @@ function PlanScreen({
       ) : null}
 
       <section className="planning-section">
-        <div className="section-heading-row"><h2>Alex’s rides</h2><span>Tap to change</span></div>
+        <div className="section-heading-row"><h2>{ridesLabel}</h2><span>Tap to change</span></div>
         <div className="day-plan-list">
           {plans.map((plan, index) => (
             <div className="day-plan-row" key={plan.day}>
@@ -557,7 +567,7 @@ function PlanScreen({
 
       <div className="vehicle-summary">
         <span><DashboardIcon /></span>
-        <span><strong>Blue Subaru · 4 passenger seats</strong><small>Includes Alex when riding</small></span>
+        <span><strong>{vehicleLabel} · {vehicleSeats}</strong><small>{vehicleNote}</small></span>
         <ChevronRightIcon />
       </div>
 
@@ -661,15 +671,124 @@ function CoordinatorScreen({
 
 function AccountScreen({
   profile,
+  setup,
+  setupLoading,
+  setupError,
+  repository,
+  householdId,
+  groupId,
+  onReloadHousehold,
   onBack,
   onSignOut,
   working,
 }: {
   profile: Tables<"profiles">;
+  setup: HouseholdSetup | null;
+  setupLoading: boolean;
+  setupError: string | null;
+  repository: CarpoolRepository;
+  householdId: string;
+  groupId: string;
+  onReloadHousehold: () => void;
   onBack: () => void;
   onSignOut: () => void;
   working: boolean;
 }) {
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(profile.full_name);
+  const [nameWorking, setNameWorking] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+
+  const [newChildFirst, setNewChildFirst] = useState("");
+  const [newChildLast, setNewChildLast] = useState("");
+  const [childWorking, setChildWorking] = useState(false);
+  const [childError, setChildError] = useState<string | null>(null);
+
+  const [vehicleLabel, setVehicleLabel] = useState("");
+  const [vehicleCapacity, setVehicleCapacity] = useState("4");
+  const [vehicleNotes, setVehicleNotes] = useState("");
+  const [vehicleWorking, setVehicleWorking] = useState(false);
+  const [vehicleError, setVehicleError] = useState<string | null>(null);
+
+  const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
+
+  useEffect(() => {
+    if (activeVehicle) {
+      setVehicleLabel(activeVehicle.label);
+      setVehicleCapacity(String(activeVehicle.child_passenger_capacity));
+      setVehicleNotes(activeVehicle.notes ?? "");
+    }
+  }, [activeVehicle]);
+
+  const saveName = async () => {
+    const normalized = nameDraft.trim().replace(/\s+/g, " ");
+    if (normalized.split(" ").filter(Boolean).length < 2) {
+      setNameError("Please enter the full name other parents should see.");
+      return;
+    }
+    setNameWorking(true);
+    setNameError(null);
+    try {
+      await repository.updateCurrentProfile(normalized);
+      setEditingName(false);
+      await onReloadHousehold();
+    } catch (nextError) {
+      setNameError(readableError(nextError));
+    } finally {
+      setNameWorking(false);
+    }
+  };
+
+  const addChild = async () => {
+    setChildWorking(true);
+    setChildError(null);
+    try {
+      await repository.addChild(householdId, groupId, newChildFirst, newChildLast);
+      setNewChildFirst("");
+      setNewChildLast("");
+      await onReloadHousehold();
+    } catch (nextError) {
+      setChildError(readableError(nextError));
+    } finally {
+      setChildWorking(false);
+    }
+  };
+
+  const removeChild = async (childId: string) => {
+    setChildWorking(true);
+    setChildError(null);
+    try {
+      await repository.deactivateChild(childId);
+      await onReloadHousehold();
+    } catch (nextError) {
+      setChildError(readableError(nextError));
+    } finally {
+      setChildWorking(false);
+    }
+  };
+
+  const saveVehicle = async () => {
+    const capacity = Number(vehicleCapacity);
+    if (!Number.isFinite(capacity)) {
+      setVehicleError("Enter a number of passenger seats.");
+      return;
+    }
+    setVehicleWorking(true);
+    setVehicleError(null);
+    try {
+      await repository.upsertVehicle(householdId, groupId, {
+        label: vehicleLabel,
+        childPassengerCapacity: capacity,
+        notes: vehicleNotes || undefined,
+      });
+      await onReloadHousehold();
+    } catch (nextError) {
+      setVehicleError(readableError(nextError));
+    } finally {
+      setVehicleWorking(false);
+    }
+  };
+
   return (
     <div className="screen-content detail-screen account-screen" data-testid="account-screen">
       <header className="subpage-header">
@@ -682,6 +801,126 @@ function AccountScreen({
         </span>
         <div><strong>{profile.full_name}</strong><small>{profile.email}</small></div>
       </section>
+
+      <section className="household-section" aria-labelledby="name-section-heading">
+        <div className="section-heading-row">
+          <h2 id="name-section-heading">Your name</h2>
+          {!editingName ? <button className="inline-action" onClick={() => { setNameDraft(profile.full_name); setEditingName(true); }}>Edit</button> : null}
+        </div>
+        {editingName ? (
+          <div className="household-form">
+            <label className="auth-field">
+              <span>Full name</span>
+              <KeyboardInput
+                value={nameDraft}
+                onChange={(event) => setNameDraft(event.target.value)}
+                autoComplete="name"
+                placeholder="First and last name"
+              />
+            </label>
+            {nameError ? <div className="auth-error" role="alert">{nameError}</div> : null}
+            <button className="primary-button" disabled={nameWorking} onClick={() => void saveName()}>
+              {nameWorking ? "Saving…" : "Save name"}
+            </button>
+            <button className="text-button" disabled={nameWorking} onClick={() => { setEditingName(false); setNameError(null); }}>Cancel</button>
+          </div>
+        ) : (
+          <p className="household-static">{profile.full_name}</p>
+        )}
+      </section>
+
+      <section className="household-section" aria-labelledby="children-section-heading">
+        <div className="section-heading-row">
+          <h2 id="children-section-heading">Children</h2>
+        </div>
+        {setupLoading && !setup ? <p className="household-static">Loading…</p> : null}
+        {setupError ? <div className="auth-error" role="alert">{setupError}</div> : null}
+        <ul className="household-list" data-testid="child-list">
+          {setup?.children.length ? setup.children.map((child) => (
+            <li key={child.id} className="household-list-row">
+              <span><strong>{child.first_name} {child.last_name}</strong></span>
+              <button
+                className="text-button household-remove"
+                disabled={childWorking}
+                onClick={() => void removeChild(child.id)}
+                aria-label={`Remove ${child.first_name} ${child.last_name}`}
+              >
+                Remove
+              </button>
+            </li>
+          )) : (
+            <li className="household-empty">No children added yet. Add your first child below.</li>
+          )}
+        </ul>
+        <div className="household-form" data-testid="add-child-form">
+          <div className="household-name-row">
+            <label className="auth-field">
+              <span>First name</span>
+              <KeyboardInput
+                value={newChildFirst}
+                onChange={(event) => setNewChildFirst(event.target.value)}
+                placeholder="First name"
+                autoComplete="off"
+              />
+            </label>
+            <label className="auth-field">
+              <span>Last name</span>
+              <KeyboardInput
+                value={newChildLast}
+                onChange={(event) => setNewChildLast(event.target.value)}
+                placeholder="Last name"
+                autoComplete="off"
+              />
+            </label>
+          </div>
+          {childError ? <div className="auth-error" role="alert">{childError}</div> : null}
+          <button className="primary-button" disabled={childWorking} onClick={() => void addChild()}>
+            {childWorking ? "Saving…" : "Add child"}
+          </button>
+        </div>
+      </section>
+
+      <section className="household-section" aria-labelledby="vehicle-section-heading">
+        <div className="section-heading-row">
+          <h2 id="vehicle-section-heading">Vehicle</h2>
+        </div>
+        <div className="household-form" data-testid="vehicle-form">
+          <label className="auth-field">
+            <span>Vehicle label</span>
+            <KeyboardInput
+              value={vehicleLabel}
+              onChange={(event) => setVehicleLabel(event.target.value)}
+              placeholder="For example, Blue Subaru"
+              autoComplete="off"
+            />
+          </label>
+          <label className="auth-field">
+            <span>Passenger seats</span>
+            <KeyboardInput
+              value={vehicleCapacity}
+              onChange={(event) => setVehicleCapacity(event.target.value.replace(/[^0-9]/g, ""))}
+              inputMode="numeric"
+              placeholder="1 to 12"
+              autoComplete="off"
+            />
+            <small>Total child-passenger capacity. Includes your own children when riding.</small>
+          </label>
+          <label className="auth-field">
+            <span>Notes (optional)</span>
+            <KeyboardInput
+              value={vehicleNotes}
+              onChange={(event) => setVehicleNotes(event.target.value)}
+              placeholder="Anything drivers need to know"
+              autoComplete="off"
+            />
+          </label>
+          {vehicleError ? <div className="auth-error" role="alert">{vehicleError}</div> : null}
+          <button className="primary-button" disabled={vehicleWorking} onClick={() => void saveVehicle()}>
+            {vehicleWorking ? "Saving…" : activeVehicle ? "Update vehicle" : "Add vehicle"}
+          </button>
+        </div>
+      </section>
+
       <section className="account-info">
         <span>Signed in with Google</span>
         <p>Your parent profile is separate from every other adult in your household, so driving availability and confirmations stay clear.</p>
@@ -700,6 +939,9 @@ export default function Prototype() {
   const [authInitialized, setAuthInitialized] = useState(false);
   const [identity, setIdentity] = useState<IdentityState | null>(null);
   const [identityLoading, setIdentityLoading] = useState(false);
+  const [householdSetup, setHouseholdSetup] = useState<HouseholdSetup | null>(null);
+  const [householdLoading, setHouseholdLoading] = useState(false);
+  const [householdError, setHouseholdError] = useState<string | null>(null);
   const [authWorking, setAuthWorking] = useState(false);
   const [authError, setAuthError] = useState<string | null>(() => oauthErrorFromLocation());
   const [activeTab, setActiveTab] = useState<AppTab>("home");
@@ -730,6 +972,24 @@ export default function Prototype() {
       setIdentityLoading(false);
     }
   }, [repository]);
+
+  const loadHousehold = useCallback(async () => {
+    if (!identity?.membership) return;
+    setHouseholdLoading(true);
+    setHouseholdError(null);
+    try {
+      const setup = await repository.getHouseholdSetup(identity.membership.household_id);
+      setHouseholdSetup(setup);
+    } catch (error) {
+      setHouseholdError(readableError(error));
+    } finally {
+      setHouseholdLoading(false);
+    }
+  }, [identity?.membership, repository]);
+
+  useEffect(() => {
+    if (identity?.membership) void loadHousehold();
+  }, [identity?.membership, loadHousehold]);
 
   useEffect(() => {
     let mounted = true;
@@ -812,6 +1072,13 @@ export default function Prototype() {
       return (
         <AccountScreen
           profile={identity.profile}
+          setup={householdSetup}
+          setupLoading={householdLoading}
+          setupError={householdError}
+          repository={repository}
+          householdId={identity.membership?.household_id ?? ""}
+          groupId={identity.group.id}
+          onReloadHousehold={() => void loadHousehold()}
           onBack={() => setAccountOpen(false)}
           onSignOut={() => void signOut()}
           working={authWorking}
@@ -836,6 +1103,7 @@ export default function Prototype() {
           setPlans={setPlans}
           submitted={planSubmitted}
           onSubmit={() => setPlanSubmitted(true)}
+          setup={householdSetup}
         />
       );
     }

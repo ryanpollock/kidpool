@@ -169,6 +169,124 @@ export class CarpoolRepository {
     };
   }
 
+  async addChild(householdId: string, groupId: string, firstName: string, lastName: string) {
+    const userResult = await this.client.auth.getUser();
+    if (userResult.error) throw new Error(userResult.error.message);
+    if (!userResult.data.user) throw new Error("Sign in again to continue.");
+
+    const trimmedFirst = firstName.trim();
+    const trimmedLast = lastName.trim();
+    if (!trimmedFirst || !trimmedLast) {
+      throw new Error("Enter your child's first and last name.");
+    }
+
+    return unwrapRequired(
+      await this.client
+        .from("children")
+        .insert({
+          group_id: groupId,
+          household_id: householdId,
+          first_name: trimmedFirst,
+          last_name: trimmedLast,
+          created_by: userResult.data.user.id,
+        })
+        .select("*")
+        .single(),
+    );
+  }
+
+  async updateChild(childId: string, updates: { firstName?: string; lastName?: string }) {
+    if (updates.firstName !== undefined) {
+      const trimmed = updates.firstName.trim();
+      if (!trimmed) throw new Error("First name cannot be empty.");
+      unwrap(
+        await this.client
+          .from("children")
+          .update({ first_name: trimmed })
+          .eq("id", childId),
+      );
+    }
+    if (updates.lastName !== undefined) {
+      const trimmed = updates.lastName.trim();
+      if (!trimmed) throw new Error("Last name cannot be empty.");
+      unwrap(
+        await this.client
+          .from("children")
+          .update({ last_name: trimmed })
+          .eq("id", childId),
+      );
+    }
+  }
+
+  async deactivateChild(childId: string) {
+    unwrap(
+      await this.client
+        .from("children")
+        .update({ active: false })
+        .eq("id", childId),
+    );
+  }
+
+  async upsertVehicle(
+    householdId: string,
+    groupId: string,
+    fields: { label: string; childPassengerCapacity: number; notes?: string },
+  ) {
+    const userResult = await this.client.auth.getUser();
+    if (userResult.error) throw new Error(userResult.error.message);
+    if (!userResult.data.user) throw new Error("Sign in again to continue.");
+
+    const trimmedLabel = fields.label.trim();
+    if (!trimmedLabel) throw new Error("Enter a vehicle label.");
+    if (fields.childPassengerCapacity < 1 || fields.childPassengerCapacity > 12) {
+      throw new Error("Passenger seats must be between 1 and 12.");
+    }
+    const trimmedNotes = fields.notes ? fields.notes.trim().slice(0, 500) : null;
+    if (trimmedNotes && trimmedNotes.length > 500) {
+      throw new Error("Vehicle notes must be 500 characters or fewer.");
+    }
+
+    const existing = unwrap(
+      await this.client
+        .from("vehicles")
+        .select("*")
+        .eq("household_id", householdId)
+        .eq("active", true)
+        .order("label")
+        .maybeSingle(),
+    );
+
+    const payload = {
+      label: trimmedLabel,
+      child_passenger_capacity: fields.childPassengerCapacity,
+      notes: trimmedNotes || null,
+    };
+
+    if (existing) {
+      return unwrapRequired(
+        await this.client
+          .from("vehicles")
+          .update(payload)
+          .eq("id", existing.id)
+          .select("*")
+          .single(),
+      );
+    }
+
+    return unwrapRequired(
+      await this.client
+        .from("vehicles")
+        .insert({
+          ...payload,
+          group_id: groupId,
+          household_id: householdId,
+          created_by: userResult.data.user.id,
+        })
+        .select("*")
+        .single(),
+    );
+  }
+
   async listTripsForWeek(weekId: string) {
     return unwrapRequired(
       await this.client

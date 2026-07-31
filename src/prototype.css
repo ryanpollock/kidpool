@@ -453,6 +453,85 @@ button {
   color: var(--red);
 }
 
+.household-section {
+  margin-top: 26px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.household-section:first-of-type {
+  margin-top: 24px;
+}
+
+.household-static {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.household-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 9px;
+}
+
+.household-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+}
+
+.household-list-row strong {
+  font-size: 13px;
+}
+
+.household-empty {
+  padding: 13px 14px;
+  border-radius: 12px;
+  background: var(--muted);
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.household-form {
+  display: grid;
+  gap: 13px;
+  margin-top: 14px;
+}
+
+.household-form .auth-field {
+  margin-top: 0;
+}
+
+.household-form .primary-button {
+  margin-top: 4px;
+}
+
+.household-form .text-button {
+  margin: 2px auto 0;
+}
+
+.household-name-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 11px;
+}
+
+.household-remove {
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--red);
+}
+
 .screen-content {
   min-height: 100%;
   padding: 68px 22px calc(var(--mobile-safe-area-height) + 108px);
