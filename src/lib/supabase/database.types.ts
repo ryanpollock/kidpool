@@ -29,11 +29,18 @@ type Timestamps = {
   updated_at: string;
 };
 
+export type DefaultDrivePref = {
+  day: number;
+  direction: TripDirection;
+  preference: DrivePreference;
+};
+
 export type ProfileRow = Timestamps & {
   id: string;
   email: string;
   full_name: string;
   avatar_url: string | null;
+  default_drive_preferences: DefaultDrivePref[] | null;
 };
 
 export type GroupRow = Timestamps & {
@@ -202,6 +209,7 @@ export type Database = {
           email: string;
           full_name: string;
           avatar_url?: string | null;
+          default_drive_preferences?: DefaultDrivePref[] | null;
           created_at?: string;
           updated_at?: string;
         }

@@ -1567,6 +1567,26 @@ button {
   opacity: 0.6;
 }
 
+.drive-template-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.drive-template-row {
+  display: grid;
+  grid-template-columns: 36px 1fr 1fr;
+  gap: 6px;
+  align-items: center;
+}
+
+.drive-template-day {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+}
+
 .checkin-max-drives {
   margin-top: 20px;
   padding-top: 16px;

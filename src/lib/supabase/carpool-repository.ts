@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   ConfirmationResponse,
   Database,
+  DefaultDrivePref,
   DrivePreference,
   Json,
   Tables,
@@ -157,6 +158,59 @@ export class CarpoolRepository {
         .select("*")
         .single(),
     );
+  }
+
+  async getDefaultDrivePreferences(profileId: string): Promise<DefaultDrivePref[]> {
+    const row = unwrap(
+      await this.client
+        .from("profiles")
+        .select("default_drive_preferences")
+        .eq("id", profileId)
+        .maybeSingle(),
+    );
+    if (!row) return [];
+    const prefs = row.default_drive_preferences;
+    if (!Array.isArray(prefs)) return [];
+    return prefs as unknown as DefaultDrivePref[];
+  }
+
+  async saveDefaultDrivePreferences(preferences: DefaultDrivePref[]): Promise<void> {
+    const userResult = await this.client.auth.getUser();
+    if (userResult.error) throw new Error(userResult.error.message);
+    if (!userResult.data.user) throw new Error("Sign in again to continue.");
+
+    unwrap(
+      await this.client
+        .from("profiles")
+        .update({ default_drive_preferences: preferences })
+        .eq("id", userResult.data.user.id),
+    );
+  }
+
+  async applyDefaultDrivePreferences(
+    checkinId: string,
+    profileId: string,
+    trips: Tables<"trips">[],
+    vehicleId: string | null,
+    groupId: string,
+  ): Promise<void> {
+    const defaults = await this.getDefaultDrivePreferences(profileId);
+    if (defaults.length === 0) return;
+
+    for (const trip of trips) {
+      const tripDate = new Date(trip.service_date + "T00:00:00");
+      const isoDay = tripDate.getDay() === 0 ? 7 : tripDate.getDay();
+      const match = defaults.find(
+        (d) => d.day === isoDay && d.direction === trip.direction,
+      );
+      if (match) {
+        await this.upsertDriverAvailability(
+          checkinId, trip.id, profileId,
+          match.preference === "cannot" ? null : vehicleId,
+          match.preference, groupId,
+        );
+      }
+    }
   }
 
   async listAvailableGroups() {

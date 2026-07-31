@@ -20,6 +20,9 @@ test("Exchange 4 repository exposes week, check-in, ride request, and driver ava
   assert.match(source, /async reopenCheckin\(/);
   assert.match(source, /async upsertRideRequest\(/);
   assert.match(source, /async upsertDriverAvailability\(/);
+  assert.match(source, /async getDefaultDrivePreferences\(/);
+  assert.match(source, /async saveDefaultDrivePreferences\(/);
+  assert.match(source, /async applyDefaultDrivePreferences\(/);
   assert.match(source, /async getWeekOverview\(/);
   assert.match(source, /from\("weeks"\)/);
   assert.match(source, /from\("trips"\)/);
