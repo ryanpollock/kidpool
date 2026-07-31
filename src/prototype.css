@@ -403,6 +403,8 @@ button {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 25px;
   letter-spacing: 0.12em;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .auth-recovery-screen .auth-mark {
