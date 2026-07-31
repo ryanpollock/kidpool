@@ -81,10 +81,10 @@ test("Exchange 4 coordinator screen shows real overview and week creation", asyn
 test("Exchange 4 creates weeks with default meeting and departure times", async () => {
   const source = await readFile(repositoryUrl, "utf8");
 
-  assert.match(source, /meeting_time: "07:35"/);
-  assert.match(source, /departure_time: "07:40"/);
-  assert.match(source, /meeting_time: "15:20"/);
-  assert.match(source, /departure_time: "15:25"/);
+  assert.match(source, /meeting_time: "08:40"/);
+  assert.match(source, /departure_time: "08:45"/);
+  assert.match(source, /meeting_time: "17:15"/);
+  assert.match(source, /departure_time: "17:20"/);
   assert.match(source, /direction: "morning"/);
   assert.match(source, /direction: "afternoon"/);
   assert.match(source, /offset < 5/);

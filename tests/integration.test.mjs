@@ -198,7 +198,7 @@ function setupWeekAndTrips(coordUserId, coordHouseholdId) {
     for (const dir of ["morning", "afternoon"]) {
       const tId = UID(400 + d * 2 + (dir === "morning" ? 0 : 1));
       tripIds.push(tId);
-      sql += `INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${tId}', '${GROUP_ID}', '${weekId}', '${dates[d]}', '${dir}', '07:35', '07:40', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;\n`;
+      sql += `INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${tId}', '${GROUP_ID}', '${weekId}', '${dates[d]}', '${dir}', '08:40', '08:45', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;\n`;
     }
   }
   runSql(sql);

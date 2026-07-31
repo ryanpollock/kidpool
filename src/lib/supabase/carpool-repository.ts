@@ -497,8 +497,8 @@ export class CarpoolRepository {
         week_id: week.id,
         service_date: serviceDate,
         direction: "morning",
-        meeting_time: "07:35",
-        departure_time: "07:40",
+        meeting_time: "08:40",
+        departure_time: "08:45",
         origin: meetingPoint,
         destination: schoolName,
       });
@@ -507,8 +507,8 @@ export class CarpoolRepository {
         week_id: week.id,
         service_date: serviceDate,
         direction: "afternoon",
-        meeting_time: "15:20",
-        departure_time: "15:25",
+        meeting_time: "17:15",
+        departure_time: "17:20",
         origin: schoolName,
         destination: meetingPoint,
       });
