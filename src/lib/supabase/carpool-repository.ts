@@ -563,6 +563,26 @@ export class CarpoolRepository {
     return created;
   }
 
+  async deactivateVehicle(vehicleId: string, groupId: string) {
+    const result = unwrap(
+      await this.client
+        .from("vehicles")
+        .update({ active: false })
+        .eq("id", vehicleId)
+        .select("*")
+        .single(),
+    );
+    const label = result?.label ?? "";
+    await this.recordAudit(
+      groupId,
+      "vehicle_removed",
+      "vehicle",
+      vehicleId,
+      { label },
+    );
+    return result;
+  }
+
   async listWeeks(groupId: string) {
     return unwrapRequired(
       await this.client
@@ -625,6 +645,46 @@ export class CarpoolRepository {
     return null;
   }
 
+  /**
+   * Returns the next upcoming week (starts_on > today) for the Plan screen.
+   * Unlike getCurrentWeek, this never falls back to a past week — it returns
+   * null when no future week exists, so the UI can show "no upcoming week."
+   */
+  async getPlanWeek(groupId: string): Promise<WeekWithTrips | null> {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const futureRows = unwrapRequired(
+      await this.client
+        .from("weeks")
+        .select("*")
+        .eq("group_id", groupId)
+        .gt("starts_on", todayStr)
+        .order("starts_on", { ascending: true })
+        .limit(1),
+    );
+    const upcoming = futureRows[0];
+    if (upcoming) {
+      const trips = await this.listTripsForWeek(upcoming.id);
+      return { week: upcoming, trips };
+    }
+    return null;
+  }
+
+  /**
+   * Returns a specific week by id, including trips. Used for week navigation.
+   */
+  async getWeekById(weekId: string): Promise<WeekWithTrips | null> {
+    const week = unwrap(
+      await this.client
+        .from("weeks")
+        .select("*")
+        .eq("id", weekId)
+        .maybeSingle(),
+    );
+    if (!week) return null;
+    const trips = await this.listTripsForWeek(weekId);
+    return { week, trips };
+  }
+
   async createWeekWithTrips(
     groupId: string,
     startsOn: string,
@@ -639,6 +699,14 @@ export class CarpoolRepository {
     const day = startDate.getDay();
     if (day !== 1) throw new Error("Week must start on a Monday.");
 
+    // Deadlines: check-in by Saturday 3 PM, confirmation by Sunday 3 PM.
+    const checkinDeadline = new Date(startDate);
+    checkinDeadline.setDate(checkinDeadline.getDate() - 2); // Saturday before
+    checkinDeadline.setHours(15, 0, 0, 0); // 3 PM
+    const confirmationDeadline = new Date(startDate);
+    confirmationDeadline.setDate(confirmationDeadline.getDate() - 1); // Sunday before
+    confirmationDeadline.setHours(15, 0, 0, 0); // 3 PM
+
     const week = unwrapRequired<Tables<"weeks">>(
       await this.client
         .from("weeks")
@@ -646,6 +714,8 @@ export class CarpoolRepository {
           group_id: groupId,
           starts_on: startsOn,
           status: "open",
+          checkin_deadline: checkinDeadline.toISOString(),
+          confirmation_deadline: confirmationDeadline.toISOString(),
         })
         .select("*")
         .single(),

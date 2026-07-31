@@ -1902,3 +1902,35 @@ button {
   font-size: 10px;
   color: var(--ink-soft);
 }
+
+.week-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.week-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.week-nav-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.household-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

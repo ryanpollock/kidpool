@@ -6,6 +6,7 @@ import {
   CalendarIcon,
   CheckCircledIcon,
   CheckIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   ClockIcon,
   Cross2Icon,
@@ -237,6 +238,14 @@ function OnboardingScreen({
 
       const setup = await repository.getHouseholdSetup(joinedHouseholdId);
       if (setup?.children.length) setOnboardingChildren(setup.children);
+
+      if (setup?.vehicles.length) {
+        const v = setup.vehicles[0];
+        setVehicleId(v.id);
+        setVehicleLabel(v.label);
+        setVehicleCapacity(String(v.child_passenger_capacity));
+        setVehicleNotes(v.notes ?? "");
+      }
 
       const existingNeeds = await repository.getDefaultRideNeeds(joinedHouseholdId);
       if (existingNeeds.length) setRideNeeds(existingNeeds);
@@ -875,6 +884,7 @@ function HomeScreen({
   myAssignments,
   assignmentsLoading,
   assignmentsError,
+  confirmError,
   schedulePublished,
   onConfirmAll,
   onReview,
@@ -884,10 +894,12 @@ function HomeScreen({
   working,
   avatarUrl,
   weekStartsOn,
+  confirmationDeadline,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
   assignmentsError: string | null;
+  confirmError: string | null;
   schedulePublished: boolean;
   onConfirmAll: () => void;
   onReview: () => void;
@@ -897,12 +909,17 @@ function HomeScreen({
   working: boolean;
   avatarUrl: string | null;
   weekStartsOn: string | null;
+  confirmationDeadline: string | null;
 }) {
   const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = myAssignments.filter((a) => a.assignment.status === "confirmed");
-  const allConfirmed = tentative.length === 0 && confirmed.length > 0;
+  const declined = myAssignments.filter((a) => a.assignment.status === "declined");
+  const allConfirmed = tentative.length === 0 && confirmed.length > 0 && declined.length === 0;
   const noAssignments = myAssignments.length === 0;
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
+  const deadlineLabel = confirmationDeadline
+    ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })
+    : "3:00 PM";
 
   return (
     <div className="screen-content home-screen" data-testid="home-screen">
@@ -936,13 +953,13 @@ function HomeScreen({
         </section>
       ) : (
         <section className={`confirmation-hero ${allConfirmed ? "confirmation-hero--done" : ""}`}>
-          <span className="eyebrow">{allConfirmed ? (schedulePublished ? "Published schedule" : "Sunday schedule") : "Action needed today"}</span>
-          <h1>{allConfirmed ? "You’re all set" : "Confirm your drives"}</h1>
+          <span className="eyebrow">{allConfirmed ? (schedulePublished ? "Published schedule" : "Schedule ready") : "Action needed"}</span>
+          <h1>{allConfirmed ? "You're all set" : "Confirm your drives"}</h1>
           <p className="hero-deadline">
             {allConfirmed ? (
               <><CheckCircledIcon width="18" height="18" /> {confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed</>
             ) : (
-              <>{tentative.length} assignment{tentative.length !== 1 ? "s" : ""} <span aria-hidden="true">·</span> <strong>Confirm by 3:00 PM</strong></>
+              <>{tentative.length} assignment{tentative.length !== 1 ? "s" : ""} <span aria-hidden="true">·</span> <strong>Confirm by {deadlineLabel}</strong></>
             )}
           </p>
           <p className="hero-support">
@@ -952,6 +969,8 @@ function HomeScreen({
           </p>
         </section>
       )}
+
+      {confirmError ? <div className="auth-error" role="alert">{confirmError}</div> : null}
 
       {!noAssignments ? (
         <section className="assignment-section" aria-labelledby="assignment-heading">
@@ -971,9 +990,14 @@ function HomeScreen({
           </div>
           {!allConfirmed ? (
             <>
-              <button className="primary-button" data-testid="confirm-drives" disabled={working} onClick={onConfirmAll}>
-                <CheckIcon width="19" height="19" /> Confirm all drives
-              </button>
+              {tentative.length > 0 ? (
+                <button className="primary-button" data-testid="confirm-drives" disabled={working} onClick={onConfirmAll}>
+                  <CheckIcon width="19" height="19" /> Confirm all drives
+                </button>
+              ) : null}
+              {declined.length > 0 && tentative.length === 0 ? (
+                <p className="helper-copy">All drives resolved. Use "Review individually" to change a response.</p>
+              ) : null}
               <button className="text-button" onClick={onReview}>Review individually</button>
             </>
           ) : (
@@ -1026,9 +1050,9 @@ function ReviewScreen({
     <div className="screen-content detail-screen" data-testid="review-screen">
       <header className="subpage-header">
         <button onClick={onBack} aria-label="Back to home"><Cross2Icon /></button>
-        <div><span className="eyebrow">Sunday confirmation</span><h1>Review your drives</h1></div>
+        <div><span className="eyebrow">Confirmation</span><h1>Review your drives</h1></div>
       </header>
-      <p className="detail-intro">Confirm each assignment only if the date, direction, vehicle, and seat count are correct.</p>
+      <p className="detail-intro">Confirm each assignment only if the date, direction, vehicle, and seat count are correct. You can change your response.</p>
       {error ? <div className="auth-error" role="alert">{error}</div> : null}
 
       {myAssignments.length === 0 ? (
@@ -1057,7 +1081,7 @@ function ReviewScreen({
               <strong>{roster}</strong>
               <small>Meet at {entry.trip.meeting_time} · {entry.trip.origin} → {entry.trip.destination}</small>
             </div>
-            {status === "tentative" ? (
+{status === "tentative" ? (
               isDeclining ? (
                 <div className="decline-form" data-testid="decline-form">
                   <label className="auth-field">
@@ -1080,14 +1104,42 @@ function ReviewScreen({
                     <CheckIcon /> Confirm this drive
                   </button>
                   <button className="decline-button" disabled={working === entry.assignment.id} onClick={() => setDecliningId(entry.assignment.id)}>
-                    I can’t make this one
+                    I can't make this one
                   </button>
                 </>
               )
             ) : status === "confirmed" ? (
-              <div className="success-notice"><CheckCircledIcon /><span><strong>Confirmed</strong><small>{dateInfo.full} · {period}</small></span></div>
+              <>
+                <div className="success-notice"><CheckCircledIcon /><span><strong>Confirmed</strong><small>{dateInfo.full} · {period}</small></span></div>
+                {isDeclining ? (
+                  <div className="decline-form" data-testid="decline-form">
+                    <label className="auth-field">
+                      <span>Reason (optional)</span>
+                      <KeyboardInput
+                        value={declineReason}
+                        onChange={(event) => setDeclineReason(event.target.value)}
+                        placeholder="Help your admin find a replacement"
+                        autoComplete="off"
+                      />
+                    </label>
+                    <button className="decline-button" disabled={working === entry.assignment.id} onClick={() => void respond(entry.assignment.id, "declined", declineReason)}>
+                      {working === entry.assignment.id ? "Declining…" : "Confirm decline"}
+                    </button>
+                    <button className="text-button" onClick={() => { setDecliningId(null); setDeclineReason(""); }}>Cancel</button>
+                  </div>
+                ) : (
+                  <button className="decline-button" disabled={working === entry.assignment.id} onClick={() => setDecliningId(entry.assignment.id)}>
+                    I can't make this one
+                  </button>
+                )}
+              </>
             ) : (
-              <div className="declined-notice"><Cross2Icon /><span><strong>Declined</strong><small>This drive has been released.</small></span></div>
+              <>
+                <div className="declined-notice"><Cross2Icon /><span><strong>Declined</strong><small>This drive has been released.</small></span></div>
+                <button className="primary-button" disabled={working === entry.assignment.id} onClick={() => void respond(entry.assignment.id, "confirmed")}>
+                  <CheckIcon /> Re-accept this drive
+                </button>
+              </>
             )}
           </div>
         );
@@ -1103,6 +1155,7 @@ function PlanScreen({
   checkin,
   checkinDetails,
   checkinLoading,
+  checkinError,
   setup,
   repository,
   driverProfileId,
@@ -1118,6 +1171,7 @@ function PlanScreen({
   checkin: Tables<"weekly_checkins"> | null;
   checkinDetails: CheckinDetails | null;
   checkinLoading: boolean;
+  checkinError: string | null;
   setup: HouseholdSetup | null;
   repository: CarpoolRepository;
   driverProfileId: string;
@@ -1144,7 +1198,7 @@ function PlanScreen({
     return (
       <div className="screen-content plan-screen" data-testid="plan-screen">
         <header className="page-title">
-          <span className="eyebrow">Saturday check-in</span>
+          <span className="eyebrow">Check-in</span>
           <h1>Plan next week</h1>
         </header>
         <p className="helper-copy">Loading the upcoming week…</p>
@@ -1156,7 +1210,7 @@ function PlanScreen({
     return (
       <div className="screen-content plan-screen" data-testid="plan-screen">
         <header className="page-title">
-          <span className="eyebrow">Saturday check-in</span>
+          <span className="eyebrow">Check-in</span>
           <h1>Plan next week</h1>
         </header>
         <div className="auth-error" role="alert">{weekError}</div>
@@ -1169,11 +1223,11 @@ function PlanScreen({
     return (
       <div className="screen-content plan-screen" data-testid="plan-screen">
         <header className="page-title">
-          <span className="eyebrow">Saturday check-in</span>
+          <span className="eyebrow">Check-in</span>
           <h1>Plan next week</h1>
         </header>
         <div className="empty-state">
-          <p>No week has been created yet.</p>
+          <p>No upcoming week has been created yet.</p>
           {isCoordinator ? (
             <button className="primary-button" data-testid="create-week-plan" onClick={onCreateWeek}>
               Create next week
@@ -1186,13 +1240,27 @@ function PlanScreen({
     );
   }
 
+  if (checkinError) {
+    return (
+      <div className="screen-content plan-screen" data-testid="plan-screen">
+        <header className="page-title">
+          <span className="eyebrow">Check-in</span>
+          <h1>Plan next week</h1>
+          <p>{weekLabel(week.week.starts_on)}</p>
+        </header>
+        <div className="auth-error" role="alert">Couldn't load your check-in: {checkinError}</div>
+        <button className="primary-button" onClick={() => void onReloadCheckin()}>Try again</button>
+      </div>
+    );
+  }
+
   if (children.length === 0) {
     return (
       <div className="screen-content plan-screen" data-testid="plan-screen">
         <header className="page-title">
-          <span className="eyebrow">Saturday check-in</span>
+          <span className="eyebrow">Check-in</span>
           <h1>Plan next week</h1>
-          <p>{formatTripDate(week.week.starts_on).short} – {formatTripDate(week.week.starts_on).short}</p>
+          <p>{weekLabel(week.week.starts_on)}</p>
         </header>
         <div className="empty-state">
           <p>Add your children in your account first, then come back to plan the week.</p>
@@ -1288,9 +1356,9 @@ function PlanScreen({
   return (
     <div className="screen-content plan-screen" data-testid="plan-screen">
       <header className="page-title">
-        <span className="eyebrow">Saturday check-in</span>
+        <span className="eyebrow">Check-in</span>
         <h1>Plan next week</h1>
-        <p>{formatTripDate(week.week.starts_on).short} – {formatTripDate(sortedDates[sortedDates.length - 1] ?? week.week.starts_on).short}</p>
+        <p>{weekLabel(week.week.starts_on)}</p>
       </header>
 
       {submitted ? (
@@ -1377,7 +1445,7 @@ function PlanScreen({
       {!submitted ? (
         <section className="checkin-max-drives">
           <label className="auth-field">
-            <span>Max drives this week</span>
+            <span>Max drives for your household</span>
             <KeyboardInput
               value={maxDrives}
               onChange={(event) => setMaxDrives(event.target.value.replace(/[^0-9]/g, ""))}
@@ -1385,6 +1453,7 @@ function PlanScreen({
               placeholder="2"
               autoComplete="off"
             />
+            <small>Applies to all drivers in your household this week.</small>
           </label>
         </section>
       ) : null}
@@ -1424,6 +1493,9 @@ function WeekScreen({
   onReloadWeek,
   onReloadSchedule,
   weekStartsOn,
+  allWeeks,
+  selectedWeekId,
+  onSelectWeek,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -1438,8 +1510,14 @@ function WeekScreen({
   onReloadWeek: () => void;
   onReloadSchedule: () => void;
   weekStartsOn: string | null;
+  allWeeks: Tables<"weeks">[];
+  selectedWeekId: string | null;
+  onSelectWeek: (weekId: string) => void;
 }) {
   const weekHeading = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
+  const currentIdx = allWeeks.findIndex((w) => w.id === (selectedWeekId ?? week?.week.id));
+  const hasPrev = currentIdx < allWeeks.length - 1;
+  const hasNext = currentIdx > 0;
   if (weekLoading) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
@@ -1473,13 +1551,13 @@ function WeekScreen({
           <h1>{weekHeading}</h1>
         </header>
         <div className="empty-state">
-          <p>No week has been created yet.</p>
+          <p>No upcoming week has been created yet.</p>
           {isCoordinator ? (
             <button className="primary-button" data-testid="generate-schedule-empty" disabled={generating} onClick={onGenerate}>
               {generating ? "Working…" : "Generate schedule"}
             </button>
           ) : (
-            <p className="helper-copy">An admin needs to create the week first.</p>
+            <p className="helper-copy">An admin needs to create the week first. Check back soon.</p>
           )}
         </div>
       </div>
@@ -1565,7 +1643,7 @@ function WeekScreen({
     <div className="screen-content week-screen" data-testid="week-screen">
       <header className="page-title">
         <span className="eyebrow">Family schedule</span>
-        <h1>{startDate.short} – {endDate.short}</h1>
+        <h1>{weekLabel(week.week.starts_on)}</h1>
         <p>
           <span className={`schedule-badge ${isPublished ? "schedule-badge--published" : "schedule-badge--draft"}`}>
             {isPublished ? "Published" : `Draft v${schedule.version.version_number}`}
@@ -1573,6 +1651,17 @@ function WeekScreen({
           {isPublished ? null : <span className="schedule-algo">{schedule.version.algorithm_version}</span>}
         </p>
       </header>
+
+      {allWeeks.length > 1 ? (
+        <div className="week-nav">
+          <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
+            <ChevronLeftIcon /> Earlier
+          </button>
+          <button className="week-nav-btn" disabled={!hasNext} onClick={() => { if (hasNext) onSelectWeek(allWeeks[currentIdx - 1].id); }}>
+            Later <ChevronRightIcon />
+          </button>
+        </div>
+      ) : null}
 
       {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
 
@@ -1681,7 +1770,7 @@ function CoordinatorScreen({
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
         <header className="page-title">
-          <span className="eyebrow">Admin view</span>
+          <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
           <h1>Weekly coverage</h1>
         </header>
         <p className="helper-copy">Loading…</p>
@@ -1693,7 +1782,7 @@ function CoordinatorScreen({
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
         <header className="page-title">
-          <span className="eyebrow">Admin view</span>
+          <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
           <h1>Weekly coverage</h1>
         </header>
         <div className="auth-error" role="alert">{weekError}</div>
@@ -1706,17 +1795,19 @@ function CoordinatorScreen({
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
         <header className="page-title">
-          <span className="eyebrow">Admin view</span>
+          <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
           <h1>Weekly coverage</h1>
         </header>
         <div className="empty-state">
-          <p>No week has been created yet.</p>
+          <p>No upcoming week has been created yet.</p>
           {createWeekError ? <div className="auth-error" role="alert">{createWeekError}</div> : null}
           {isCoordinator ? (
             <button className="primary-button" data-testid="create-week-coord" disabled={creatingWeek} onClick={onCreateWeek}>
               {creatingWeek ? "Creating…" : "Create next week"}
             </button>
-          ) : null}
+          ) : (
+            <p className="helper-copy">Waiting for an admin to create the week.</p>
+          )}
         </div>
       </div>
     );
@@ -1733,9 +1824,9 @@ function CoordinatorScreen({
   return (
     <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
       <header className="page-title">
-        <span className="eyebrow">Admin view</span>
+        <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
         <h1>Weekly coverage</h1>
-        <p>{startDate.short} – {endDate.short}</p>
+        <p>{weekLabel(week.week.starts_on)}</p>
       </header>
 
       {createWeekError ? <div className="auth-error" role="alert">{createWeekError}</div> : null}
@@ -1859,6 +1950,10 @@ function AccountScreen({
   const [newChildLast, setNewChildLast] = useState("");
   const [childWorking, setChildWorking] = useState(false);
   const [childError, setChildError] = useState<string | null>(null);
+  const [editingChildId, setEditingChildId] = useState<string | null>(null);
+  const [editChildFirst, setEditChildFirst] = useState("");
+  const [editChildLast, setEditChildLast] = useState("");
+  const [editChildWorking, setEditChildWorking] = useState(false);
 
   const [vehicleLabel, setVehicleLabel] = useState("");
   const [vehicleCapacity, setVehicleCapacity] = useState("4");
@@ -1975,6 +2070,38 @@ function AccountScreen({
     }
   };
 
+  const saveEditChild = async (childId: string) => {
+    setEditChildWorking(true);
+    setChildError(null);
+    try {
+      await repository.updateChild(childId, {
+        firstName: editChildFirst,
+        lastName: editChildLast,
+      });
+      setEditingChildId(null);
+      await onReloadHousehold();
+    } catch (nextError) {
+      setChildError(readableError(nextError));
+    } finally {
+      setEditChildWorking(false);
+    }
+  };
+
+  const removeVehicle = async () => {
+    const activeVehicle = setup?.vehicles.find((v) => v.active) ?? null;
+    if (!activeVehicle) return;
+    setVehicleWorking(true);
+    setVehicleError(null);
+    try {
+      await repository.deactivateVehicle(activeVehicle.id, groupId);
+      await onReloadHousehold();
+    } catch (nextError) {
+      setVehicleError(readableError(nextError));
+    } finally {
+      setVehicleWorking(false);
+    }
+  };
+
   const saveVehicle = async () => {
     const capacity = Number(vehicleCapacity);
     if (!Number.isFinite(capacity)) {
@@ -2059,15 +2186,57 @@ function AccountScreen({
         <ul className="household-list" data-testid="child-list">
           {setup?.children.length ? setup.children.map((child) => (
             <li key={child.id} className="household-list-row">
-              <span><strong>{child.first_name} {child.last_name}</strong></span>
-              <button
-                className="text-button household-remove"
-                disabled={childWorking}
-                onClick={() => void removeChild(child.id)}
-                aria-label={`Remove ${child.first_name} ${child.last_name}`}
-              >
-                Remove
-              </button>
+              {editingChildId === child.id ? (
+                <div className="household-form" style={{ flex: 1 }}>
+                  <div className="household-name-row">
+                    <label className="auth-field">
+                      <span>First name</span>
+                      <KeyboardInput
+                        value={editChildFirst}
+                        onChange={(event) => setEditChildFirst(event.target.value)}
+                        placeholder="First name"
+                        autoComplete="off"
+                      />
+                    </label>
+                    <label className="auth-field">
+                      <span>Last name</span>
+                      <KeyboardInput
+                        value={editChildLast}
+                        onChange={(event) => setEditChildLast(event.target.value)}
+                        placeholder="Last name"
+                        autoComplete="off"
+                      />
+                    </label>
+                  </div>
+                  <div className="household-row-actions">
+                    <button className="primary-button" disabled={editChildWorking} onClick={() => void saveEditChild(child.id)}>
+                      {editChildWorking ? "Saving…" : "Save"}
+                    </button>
+                    <button className="text-button" onClick={() => setEditingChildId(null)}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <span><strong>{child.first_name} {child.last_name}</strong></span>
+                  <div className="household-row-actions">
+                    <button
+                      className="inline-action"
+                      disabled={childWorking}
+                      onClick={() => { setEditingChildId(child.id); setEditChildFirst(child.first_name); setEditChildLast(child.last_name); }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="text-button household-remove"
+                      disabled={childWorking}
+                      onClick={() => void removeChild(child.id)}
+                      aria-label={`Remove ${child.first_name} ${child.last_name}`}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </>
+              )}
             </li>
           )) : (
             <li className="household-empty">No children added yet. Add your first child below.</li>
@@ -2139,6 +2308,11 @@ function AccountScreen({
           <button className="primary-button" disabled={vehicleWorking} onClick={() => void saveVehicle()}>
             {vehicleWorking ? "Saving…" : activeVehicle ? "Update vehicle" : "Add vehicle"}
           </button>
+          {activeVehicle ? (
+            <button className="text-button household-remove" disabled={vehicleWorking} onClick={() => void removeVehicle()}>
+              Remove vehicle
+            </button>
+          ) : null}
         </div>
       </section>
 
@@ -2232,9 +2406,15 @@ export default function Prototype() {
   const [weekData, setWeekData] = useState<WeekWithTrips | null>(null);
   const [weekLoading, setWeekLoading] = useState(false);
   const [weekError, setWeekError] = useState<string | null>(null);
+  const [planWeekData, setPlanWeekData] = useState<WeekWithTrips | null>(null);
+  const [planWeekLoading, setPlanWeekLoading] = useState(false);
+  const [planWeekError, setPlanWeekError] = useState<string | null>(null);
+  const [allWeeks, setAllWeeks] = useState<Tables<"weeks">[]>([]);
+  const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
   const [checkin, setCheckin] = useState<Tables<"weekly_checkins"> | null>(null);
   const [checkinDetails, setCheckinDetails] = useState<CheckinDetails | null>(null);
   const [checkinLoading, setCheckinLoading] = useState(false);
+  const [checkinError, setCheckinError] = useState<string | null>(null);
   const [overview, setOverview] = useState<WeekOverview | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
@@ -2247,6 +2427,7 @@ export default function Prototype() {
   const [myAssignments, setMyAssignments] = useState<MyDriverAssignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmWorking, setConfirmWorking] = useState(false);
   const [creatingWeek, setCreatingWeek] = useState(false);
   const [createWeekError, setCreateWeekError] = useState<string | null>(null);
@@ -2299,22 +2480,35 @@ export default function Prototype() {
     if (!identity?.group) return;
     setWeekLoading(true);
     setWeekError(null);
+    setPlanWeekLoading(true);
+    setPlanWeekError(null);
     try {
       const data = await repository.getCurrentWeek(identity.group.id);
       setWeekData(data);
+      const weeks = await repository.listWeeks(identity.group.id);
+      setAllWeeks(weeks);
     } catch (error) {
       setWeekError(readableError(error));
     } finally {
       setWeekLoading(false);
     }
+    try {
+      const planData = await repository.getPlanWeek(identity.group.id);
+      setPlanWeekData(planData);
+    } catch (error) {
+      setPlanWeekError(readableError(error));
+    } finally {
+      setPlanWeekLoading(false);
+    }
   }, [identity?.group, repository]);
 
   const loadCheckin = useCallback(async () => {
-    if (!identity?.membership || !weekData) return;
+    if (!identity?.membership || !planWeekData) return;
     setCheckinLoading(true);
+    setCheckinError(null);
     try {
       const checkinRow = await repository.getOrCreateCheckin(
-        weekData.week.id, identity.membership.household_id, identity.group.id,
+        planWeekData.week.id, identity.membership.household_id, identity.group.id,
       );
       setCheckin(checkinRow);
       let details = await repository.getCheckinDetails(checkinRow.id);
@@ -2323,7 +2517,7 @@ export default function Prototype() {
       if (details.rideRequests.length === 0 && (householdSetup?.children.length ?? 0) > 0) {
         await repository.applyDefaultRideNeeds(
           checkinRow.id, identity.membership.household_id,
-          weekData.trips, householdSetup!.children,
+          planWeekData.trips, householdSetup!.children,
           identity.group.id, identity.profile.id,
         );
         needsReload = true;
@@ -2335,7 +2529,7 @@ export default function Prototype() {
       if (myDriveAvail.length === 0) {
         const activeVehicle = householdSetup?.vehicles.find((v) => v.active) ?? null;
         await repository.applyDefaultDrivePreferences(
-          checkinRow.id, identity.profile.id, weekData.trips,
+          checkinRow.id, identity.profile.id, planWeekData.trips,
           activeVehicle?.id ?? null, identity.group.id,
         );
         needsReload = true;
@@ -2349,10 +2543,11 @@ export default function Prototype() {
     } catch (error) {
       setCheckin(null);
       setCheckinDetails(null);
+      setCheckinError(readableError(error));
     } finally {
       setCheckinLoading(false);
     }
-  }, [identity?.membership, identity?.group, identity?.profile, weekData, householdSetup, repository]);
+  }, [identity?.membership, identity?.group, identity?.profile, planWeekData, householdSetup, repository]);
 
   const loadOverview = useCallback(async () => {
     if (!identity?.group || !weekData) return;
@@ -2374,8 +2569,8 @@ export default function Prototype() {
   }, [identity?.membership, loadWeek]);
 
   useEffect(() => {
-    if (weekData) void loadCheckin();
-  }, [weekData, loadCheckin]);
+    if (planWeekData) void loadCheckin();
+  }, [planWeekData, loadCheckin]);
 
   useEffect(() => {
     if (activeTab === "coordinate" && weekData) void loadOverview();
@@ -2386,9 +2581,14 @@ export default function Prototype() {
     setScheduleLoading(true);
     setScheduleError(null);
     try {
+      // Use selectedWeekId if set (week navigation), otherwise the current week.
+      const viewWeek = selectedWeekId
+        ? await repository.getWeekById(selectedWeekId)
+        : weekData;
+      if (!viewWeek) { setSchedule(null); return; }
       const roster = await repository.getGroupRoster(identity.group.id);
       const version = await repository.getLatestScheduleVersion(
-        weekData.week.id, identity.group.id, weekData.trips,
+        viewWeek.week.id, identity.group.id, viewWeek.trips,
         roster.children, roster.vehicles, roster.profiles,
       );
       setSchedule(version);
@@ -2398,11 +2598,15 @@ export default function Prototype() {
     } finally {
       setScheduleLoading(false);
     }
-  }, [identity?.group, weekData, repository]);
+  }, [identity?.group, weekData, selectedWeekId, repository]);
 
   useEffect(() => {
     if (weekData) void loadSchedule();
-  }, [weekData, loadSchedule]);
+  }, [weekData, selectedWeekId, loadSchedule]);
+
+  useEffect(() => {
+    if (activeTab === "week" && weekData) void loadSchedule();
+  }, [activeTab, weekData, loadSchedule]);
 
   const generateSchedule = useCallback(async () => {
     if (!weekData) return;
@@ -2454,13 +2658,14 @@ export default function Prototype() {
     const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
     if (tentative.length === 0) return;
     setConfirmWorking(true);
+    setConfirmError(null);
     try {
       for (const entry of tentative) {
         await repository.respondToDriverAssignment(entry.assignment.id, "confirmed");
       }
       await loadMyAssignments();
     } catch (error) {
-      setGenerateError(readableError(error));
+      setConfirmError(readableError(error));
     } finally {
       setConfirmWorking(false);
     }
@@ -2635,12 +2840,13 @@ export default function Prototype() {
     if (activeTab === "plan") {
       return (
         <PlanScreen
-          week={weekData}
-          weekLoading={weekLoading}
-          weekError={weekError}
+          week={planWeekData}
+          weekLoading={planWeekLoading}
+          weekError={planWeekError}
           checkin={checkin}
           checkinDetails={checkinDetails}
           checkinLoading={checkinLoading}
+          checkinError={checkinError}
           setup={householdSetup}
           repository={repository}
           driverProfileId={identity.profile.id}
@@ -2669,6 +2875,9 @@ export default function Prototype() {
           onReloadWeek={() => void loadWeek()}
           onReloadSchedule={() => void loadSchedule()}
           weekStartsOn={weekData?.week.starts_on ?? null}
+          allWeeks={allWeeks}
+          selectedWeekId={selectedWeekId}
+          onSelectWeek={(id) => { setSelectedWeekId(id); }}
         />
       );
     }
@@ -2703,6 +2912,7 @@ export default function Prototype() {
         myAssignments={myAssignments}
         assignmentsLoading={assignmentsLoading}
         assignmentsError={assignmentsError}
+        confirmError={confirmError}
         schedulePublished={schedule?.version.status === "published"}
         onConfirmAll={() => void confirmAll()}
         onReview={() => setReviewOpen(true)}
@@ -2712,6 +2922,7 @@ export default function Prototype() {
         working={confirmWorking}
         avatarUrl={identity.profile.avatar_url}
         weekStartsOn={weekData?.week.starts_on ?? null}
+        confirmationDeadline={weekData?.week.confirmation_deadline ?? null}
       />
     );
   };

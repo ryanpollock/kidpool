@@ -63,7 +63,7 @@ test("Exchange 4 plan screen is DB-backed with real week, trips, and check-in", 
 test("Exchange 4 plan screen handles no-week and no-children states", async () => {
   const source = await readFile(prototypeUrl, "utf8");
 
-  assert.match(source, /No week has been created yet/);
+  assert.match(source, /No upcoming week has been created yet/);
   assert.match(source, /Create next week/);
   assert.match(source, /Add your children in your account first/);
   assert.match(source, /data-testid="create-week-plan"/);
