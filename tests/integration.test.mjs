@@ -154,23 +154,26 @@ function cleanupAllTestData() {
   //    to avoid the handle_new_user trigger re-creating profiles)
   deleteTestUsersByEmail();
 
-  // 2. Delete all test data for the group (seed only creates a group, no households)
+  // 2. Surgical delete: only test-owned rows (deadbeef IDs / test email domains).
+  //    Pre-seeded weeks/trips (non-deadbeef IDs) are never touched.
   runSql(`
-    DELETE FROM public.driver_confirmations WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.rider_assignments WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.driver_assignments WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.schedule_versions WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.driver_availability WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.ride_requests WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.weekly_checkins WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.trips WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.household_join_codes WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.vehicles WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.children WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.memberships WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.households WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.audit_events WHERE group_id = '${GROUP_ID}';
+    -- Test weeks (deadbeef ID) cascade to trips, checkins, schedule_versions, assignments, confirmations
+    DELETE FROM public.weeks WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
+
+    -- Checkins on pre-seeded weeks by test households (app-created, Supabase UUID)
+    -- cascades to ride_requests, driver_availability
+    DELETE FROM public.weekly_checkins WHERE household_id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
+
+    -- Test households (deadbeef ID) cascade to memberships, children, vehicles, join codes
+    DELETE FROM public.households WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
+
+    -- Test audit events (reference test data or test actors)
+    DELETE FROM public.audit_events WHERE group_id = '${GROUP_ID}' AND (
+      entity_id::text LIKE 'deadbeef-%'
+      OR actor_profile_id IN (SELECT id FROM public.profiles WHERE email LIKE '%@test.kidpool' OR email LIKE '%@e2e.kidpool')
+    );
+
+    -- Test profiles (by email domain)
     DELETE FROM public.profiles WHERE email LIKE '%@test.kidpool' OR email LIKE '%@e2e.kidpool';
   `);
 }
@@ -192,8 +195,8 @@ function setupHousehold(n, name, role = "member", coordinator = false) {
 function setupWeekAndTrips(coordUserId, coordHouseholdId) {
   const weekId = UID(900);
   const tripIds = [];
-  const dates = ["2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"];
-  let sql = `INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${weekId}', '${GROUP_ID}', '2026-08-03', 'open') ON CONFLICT DO NOTHING;\n`;
+  const dates = ["2028-01-03", "2028-01-04", "2028-01-05", "2028-01-06", "2028-01-07"];
+  let sql = `INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${weekId}', '${GROUP_ID}', '2028-01-03', 'open') ON CONFLICT DO NOTHING;\n`;
   for (let d = 0; d < 5; d++) {
     for (const dir of ["morning", "afternoon"]) {
       const tId = UID(400 + d * 2 + (dir === "morning" ? 0 : 1));
@@ -267,7 +270,7 @@ test("RLS: non-coordinator member cannot create weeks", { skip: !SERVICE_KEY }, 
   const result = restPost("weeks", {
     id: UID(950),
     group_id: GROUP_ID,
-    starts_on: "2026-08-03",
+    starts_on: "2028-01-03",
     status: "open",
   }, null, ANON_KEY);
 

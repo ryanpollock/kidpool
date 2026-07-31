@@ -84,21 +84,23 @@ function deleteTestUsersByEmail() {
 function cleanupE2EData() {
   deleteTestUsersByEmail();
   runSql(`
-    DELETE FROM public.driver_confirmations WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.rider_assignments WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.driver_assignments WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.schedule_versions WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.driver_availability WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.ride_requests WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.weekly_checkins WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.trips WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.household_join_codes WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.vehicles WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.children WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.memberships WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.households WHERE group_id = '${GROUP_ID}';
-    DELETE FROM public.audit_events WHERE group_id = '${GROUP_ID}';
+    -- Test weeks (deadbeef ID) cascade to trips, checkins, schedule_versions, assignments, confirmations
+    DELETE FROM public.weeks WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
+
+    -- Checkins on pre-seeded weeks by test households (app-created, Supabase UUID)
+    -- cascades to ride_requests, driver_availability
+    DELETE FROM public.weekly_checkins WHERE household_id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
+
+    -- Test households (deadbeef ID) cascade to memberships, children, vehicles, join codes
+    DELETE FROM public.households WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
+
+    -- Test audit events (reference test data or test actors)
+    DELETE FROM public.audit_events WHERE group_id = '${GROUP_ID}' AND (
+      entity_id::text LIKE 'deadbeef-%'
+      OR actor_profile_id IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool')
+    );
+
+    -- Test profiles (by email domain)
     DELETE FROM public.profiles WHERE email LIKE '%@e2e.kidpool';
   `);
 }
@@ -189,7 +191,7 @@ test.describe("App E2E", () => {
       INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(304)}', '${GROUP_ID}', '${user.householdId}', 'Family Car', 4, '${user.userId}') ON CONFLICT DO NOTHING;
     `);
     runSql(`
-      INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${UID(904)}', '${GROUP_ID}', '2026-08-03', 'open') ON CONFLICT DO NOTHING;
+      INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${UID(904)}', '${GROUP_ID}', '2028-01-03', 'open') ON CONFLICT DO NOTHING;
     `);
 
     await signInWithTestAuth(page, user.email);
@@ -203,7 +205,7 @@ test.describe("App E2E", () => {
     test.skip(skip, "Requires service key");
     const user = setupHousehold(5, "E2eWeek", false);
     if (!user) { test.skip(); return; }
-    runSql(`INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${UID(905)}', '${GROUP_ID}', '2026-08-03', 'open') ON CONFLICT DO NOTHING;`);
+    runSql(`INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${UID(905)}', '${GROUP_ID}', '2028-01-03', 'open') ON CONFLICT DO NOTHING;`);
 
     await signInWithTestAuth(page, user.email);
     await page.getByTestId("nav-week").click();
