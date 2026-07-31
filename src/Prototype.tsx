@@ -180,9 +180,27 @@ function OnboardingScreen({
   const [error, setError] = useState<string | null>(null);
   const [existingNames, setExistingNames] = useState<string[]>([]);
   const [nameWarning, setNameWarning] = useState<string | null>(null);
-  const [showDriveStep, setShowDriveStep] = useState(false);
+
+  const [step, setStep] = useState<"household" | "children" | "vehicle" | "standard_week">("household");
+
+  const [householdId, setHouseholdId] = useState<string | null>(null);
+  const [onboardingChildren, setOnboardingChildren] = useState<Tables<"children">[]>([]);
+  const [childFirst, setChildFirst] = useState("");
+  const [childLast, setChildLast] = useState("");
+  const [childWorking, setChildWorking] = useState(false);
+  const [childError, setChildError] = useState<string | null>(null);
+
+  const [vehicleLabel, setVehicleLabel] = useState("");
+  const [vehicleCapacity, setVehicleCapacity] = useState("4");
+  const [vehicleNotes, setVehicleNotes] = useState("");
+  const [vehicleId, setVehicleId] = useState<string | null>(null);
+  const [vehicleWorking, setVehicleWorking] = useState(false);
+  const [vehicleError, setVehicleError] = useState<string | null>(null);
+
   const [driveDefaults, setDriveDefaults] = useState<DefaultDrivePref[]>(emptyDriveDefaults());
-  const [driveSaving, setDriveSaving] = useState(false);
+  const [rideNeeds, setRideNeeds] = useState<DefaultRideNeed[]>([]);
+  const [standardWeekSaving, setStandardWeekSaving] = useState(false);
+  const [standardWeekError, setStandardWeekError] = useState<string | null>(null);
 
   const saveProfile = async () => {
     const normalizedName = fullName.trim().replace(/\s+/g, " ");
@@ -199,6 +217,7 @@ function OnboardingScreen({
       await saveProfile();
       if (!householdName.trim()) throw new Error("Enter a household name.");
       const created = await repository.createHousehold(identity.group.id, householdName);
+      setHouseholdId(created.household_id);
       setCreatedCode(created.join_code);
     } catch (nextError) {
       setError(readableError(nextError));
@@ -213,8 +232,16 @@ function OnboardingScreen({
     try {
       await saveProfile();
       if (!joinCode.trim()) throw new Error("Enter the household code.");
-      await repository.joinHousehold(identity.group.id, joinCode);
-      setShowDriveStep(true);
+      const joinedHouseholdId = await repository.joinHousehold(identity.group.id, joinCode) as unknown as string;
+      setHouseholdId(joinedHouseholdId);
+
+      const setup = await repository.getHouseholdSetup(joinedHouseholdId);
+      if (setup?.children.length) setOnboardingChildren(setup.children);
+
+      const existingNeeds = await repository.getDefaultRideNeeds(joinedHouseholdId);
+      if (existingNeeds.length) setRideNeeds(existingNeeds);
+
+      setStep("children");
     } catch (nextError) {
       setError(readableError(nextError));
     } finally {
@@ -251,20 +278,80 @@ function OnboardingScreen({
     checkNameMatch(value);
   };
 
-  if (createdCode) {
+  const addChildInOnboarding = async () => {
+    if (!householdId) return;
+    setChildWorking(true);
+    setChildError(null);
+    try {
+      const child = await repository.addChild(householdId, identity.group.id, childFirst, childLast);
+      setOnboardingChildren((prev) => [...prev, child]);
+      setChildFirst("");
+      setChildLast("");
+    } catch (nextError) {
+      setChildError(readableError(nextError));
+    } finally {
+      setChildWorking(false);
+    }
+  };
+
+  const addVehicleInOnboarding = async () => {
+    if (!householdId) return;
+    const capacity = Number(vehicleCapacity);
+    if (!vehicleLabel.trim()) {
+      setVehicleError("Enter a vehicle label.");
+      return;
+    }
+    if (!Number.isFinite(capacity) || capacity < 1 || capacity > 12) {
+      setVehicleError("Passenger seats must be between 1 and 12.");
+      return;
+    }
+    setVehicleWorking(true);
+    setVehicleError(null);
+    try {
+      const vehicle = await repository.upsertVehicle(householdId, identity.group.id, {
+        label: vehicleLabel,
+        childPassengerCapacity: capacity,
+        notes: vehicleNotes || undefined,
+      });
+      setVehicleId(vehicle.id);
+    } catch (nextError) {
+      setVehicleError(readableError(nextError));
+    } finally {
+      setVehicleWorking(false);
+    }
+  };
+
+  const saveStandardWeek = async () => {
+    if (!householdId) return;
+    setStandardWeekSaving(true);
+    setStandardWeekError(null);
+    try {
+      if (onboardingChildren.length > 0) {
+        await repository.saveDefaultRideNeeds(householdId, rideNeeds);
+      }
+      await repository.saveDefaultDrivePreferences(driveDefaults);
+      await onComplete();
+    } catch (nextError) {
+      setStandardWeekError(readableError(nextError));
+    } finally {
+      setStandardWeekSaving(false);
+    }
+  };
+
+  if (createdCode && step === "household") {
     return (
       <div className="screen-content onboarding-screen onboarding-success" data-testid="household-created">
         <span className="success-orb"><CheckCircledIcon width="30" height="30" /></span>
         <span className="eyebrow">Household created</span>
         <h1>Your family is connected.</h1>
-        <p>Share this code with another parent in your household. They’ll sign in with their own Google account, then enter it once.</p>
+        <p>Share this code with another parent in your household. They'll sign in with their own Google account, then enter it once.</p>
         <div className="join-code-card">
           <small>Household join code</small>
           <strong>{createdCode}</strong>
         </div>
         <p className="onboarding-note">You can find this code again from your household profile.</p>
-        <button className="primary-button" onClick={() => setShowDriveStep(true)}>
-          Set your standard week <ChevronRightIcon />
+        <button className="primary-button" onClick={() => setStep("children")}>
+          Continue <ChevronRightIcon />
         </button>
         <button className="onboarding-signout" onClick={onSignOut}>
           Sign out
@@ -273,50 +360,196 @@ function OnboardingScreen({
     );
   }
 
-  if (showDriveStep) {
+  if (step === "children") {
     return (
-      <div className="screen-content onboarding-screen" data-testid="drive-step">
+      <div className="screen-content onboarding-screen" data-testid="onboarding-children">
         <header className="page-title">
-          <span className="eyebrow">Standard driving preferences</span>
-          <h1>Your typical week</h1>
-          <p>Set your standard driving availability. New weeks inherit these automatically — adjust any week as needed.</p>
+          <span className="eyebrow">Children</span>
+          <h1>Who needs rides?</h1>
+          <p>Add the children in your household who'll be carpooling.</p>
         </header>
 
-        <DrivePreferenceGrid
-          preferences={driveDefaults}
-          onChange={setDriveDefaults}
-          hasVehicle={false}
-          disabled={driveSaving}
-        />
+        {onboardingChildren.length > 0 ? (
+          <ul className="household-list">
+            {onboardingChildren.map((child) => (
+              <li key={child.id} className="household-list-row">
+                <span><strong>{child.first_name} {child.last_name}</strong></span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="helper-copy">No children added yet.</p>
+        )}
 
-        <p className="helper-copy">Add a vehicle in your account to unlock driving. You can update these preferences anytime in your profile.</p>
-
-        {error ? <div className="auth-error" role="alert">{error}</div> : null}
+        <div className="household-form" data-testid="add-child-form">
+          <div className="household-name-row">
+            <label className="auth-field">
+              <span>First name</span>
+              <KeyboardInput
+                value={childFirst}
+                onChange={(event) => setChildFirst(event.target.value)}
+                placeholder="First name"
+                autoComplete="off"
+              />
+            </label>
+            <label className="auth-field">
+              <span>Last name</span>
+              <KeyboardInput
+                value={childLast}
+                onChange={(event) => setChildLast(event.target.value)}
+                placeholder="Last name"
+                autoComplete="off"
+              />
+            </label>
+          </div>
+          {childError ? <div className="auth-error" role="alert">{childError}</div> : null}
+          <button
+            className="primary-button"
+            disabled={childWorking || (!childFirst.trim() && !childLast.trim())}
+            onClick={() => void addChildInOnboarding()}
+          >
+            {childWorking ? "Adding…" : "Add child"}
+          </button>
+        </div>
 
         <button
           className="primary-button"
-          disabled={driveSaving}
-          onClick={() => void (async () => {
-            setDriveSaving(true);
-            setError(null);
-            try {
-              await repository.saveDefaultDrivePreferences(driveDefaults);
-              await onComplete();
-            } catch (nextError) {
-              setError(readableError(nextError));
-            } finally {
-              setDriveSaving(false);
-            }
-          })()}
+          onClick={() => setStep("vehicle")}
         >
-          {driveSaving ? "Saving…" : "Save and continue"}
+          {onboardingChildren.length > 0 ? "Continue" : "Skip — no children yet"} <ChevronRightIcon />
+        </button>
+        <button className="onboarding-signout" onClick={onSignOut}>
+          Sign out
+        </button>
+      </div>
+    );
+  }
+
+  if (step === "vehicle") {
+    return (
+      <div className="screen-content onboarding-screen" data-testid="onboarding-vehicle">
+        <header className="page-title">
+          <span className="eyebrow">Vehicle</span>
+          <h1>Can you drive?</h1>
+          <p>Add a vehicle if you plan to drive. You can skip this and add one later.</p>
+        </header>
+
+        {vehicleId ? (
+          <div className="success-banner">
+            <CheckCircledIcon width="24" height="24" />
+            <span>
+              <strong>{vehicleLabel}</strong>
+              <small>{vehicleCapacity} passenger seats</small>
+            </span>
+          </div>
+        ) : (
+          <div className="household-form" data-testid="vehicle-form">
+            <label className="auth-field">
+              <span>Vehicle label</span>
+              <KeyboardInput
+                value={vehicleLabel}
+                onChange={(event) => setVehicleLabel(event.target.value)}
+                placeholder="For example, Blue Subaru"
+                autoComplete="off"
+              />
+            </label>
+            <label className="auth-field">
+              <span>Passenger seats</span>
+              <KeyboardInput
+                value={vehicleCapacity}
+                onChange={(event) => setVehicleCapacity(event.target.value.replace(/[^0-9]/g, ""))}
+                inputMode="numeric"
+                placeholder="1 to 12"
+                autoComplete="off"
+              />
+              <small>Total child-passenger capacity. Includes your own children when riding.</small>
+            </label>
+            <label className="auth-field">
+              <span>Notes (optional)</span>
+              <KeyboardInput
+                value={vehicleNotes}
+                onChange={(event) => setVehicleNotes(event.target.value)}
+                placeholder="Anything drivers need to know"
+                autoComplete="off"
+              />
+            </label>
+            {vehicleError ? <div className="auth-error" role="alert">{vehicleError}</div> : null}
+            <button
+              className="primary-button"
+              disabled={vehicleWorking}
+              onClick={() => void addVehicleInOnboarding()}
+            >
+              {vehicleWorking ? "Adding…" : "Add vehicle"}
+            </button>
+          </div>
+        )}
+
+        <button
+          className="primary-button"
+          onClick={() => setStep("standard_week")}
+        >
+          {vehicleId ? "Continue" : "Skip — no vehicle yet"} <ChevronRightIcon />
+        </button>
+        <button className="onboarding-signout" onClick={onSignOut}>
+          Sign out
+        </button>
+      </div>
+    );
+  }
+
+  if (step === "standard_week") {
+    const hasVehicle = vehicleId !== null;
+    return (
+      <div className="screen-content onboarding-screen" data-testid="standard-week-step">
+        <header className="page-title">
+          <span className="eyebrow">Standard week</span>
+          <h1>Your typical week</h1>
+          <p>These fill in automatically each week. You can still adjust any week.</p>
+        </header>
+
+        {onboardingChildren.length > 0 ? (
+          <div className="standard-week-subsection">
+            <h3 className="standard-week-label">Rides for</h3>
+            <RideNeedsGrid
+              children={onboardingChildren}
+              needs={rideNeeds}
+              onChange={setRideNeeds}
+              disabled={standardWeekSaving}
+            />
+          </div>
+        ) : null}
+
+        <div className="standard-week-subsection">
+          <h3 className="standard-week-label">Your driving</h3>
+          <DrivePreferenceGrid
+            preferences={driveDefaults}
+            onChange={setDriveDefaults}
+            hasVehicle={hasVehicle}
+            disabled={standardWeekSaving}
+          />
+          {!hasVehicle ? (
+            <p className="helper-copy">Add a vehicle in your account to unlock driving.</p>
+          ) : null}
+        </div>
+
+        {standardWeekError ? <div className="auth-error" role="alert">{standardWeekError}</div> : null}
+
+        <button
+          className="primary-button"
+          disabled={standardWeekSaving}
+          onClick={() => void saveStandardWeek()}
+        >
+          {standardWeekSaving ? "Saving…" : "Save and continue"}
         </button>
         <button
           className="text-button"
-          disabled={driveSaving}
+          disabled={standardWeekSaving}
           onClick={() => void onComplete()}
         >
           Skip for now
+        </button>
+        <button className="onboarding-signout" onClick={onSignOut}>
+          Sign out
         </button>
       </div>
     );
@@ -326,7 +559,7 @@ function OnboardingScreen({
     <div className="screen-content onboarding-screen" data-testid="onboarding-screen">
       <header className="page-title">
         <span className="eyebrow">First-time setup</span>
-        <h1>Let’s connect your family.</h1>
+        <h1>Let's connect your family.</h1>
         <p>{identity.group.name}</p>
       </header>
 
@@ -352,7 +585,7 @@ function OnboardingScreen({
             setMode("create");
           }}>
             <span><HomeIcon /></span>
-            <span><strong>Create my household</strong><small>I’m the first parent from my family</small></span>
+            <span><strong>Create my household</strong><small>I'm the first parent from my family</small></span>
             <ChevronRightIcon />
           </button>
           <button className="choice-card" onClick={() => setMode("join")}>
@@ -360,7 +593,7 @@ function OnboardingScreen({
             <span><strong>Join my household</strong><small>I received a code from another parent</small></span>
             <ChevronRightIcon />
           </button>
-          <p>Not sure which to choose? If your spouse already signed up, ask them for your household code. If you&apos;re the first in your family, create a new household and share the code with them.</p>
+          <p>Not sure which to choose? If your spouse already signed up, ask them for your household code. If you're the first in your family, create a new household and share the code with them.</p>
         </div>
       ) : null}
 
@@ -2077,7 +2310,10 @@ export default function Prototype() {
         needsReload = true;
       }
 
-      if (details.driverAvailability.length === 0) {
+      const myDriveAvail = details.driverAvailability.filter(
+        (a) => a.driver_profile_id === identity.profile.id,
+      );
+      if (myDriveAvail.length === 0) {
         const activeVehicle = householdSetup?.vehicles.find((v) => v.active) ?? null;
         await repository.applyDefaultDrivePreferences(
           checkinRow.id, identity.profile.id, weekData.trips,

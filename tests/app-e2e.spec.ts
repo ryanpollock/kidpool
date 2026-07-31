@@ -87,12 +87,18 @@ function cleanupE2EData() {
     -- Test weeks (deadbeef ID) cascade to trips, checkins, schedule_versions, assignments, confirmations
     DELETE FROM public.weeks WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
 
-    -- Checkins on pre-seeded weeks by test households (app-created, Supabase UUID)
+    -- Checkins for test households (deadbeef ID OR created by test profiles)
     -- cascades to ride_requests, driver_availability
-    DELETE FROM public.weekly_checkins WHERE household_id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
+    DELETE FROM public.weekly_checkins WHERE group_id = '${GROUP_ID}' AND (
+      household_id::text LIKE 'deadbeef-%'
+      OR household_id IN (SELECT id FROM public.households WHERE group_id = '${GROUP_ID}' AND created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool'))
+    );
 
-    -- Test households (deadbeef ID) cascade to memberships, children, vehicles, join codes
-    DELETE FROM public.households WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
+    -- Test households (deadbeef ID OR created by test profiles) cascade to memberships, children, vehicles, join codes
+    DELETE FROM public.households WHERE group_id = '${GROUP_ID}' AND (
+      id::text LIKE 'deadbeef-%'
+      OR created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool')
+    );
 
     -- Test audit events (reference test data or test actors)
     DELETE FROM public.audit_events WHERE group_id = '${GROUP_ID}' AND (
