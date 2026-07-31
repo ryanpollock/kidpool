@@ -282,7 +282,7 @@ button {
 }
 
 /* Desktop: center the app in a phone-width column so it stays usable. */
-@media (min-width: 600px) {
+@media (min-width: 1024px) {
   .mobile-runtime-frameless {
     position: relative;
     width: 100%;
