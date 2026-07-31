@@ -1832,7 +1832,24 @@ export default function Prototype() {
       if (error) setAuthError(readableError(error));
       setSession(data.session);
       setAuthInitialized(true);
-      if (data.session) void loadIdentity();
+      if (data.session) {
+        void loadIdentity();
+        return;
+      }
+
+      // Dev-only test auth bypass: auto sign in with ?testAuth=email|password
+      if (import.meta.env.DEV) {
+        const params = new URLSearchParams(window.location.search);
+        const testAuth = params.get("testAuth");
+        if (testAuth) {
+          const [email, password] = testAuth.split("|");
+          if (email && password) {
+            void supabase.auth.signInWithPassword({ email, password }).then(({ error: signInError }) => {
+              if (signInError) setAuthError(readableError(signInError));
+            });
+          }
+        }
+      }
     });
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
@@ -1862,6 +1879,18 @@ export default function Prototype() {
     setAuthWorking(true);
     setAuthError(null);
     try {
+      if (import.meta.env.DEV) {
+        const params = new URLSearchParams(window.location.search);
+        const testEmail = params.get("testAuth");
+        if (testEmail) {
+          const [email, password] = testEmail.split("|");
+          if (email && password) {
+            const { error } = await supabase.auth.signInWithPassword({ email, password });
+            if (error) throw error;
+            return;
+          }
+        }
+      }
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo: window.location.origin },

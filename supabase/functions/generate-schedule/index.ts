@@ -3,7 +3,11 @@
 // Reads the week's trips, check-ins, ride requests, driver availability,
 // vehicles, children, and existing assignments; runs the pure greedy-v1
 // algorithm; writes a new schedule_version with tentative driver and rider
-// assignments in a single transaction.
+// assignments.
+//
+// Error handling: every data load and write is error-checked. A failure at
+// any point returns a 500 with a descriptive message rather than silently
+// producing a partial or empty schedule.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
@@ -25,34 +29,49 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { weekId } = await req.json();
+    // ── Parse and validate request body ──────────────────────────
+    let weekId: unknown;
+    try {
+      const body = await req.json();
+      weekId = body?.weekId;
+    } catch {
+      return jsonError("Missing or invalid request body.", 400);
+    }
     if (!weekId || typeof weekId !== "string") {
       return jsonError("Missing weekId.", 400);
     }
 
-    const authHeader = req.headers.get("Authorization") ?? "";
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_ANON_KEY") ?? "",
-      { global: { headers: { Authorization: authHeader } } },
-    );
+    // ── Validate server configuration ─────────────────────────────
+    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return jsonError("Server configuration error.", 500);
+    }
 
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+
+    // ── Authenticate ──────────────────────────────────────────────
     const { data: userData, error: userError } = await supabase.auth.getUser();
     if (userError || !userData.user) {
       return jsonError("Authentication required.", 401);
     }
     const userId = userData.user.id;
 
+    // ── Load week ─────────────────────────────────────────────────
     const { data: weekRow, error: weekError } = await supabase
       .from("weeks")
       .select("id, group_id")
-      .eq("id", weekId)
+      .eq("id", weekId as string)
       .maybeSingle();
     if (weekError || !weekRow) {
       return jsonError("Week not found.", 404);
     }
     const groupId = weekRow.group_id;
 
+    // ── Verify coordinator ────────────────────────────────────────
     const { data: membership, error: membershipError } = await supabase
       .from("memberships")
       .select("role")
@@ -64,15 +83,21 @@ Deno.serve(async (req: Request) => {
       return jsonError("Only coordinators can generate schedules.", 403);
     }
 
+    // ── Load data (phase 1: trips first, then trip-dependent queries) ──
     const [tripsRes, checkinsRes, vehiclesRes, childrenRes, membershipsRes] = await Promise.all([
-      supabase.from("trips").select("id, service_date, direction, week_id, group_id").eq("week_id", weekId).eq("group_id", groupId).order("service_date").order("direction"),
-      supabase.from("weekly_checkins").select("id, household_id, max_drives").eq("week_id", weekId).eq("group_id", groupId),
+      supabase.from("trips").select("id, service_date, direction, week_id, group_id").eq("week_id", weekId as string).eq("group_id", groupId).order("service_date").order("direction"),
+      supabase.from("weekly_checkins").select("id, household_id, max_drives").eq("week_id", weekId as string).eq("group_id", groupId),
       supabase.from("vehicles").select("id, household_id, label, child_passenger_capacity, active, group_id").eq("group_id", groupId).eq("active", true),
       supabase.from("children").select("id, household_id, first_name, last_name, active, group_id").eq("group_id", groupId).eq("active", true),
       supabase.from("memberships").select("profile_id, household_id, status, group_id").eq("group_id", groupId).eq("status", "active"),
     ]);
 
+    // Check every data-load result for errors
     if (tripsRes.error || !tripsRes.data) return jsonError("Failed to load trips.", 500);
+    if (checkinsRes.error) return jsonError("Failed to load check-ins.", 500);
+    if (vehiclesRes.error) return jsonError("Failed to load vehicles.", 500);
+    if (childrenRes.error) return jsonError("Failed to load children.", 500);
+    if (membershipsRes.error) return jsonError("Failed to load memberships.", 500);
 
     const tripIds = tripsRes.data.map((t: { id: string }) => t.id);
     const [rideRequestsRes, availabilityRes] = await Promise.all([
@@ -80,11 +105,17 @@ Deno.serve(async (req: Request) => {
       supabase.from("driver_availability").select("trip_id, driver_profile_id, vehicle_id, preference, group_id").in("trip_id", tripIds),
     ]);
 
+    if (rideRequestsRes.error) return jsonError("Failed to load ride requests.", 500);
+    if (availabilityRes.error) return jsonError("Failed to load driver availability.", 500);
+
     const profileIds = (membershipsRes.data ?? []).map((m: { profile_id: string }) => m.profile_id);
     const profilesRes = profileIds.length
       ? await supabase.from("profiles").select("id, full_name").in("id", profileIds)
       : { data: [], error: null };
 
+    if (profilesRes.error) return jsonError("Failed to load profiles.", 500);
+
+    // ── Build algorithm inputs ───────────────────────────────────
     const profileHouseholdMap = new Map<string, string>();
     for (const m of (membershipsRes.data ?? []) as Array<{ profile_id: string; household_id: string }>) {
       profileHouseholdMap.set(m.profile_id, m.household_id);
@@ -138,24 +169,29 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // ── Load existing assignments for stability ──────────────────
     let existingAssignments: SchedulingAssignment[] = [];
     let nextVersionNumber = 1;
-    const { data: latestVersion } = await supabase
+    const { data: latestVersion, error: latestVersionError } = await supabase
       .from("schedule_versions")
       .select("id, version_number, status")
-      .eq("week_id", weekId)
+      .eq("week_id", weekId as string)
       .eq("group_id", groupId)
       .order("version_number", { ascending: false })
       .limit(1)
       .maybeSingle();
 
+    if (latestVersionError) return jsonError("Failed to load existing schedule versions.", 500);
+
     if (latestVersion && latestVersion.id) {
       nextVersionNumber = latestVersion.version_number + 1;
-      const { data: priorDriverAssignments } = await supabase
+      const { data: priorDriverAssignments, error: priorError } = await supabase
         .from("driver_assignments")
         .select("id, trip_id, driver_profile_id, vehicle_id, child_passenger_capacity, status")
         .eq("schedule_version_id", latestVersion.id)
         .eq("group_id", groupId);
+
+      if (priorError) return jsonError("Failed to load prior assignments.", 500);
 
       existingAssignments = (priorDriverAssignments ?? []).map((a) => ({
         driver_profile_id: a.driver_profile_id,
@@ -166,6 +202,7 @@ Deno.serve(async (req: Request) => {
       }));
     }
 
+    // ── Run the algorithm ────────────────────────────────────────
     const inputs: SchedulingInputs = {
       trips,
       children,
@@ -179,11 +216,12 @@ Deno.serve(async (req: Request) => {
 
     const outputs = generateSchedule(inputs);
 
+    // ── Write schedule version ───────────────────────────────────
     const { data: newVersion, error: versionError } = await supabase
       .from("schedule_versions")
       .insert({
         group_id: groupId,
-        week_id: weekId,
+        week_id: weekId as string,
         version_number: nextVersionNumber,
         status: "draft",
         algorithm_version: ALGORITHM_VERSION,
@@ -196,13 +234,19 @@ Deno.serve(async (req: Request) => {
       return jsonError("Failed to create schedule version.", 500);
     }
 
+    // ── Supersede prior version ──────────────────────────────────
     if (latestVersion && latestVersion.id) {
-      await supabase
+      const { error: supersedeError } = await supabase
         .from("schedule_versions")
         .update({ status: "superseded" })
         .eq("id", latestVersion.id);
+      if (supersedeError) {
+        console.warn("Failed to supersede prior version:", supersedeError.message);
+      }
     }
 
+    // ── Write driver and rider assignments ──────────────────────
+    let writtenAssignmentCount = 0;
     for (const tripResult of outputs.trips) {
       for (const assignment of tripResult.assignments) {
         const { data: driverAssignment, error: driverError } = await supabase
@@ -219,7 +263,11 @@ Deno.serve(async (req: Request) => {
           .select("id")
           .single();
 
-        if (driverError || !driverAssignment) continue;
+        if (driverError || !driverAssignment) {
+          return jsonError("Failed to create driver assignment.", 500);
+        }
+
+        writtenAssignmentCount++;
 
         if (assignment.assigned_child_ids.length > 0) {
           const riderInserts = assignment.assigned_child_ids.map((childId) => ({
@@ -229,28 +277,32 @@ Deno.serve(async (req: Request) => {
             driver_assignment_id: driverAssignment.id,
             child_id: childId,
           }));
-          await supabase.from("rider_assignments").insert(riderInserts);
+          const { error: riderError } = await supabase.from("rider_assignments").insert(riderInserts);
+          if (riderError) {
+            return jsonError("Failed to create rider assignments.", 500);
+          }
         }
       }
     }
 
-    const assignmentCount = outputs.trips.reduce(
-      (sum, t) => sum + t.assignments.length,
-      0,
-    );
-    await supabase.from("audit_events").insert({
-      group_id: groupId,
-      actor_profile_id: userId,
-      action: "schedule_generated",
-      entity_type: "schedule_version",
-      entity_id: newVersion.id,
-      details: {
-        version_number: newVersion.version_number,
-        week_id: weekId,
-        assignment_count: assignmentCount,
-        algorithm: ALGORITHM_VERSION,
-      },
-    });
+    // ── Audit event (best-effort) ───────────────────────────────
+    try {
+      await supabase.from("audit_events").insert({
+        group_id: groupId,
+        actor_profile_id: userId,
+        action: "schedule_generated",
+        entity_type: "schedule_version",
+        entity_id: newVersion.id,
+        details: {
+          version_number: newVersion.version_number,
+          week_id: weekId,
+          assignment_count: writtenAssignmentCount,
+          algorithm: ALGORITHM_VERSION,
+        },
+      });
+    } catch (auditError) {
+      console.warn("Failed to write audit event:", auditError instanceof Error ? auditError.message : "unknown");
+    }
 
     return new Response(
       JSON.stringify({
