@@ -631,7 +631,7 @@ function ReviewScreen({
                     <KeyboardInput
                       value={declineReason}
                       onChange={(event) => setDeclineReason(event.target.value)}
-                      placeholder="Help your coordinator find a replacement"
+                      placeholder="Help your admin find a replacement"
                       autoComplete="off"
                     />
                   </label>
@@ -744,7 +744,7 @@ function PlanScreen({
               Create next week
             </button>
           ) : (
-            <p className="helper-copy">A coordinator needs to create the week first. Check back soon.</p>
+            <p className="helper-copy">An admin needs to create the week first. Check back soon.</p>
           )}
         </div>
       </div>
@@ -1024,7 +1024,7 @@ function WeekScreen({
               {generating ? "Working…" : "Generate schedule"}
             </button>
           ) : (
-            <p className="helper-copy">A coordinator needs to create the week first.</p>
+            <p className="helper-copy">An admin needs to create the week first.</p>
           )}
         </div>
       </div>
@@ -1077,7 +1077,7 @@ function WeekScreen({
               </button>
             </>
           ) : (
-            <p className="helper-copy">A coordinator needs to generate the draft.</p>
+            <p className="helper-copy">An admin needs to generate the draft.</p>
           )}
         </div>
       </div>
@@ -1226,7 +1226,7 @@ function CoordinatorScreen({
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
         <header className="page-title">
-          <span className="eyebrow">Coordinator view</span>
+          <span className="eyebrow">Admin view</span>
           <h1>Weekly coverage</h1>
         </header>
         <p className="helper-copy">Loading…</p>
@@ -1238,7 +1238,7 @@ function CoordinatorScreen({
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
         <header className="page-title">
-          <span className="eyebrow">Coordinator view</span>
+          <span className="eyebrow">Admin view</span>
           <h1>Weekly coverage</h1>
         </header>
         <div className="auth-error" role="alert">{weekError}</div>
@@ -1251,7 +1251,7 @@ function CoordinatorScreen({
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
         <header className="page-title">
-          <span className="eyebrow">Coordinator view</span>
+          <span className="eyebrow">Admin view</span>
           <h1>Weekly coverage</h1>
         </header>
         <div className="empty-state">
@@ -1278,7 +1278,7 @@ function CoordinatorScreen({
   return (
     <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
       <header className="page-title">
-        <span className="eyebrow">Coordinator view</span>
+        <span className="eyebrow">Admin view</span>
         <h1>Weekly coverage</h1>
         <p>{startDate.short} – {endDate.short}</p>
       </header>
@@ -2013,7 +2013,7 @@ export default function Prototype() {
     { id: "home" as const, label: "Home", icon: HomeIcon },
     { id: "plan" as const, label: "Plan", icon: BackpackIcon },
     { id: "week" as const, label: "Week", icon: CalendarIcon },
-    { id: "coordinate" as const, label: "Cover", icon: GroupIcon },
+    { id: "coordinate" as const, label: "Status", icon: GroupIcon },
   ], []);
 
   const navigate = (tab: AppTab) => {
