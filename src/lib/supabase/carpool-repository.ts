@@ -452,12 +452,56 @@ export class CarpoolRepository {
     );
   }
 
-  async getLatestWeek(groupId: string): Promise<WeekWithTrips | null> {
-    const weeks = await this.listWeeks(groupId);
-    const latest = weeks[0];
-    if (!latest) return null;
-    const trips = await this.listTripsForWeek(latest.id);
-    return { week: latest, trips };
+  async getCurrentWeek(groupId: string): Promise<WeekWithTrips | null> {
+    const today = new Date();
+    const todayStr = today.toISOString().slice(0, 10);
+
+    // Most recent week that started on or before today.
+    const pastRows = unwrapRequired(
+      await this.client
+        .from("weeks")
+        .select("*")
+        .eq("group_id", groupId)
+        .lte("starts_on", todayStr)
+        .order("starts_on", { ascending: false })
+        .limit(1),
+    );
+    const mostRecent = pastRows[0];
+
+    // If today falls within that week (Mon–Fri), it is the current week.
+    if (mostRecent) {
+      const weekStart = new Date(mostRecent.starts_on + "T00:00:00");
+      const friday = new Date(weekStart);
+      friday.setDate(weekStart.getDate() + 4);
+      const fridayStr = friday.toISOString().slice(0, 10);
+      if (todayStr >= mostRecent.starts_on && todayStr <= fridayStr) {
+        const trips = await this.listTripsForWeek(mostRecent.id);
+        return { week: mostRecent, trips };
+      }
+    }
+
+    // Otherwise the upcoming week: earliest week with starts_on >= today.
+    const futureRows = unwrapRequired(
+      await this.client
+        .from("weeks")
+        .select("*")
+        .eq("group_id", groupId)
+        .gte("starts_on", todayStr)
+        .order("starts_on", { ascending: true })
+        .limit(1),
+    );
+    const upcoming = futureRows[0];
+    if (upcoming) {
+      const trips = await this.listTripsForWeek(upcoming.id);
+      return { week: upcoming, trips };
+    }
+
+    // School year is over: return the most recent past week, if any.
+    if (mostRecent) {
+      const trips = await this.listTripsForWeek(mostRecent.id);
+      return { week: mostRecent, trips };
+    }
+    return null;
   }
 
   async createWeekWithTrips(

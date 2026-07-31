@@ -12,7 +12,7 @@ test("Exchange 4 repository exposes week, check-in, ride request, and driver ava
   const source = await readFile(repositoryUrl, "utf8");
 
   assert.match(source, /async listWeeks\(/);
-  assert.match(source, /async getLatestWeek\(/);
+  assert.match(source, /async getCurrentWeek\(/);
   assert.match(source, /async createWeekWithTrips\(/);
   assert.match(source, /async getOrCreateCheckin\(/);
   assert.match(source, /async getCheckinDetails\(/);

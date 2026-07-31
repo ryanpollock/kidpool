@@ -1298,12 +1298,6 @@ function CoordinatorScreen({
         </section>
       )}
 
-      {isCoordinator ? (
-        <button className="secondary-button" data-testid="create-week-coord" disabled={creatingWeek} onClick={onCreateWeek}>
-          {creatingWeek ? "Creating…" : "Create next week"}
-        </button>
-      ) : null}
-
       {isCoordinator && week ? (
         <div className="coordinator-generate">
           {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
@@ -1754,7 +1748,7 @@ export default function Prototype() {
     setWeekLoading(true);
     setWeekError(null);
     try {
-      const data = await repository.getLatestWeek(identity.group.id);
+      const data = await repository.getCurrentWeek(identity.group.id);
       setWeekData(data);
     } catch (error) {
       setWeekError(readableError(error));
