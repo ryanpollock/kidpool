@@ -24,12 +24,13 @@ import {
   getSupabaseClient,
   type CheckinDetails,
   type HouseholdSetup,
+  type MyDriverAssignment,
   type ScheduleVersionWithRosters,
   type Tables,
   type WeekOverview,
   type WeekWithTrips,
 } from "./lib/supabase";
-import type { DrivePreference } from "./lib/supabase/database.types";
+import type { AssignmentStatus, DrivePreference } from "./lib/supabase/database.types";
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
 
@@ -309,54 +310,67 @@ function nextMonday(): string {
 }
 
 function AssignmentRow({
-  period,
-  date,
-  route,
-  riders,
-  confirmed,
+  trip,
+  vehicle,
+  riderCount,
+  status,
 }: {
-  period: "Morning" | "Afternoon";
-  date: string;
-  route: string;
-  riders: number;
-  confirmed: boolean;
+  trip: Tables<"trips">;
+  vehicle: Tables<"vehicles">;
+  riderCount: number;
+  status: AssignmentStatus;
 }) {
-  const PeriodIcon = period === "Morning" ? SunIcon : MoonIcon;
+  const period = trip.direction === "morning" ? "Morning" : "Afternoon";
+  const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
+  const dateInfo = formatTripDate(trip.service_date);
+  const confirmed = status === "confirmed";
+  const declined = status === "declined";
 
   return (
     <article className="assignment-row">
-      <span className={`period-icon ${period === "Morning" ? "period-icon--morning" : "period-icon--afternoon"}`}>
+      <span className={`period-icon ${trip.direction === "morning" ? "period-icon--morning" : "period-icon--afternoon"}`}>
         <PeriodIcon width="22" height="22" />
       </span>
       <div className="assignment-copy">
-        <div className="assignment-title">{date} · {period}</div>
-        <div className="assignment-route">{route}</div>
+        <div className="assignment-title">{dateInfo.full} · {period}</div>
+        <div className="assignment-route">{trip.origin} → {trip.destination}</div>
         <div className="assignment-meta">
-          <span>Blue Subaru</span>
-          <span>{riders} riders</span>
+          <span>{vehicle.label}</span>
+          <span>{riderCount} rider{riderCount !== 1 ? "s" : ""}</span>
         </div>
       </div>
-      <span className={`status-label ${confirmed ? "status-label--confirmed" : "status-label--tentative"}`}>
+      <span className={`status-label ${confirmed ? "status-label--confirmed" : declined ? "status-label--declined" : "status-label--tentative"}`}>
         {confirmed ? <CheckIcon width="13" height="13" /> : null}
-        {confirmed ? "Confirmed" : "Tentative"}
+        {confirmed ? "Confirmed" : declined ? "Declined" : "Tentative"}
       </span>
     </article>
   );
 }
 
 function HomeScreen({
-  driverConfirmed,
-  onConfirm,
+  myAssignments,
+  assignmentsLoading,
+  schedulePublished,
+  onConfirmAll,
   onReview,
   onCoverage,
   onAccount,
+  working,
 }: {
-  driverConfirmed: boolean;
-  onConfirm: () => void;
+  myAssignments: MyDriverAssignment[];
+  assignmentsLoading: boolean;
+  schedulePublished: boolean;
+  onConfirmAll: () => void;
   onReview: () => void;
   onCoverage: () => void;
   onAccount: () => void;
+  working: boolean;
 }) {
+  const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
+  const confirmed = myAssignments.filter((a) => a.assignment.status === "confirmed");
+  const allConfirmed = tentative.length === 0 && confirmed.length > 0;
+  const noAssignments = myAssignments.length === 0;
+
   return (
     <div className="screen-content home-screen" data-testid="home-screen">
       <header className="app-header">
@@ -372,87 +386,102 @@ function HomeScreen({
         </button>
       </header>
 
-      <section className={`confirmation-hero ${driverConfirmed ? "confirmation-hero--done" : ""}`}>
-        <span className="eyebrow">{driverConfirmed ? "Sunday schedule" : "Action needed today"}</span>
-        <h1>{driverConfirmed ? "You’re all set" : "Confirm your drives"}</h1>
-        <p className="hero-deadline">
-          {driverConfirmed ? (
-            <><CheckCircledIcon width="18" height="18" /> 2 assignments confirmed</>
-          ) : (
-            <>2 assignments <span aria-hidden="true">·</span> <strong>Confirm by 3:00 PM</strong></>
-          )}
-        </p>
-        <p className="hero-support">
-          {driverConfirmed
-            ? "We’ll remind you the evening before each drive."
-            : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
-        </p>
-      </section>
+      {assignmentsLoading ? (
+        <p className="helper-copy">Loading your drives…</p>
+      ) : noAssignments ? (
+        <section className="confirmation-hero confirmation-hero--done">
+          <span className="eyebrow">This week</span>
+          <h1>No drives assigned</h1>
+          <p className="hero-support">You haven’t been assigned to drive this week. Check the full schedule for details.</p>
+        </section>
+      ) : (
+        <section className={`confirmation-hero ${allConfirmed ? "confirmation-hero--done" : ""}`}>
+          <span className="eyebrow">{allConfirmed ? (schedulePublished ? "Published schedule" : "Sunday schedule") : "Action needed today"}</span>
+          <h1>{allConfirmed ? "You’re all set" : "Confirm your drives"}</h1>
+          <p className="hero-deadline">
+            {allConfirmed ? (
+              <><CheckCircledIcon width="18" height="18" /> {confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed</>
+            ) : (
+              <>{tentative.length} assignment{tentative.length !== 1 ? "s" : ""} <span aria-hidden="true">·</span> <strong>Confirm by 3:00 PM</strong></>
+            )}
+          </p>
+          <p className="hero-support">
+            {allConfirmed
+              ? "We’ll remind you the evening before each drive."
+              : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
+          </p>
+        </section>
+      )}
 
-      <section className="assignment-section" aria-labelledby="assignment-heading">
-        <div className="section-heading-row">
-          <h2 id="assignment-heading">{driverConfirmed ? "Your confirmed drives" : "Your tentative drives"}</h2>
-          <span>Aug 3–7</span>
-        </div>
-        <div className="assignment-list">
-          <AssignmentRow
-            period="Morning"
-            date="Mon, Aug 3"
-            route="Midtown Terrace → Presidio"
-            riders={3}
-            confirmed={driverConfirmed}
-          />
-          <AssignmentRow
-            period="Afternoon"
-            date="Thu, Aug 6"
-            route="Presidio → Midtown Terrace"
-            riders={3}
-            confirmed={driverConfirmed}
-          />
-        </div>
-        {!driverConfirmed ? (
-          <>
-            <button className="primary-button" data-testid="confirm-drives" onClick={onConfirm}>
-              <CheckIcon width="19" height="19" /> Confirm both drives
-            </button>
-            <button className="text-button" onClick={onReview}>Review individually</button>
-          </>
-        ) : (
-          <button className="secondary-button" onClick={onReview}>View passenger rosters <ChevronRightIcon /></button>
-        )}
-      </section>
+      {!noAssignments ? (
+        <section className="assignment-section" aria-labelledby="assignment-heading">
+          <div className="section-heading-row">
+            <h2 id="assignment-heading">{allConfirmed ? "Your confirmed drives" : "Your tentative drives"}</h2>
+          </div>
+          <div className="assignment-list">
+            {myAssignments.map((entry) => (
+              <AssignmentRow
+                key={entry.assignment.id}
+                trip={entry.trip}
+                vehicle={entry.vehicle}
+                riderCount={entry.children.length}
+                status={entry.assignment.status}
+              />
+            ))}
+          </div>
+          {!allConfirmed ? (
+            <>
+              <button className="primary-button" data-testid="confirm-drives" disabled={working} onClick={onConfirmAll}>
+                <CheckIcon width="19" height="19" /> Confirm all drives
+              </button>
+              <button className="text-button" onClick={onReview}>Review individually</button>
+            </>
+          ) : (
+            <button className="secondary-button" onClick={onReview}>View passenger rosters <ChevronRightIcon /></button>
+          )}
+        </section>
+      ) : null}
 
       <button className="coverage-alert" onClick={onCoverage} data-testid="coverage-alert">
         <span><ExclamationTriangleIcon width="20" height="20" /></span>
-        <span><strong>Coverage needed</strong><small>Tue, Aug 4 · Afternoon return</small></span>
+        <span><strong>View full schedule</strong><small>See this week’s coverage</small></span>
         <ChevronRightIcon />
       </button>
-
-      <section className="week-glance" aria-labelledby="week-heading">
-        <div className="section-heading-row">
-          <h2 id="week-heading">Your week at a glance</h2>
-          <button className="inline-action" onClick={onCoverage}>Full week</button>
-        </div>
-        <div className="glance-rows">
-          <div><strong>Mon, Aug 3</strong><span>Morning drive</span><span className={driverConfirmed ? "positive" : "tentative"}>{driverConfirmed ? "Confirmed" : "Tentative"}</span></div>
-          <div><strong>Tue, Aug 4</strong><span>No drive scheduled</span><span>—</span></div>
-          <div><strong>Thu, Aug 6</strong><span>Afternoon drive</span><span className={driverConfirmed ? "positive" : "tentative"}>{driverConfirmed ? "Confirmed" : "Tentative"}</span></div>
-        </div>
-      </section>
-
     </div>
   );
 }
 
 function ReviewScreen({
-  driverConfirmed,
-  onConfirm,
+  myAssignments,
+  repository,
+  onResponded,
   onBack,
 }: {
-  driverConfirmed: boolean;
-  onConfirm: () => void;
+  myAssignments: MyDriverAssignment[];
+  repository: CarpoolRepository;
+  onResponded: () => void;
   onBack: () => void;
 }) {
+  const [working, setWorking] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [decliningId, setDecliningId] = useState<string | null>(null);
+  const [declineReason, setDeclineReason] = useState("");
+
+  const respond = async (assignmentId: string, response: "confirmed" | "declined", reason?: string) => {
+    setWorking(assignmentId);
+    setError(null);
+    try {
+      await repository.respondToDriverAssignment(assignmentId, response, reason);
+      setDecliningId(null);
+      setDeclineReason("");
+      onResponded();
+    } catch (nextError) {
+      setError(readableError(nextError));
+    } finally {
+      setWorking(null);
+    }
+  };
+
   return (
     <div className="screen-content detail-screen" data-testid="review-screen">
       <header className="subpage-header">
@@ -460,30 +489,69 @@ function ReviewScreen({
         <div><span className="eyebrow">Sunday confirmation</span><h1>Review your drives</h1></div>
       </header>
       <p className="detail-intro">Confirm each assignment only if the date, direction, vehicle, and seat count are correct.</p>
-      <div className="detail-card">
-        <AssignmentRow period="Morning" date="Mon, Aug 3" route="Midtown Terrace → Presidio" riders={3} confirmed={driverConfirmed} />
-        <div className="roster">
-          <span>Passenger roster</span>
-          <strong>Alex M. · Jordan K. · Sam R.</strong>
-          <small>Meet at 7:35 AM · Depart at 7:40 AM</small>
-        </div>
-      </div>
-      <div className="detail-card">
-        <AssignmentRow period="Afternoon" date="Thu, Aug 6" route="Presidio → Midtown Terrace" riders={3} confirmed={driverConfirmed} />
-        <div className="roster">
-          <span>Passenger roster</span>
-          <strong>Alex M. · Priya S. · Lee A.</strong>
-          <small>Meet at 3:20 PM · Blue Subaru</small>
-        </div>
-      </div>
-      {!driverConfirmed ? (
-        <>
-          <button className="primary-button" onClick={onConfirm}><CheckIcon /> Confirm both drives</button>
-          <button className="decline-button">I can’t make one of these</button>
-        </>
-      ) : (
-        <div className="success-notice"><CheckCircledIcon /><span><strong>Both drives confirmed</strong><small>Your family schedule is ready.</small></span></div>
-      )}
+      {error ? <div className="auth-error" role="alert">{error}</div> : null}
+
+      {myAssignments.length === 0 ? (
+        <p className="helper-copy">No assignments to review.</p>
+      ) : null}
+
+      {myAssignments.map((entry) => {
+        const dateInfo = formatTripDate(entry.trip.service_date);
+        const period = entry.trip.direction === "morning" ? "Morning" : "Afternoon";
+        const status = entry.assignment.status;
+        const isDeclining = decliningId === entry.assignment.id;
+        const roster = entry.children.length > 0
+          ? entry.children.map((c) => `${c.first_name} ${c.last_name}`).join(" · ")
+          : "No riders assigned";
+
+        return (
+          <div className="detail-card" key={entry.assignment.id}>
+            <AssignmentRow
+              trip={entry.trip}
+              vehicle={entry.vehicle}
+              riderCount={entry.children.length}
+              status={status}
+            />
+            <div className="roster">
+              <span>Passenger roster</span>
+              <strong>{roster}</strong>
+              <small>Meet at {entry.trip.meeting_time} · {entry.trip.origin} → {entry.trip.destination}</small>
+            </div>
+            {status === "tentative" ? (
+              isDeclining ? (
+                <div className="decline-form" data-testid="decline-form">
+                  <label className="auth-field">
+                    <span>Reason (optional)</span>
+                    <KeyboardInput
+                      value={declineReason}
+                      onChange={(event) => setDeclineReason(event.target.value)}
+                      placeholder="Help your coordinator find a replacement"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <button className="decline-button" disabled={working === entry.assignment.id} onClick={() => void respond(entry.assignment.id, "declined", declineReason)}>
+                    {working === entry.assignment.id ? "Declining…" : "Confirm decline"}
+                  </button>
+                  <button className="text-button" onClick={() => { setDecliningId(null); setDeclineReason(""); }}>Cancel</button>
+                </div>
+              ) : (
+                <>
+                  <button className="primary-button" disabled={working === entry.assignment.id} onClick={() => void respond(entry.assignment.id, "confirmed")}>
+                    <CheckIcon /> Confirm this drive
+                  </button>
+                  <button className="decline-button" disabled={working === entry.assignment.id} onClick={() => setDecliningId(entry.assignment.id)}>
+                    I can’t make this one
+                  </button>
+                </>
+              )
+            ) : status === "confirmed" ? (
+              <div className="success-notice"><CheckCircledIcon /><span><strong>Confirmed</strong><small>{dateInfo.full} · {period}</small></span></div>
+            ) : (
+              <div className="declined-notice"><Cross2Icon /><span><strong>Declined</strong><small>This drive has been released.</small></span></div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -891,12 +959,19 @@ function WeekScreen({
   const totalTrips = week.trips.length;
   const uncoveredCount = totalTrips - coveredCount;
 
+  const isPublished = schedule.version.status === "published";
+
   return (
     <div className="screen-content week-screen" data-testid="week-screen">
       <header className="page-title">
         <span className="eyebrow">Family schedule</span>
         <h1>{startDate.short} – {endDate.short}</h1>
-        <p>Draft v{schedule.version.version_number} · {schedule.version.algorithm_version}</p>
+        <p>
+          <span className={`schedule-badge ${isPublished ? "schedule-badge--published" : "schedule-badge--draft"}`}>
+            {isPublished ? "Published" : `Draft v${schedule.version.version_number}`}
+          </span>
+          {isPublished ? null : <span className="schedule-algo">{schedule.version.algorithm_version}</span>}
+        </p>
       </header>
 
       {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
@@ -906,7 +981,7 @@ function WeekScreen({
         {uncoveredCount > 0 ? <span><ExclamationTriangleIcon /> {uncoveredCount} needs assignment</span> : null}
       </div>
 
-      {isCoordinator ? (
+      {isCoordinator && !isPublished ? (
         <button className="secondary-button" data-testid="regenerate-schedule" disabled={generating} onClick={onGenerate}>
           {generating ? "Regenerating…" : "Regenerate draft"}
         </button>
@@ -974,6 +1049,9 @@ function CoordinatorScreen({
   onGenerate,
   generating,
   generateError,
+  scheduleStatus,
+  onPublish,
+  publishing,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -985,6 +1063,9 @@ function CoordinatorScreen({
   onGenerate: () => void;
   generating: boolean;
   generateError: string | null;
+  scheduleStatus: "draft" | "published" | null;
+  onPublish: () => void;
+  publishing: boolean;
 }) {
   if (weekLoading) {
     return (
@@ -1048,10 +1129,29 @@ function CoordinatorScreen({
       {isCoordinator && week ? (
         <div className="coordinator-generate">
           {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
-          <button className="primary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
-            {generating ? "Generating…" : "Generate draft schedule"}
-          </button>
-          <small className="helper-copy">Creates a new draft version using {`greedy-v1`}. Existing drafts are superseded.</small>
+          {scheduleStatus === "draft" ? (
+            <>
+              <button className="secondary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
+                {generating ? "Generating…" : "Regenerate draft"}
+              </button>
+              <button className="primary-button" data-testid="publish-schedule" disabled={publishing} onClick={onPublish}>
+                {publishing ? "Publishing…" : "Publish schedule"}
+              </button>
+              <small className="helper-copy">Publishing locks this schedule for all families.</small>
+            </>
+            ) : scheduleStatus === "published" ? (
+              <div className="publish-notice">
+                <CheckCircledIcon width="18" height="18" />
+                <span><strong>Schedule published</strong><small>Families can see the final roster.</small></span>
+              </div>
+            ) : (
+              <>
+                <button className="primary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
+                  {generating ? "Generating…" : "Generate draft schedule"}
+                </button>
+                <small className="helper-copy">Creates a new draft version using {`greedy-v1`}.</small>
+              </>
+            )}
         </div>
       ) : null}
 
@@ -1383,13 +1483,16 @@ export default function Prototype() {
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [publishing, setPublishing] = useState(false);
+  const [myAssignments, setMyAssignments] = useState<MyDriverAssignment[]>([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [confirmWorking, setConfirmWorking] = useState(false);
   const [creatingWeek, setCreatingWeek] = useState(false);
   const [authWorking, setAuthWorking] = useState(false);
   const [authError, setAuthError] = useState<string | null>(() => oauthErrorFromLocation());
   const [activeTab, setActiveTab] = useState<AppTab>("home");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
-  const [driverConfirmed, setDriverConfirmed] = useState(false);
 
   const loadIdentity = useCallback(async () => {
     setIdentityLoading(true);
@@ -1527,6 +1630,60 @@ export default function Prototype() {
     }
   }, [weekData, repository, loadSchedule, loadOverview]);
 
+  const loadMyAssignments = useCallback(async () => {
+    if (!identity?.group || !schedule) return;
+    setAssignmentsLoading(true);
+    try {
+      const roster = await repository.getGroupRoster(identity.group.id);
+      const assignments = await repository.getMyDriverAssignments(
+        schedule.version.id,
+        identity.profile.id,
+        identity.group.id,
+        schedule.trips,
+        roster.children,
+        roster.vehicles,
+      );
+      setMyAssignments(assignments);
+    } catch {
+      setMyAssignments([]);
+    } finally {
+      setAssignmentsLoading(false);
+    }
+  }, [identity?.group, identity?.profile, schedule, repository]);
+
+  useEffect(() => {
+    if (schedule) void loadMyAssignments();
+  }, [schedule, loadMyAssignments]);
+
+  const confirmAll = useCallback(async () => {
+    const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
+    if (tentative.length === 0) return;
+    setConfirmWorking(true);
+    try {
+      for (const entry of tentative) {
+        await repository.respondToDriverAssignment(entry.assignment.id, "confirmed");
+      }
+      await loadMyAssignments();
+    } catch (error) {
+      setGenerateError(readableError(error));
+    } finally {
+      setConfirmWorking(false);
+    }
+  }, [myAssignments, repository, loadMyAssignments]);
+
+  const publishSchedule = useCallback(async () => {
+    if (!schedule) return;
+    setPublishing(true);
+    try {
+      await repository.publishSchedule(schedule.version.id);
+      await loadSchedule();
+    } catch (error) {
+      setGenerateError(readableError(error));
+    } finally {
+      setPublishing(false);
+    }
+  }, [schedule, repository, loadSchedule]);
+
   const createWeek = useCallback(async () => {
     if (!identity?.group) return;
     setCreatingWeek(true);
@@ -1641,8 +1798,9 @@ export default function Prototype() {
     if (reviewOpen) {
       return (
         <ReviewScreen
-          driverConfirmed={driverConfirmed}
-          onConfirm={() => setDriverConfirmed(true)}
+          myAssignments={myAssignments}
+          repository={repository}
+          onResponded={() => void loadMyAssignments()}
           onBack={() => setReviewOpen(false)}
         />
       );
@@ -1696,17 +1854,23 @@ export default function Prototype() {
           onGenerate={() => void generateSchedule()}
           generating={generating}
           generateError={generateError}
+          scheduleStatus={schedule?.version.status === "published" ? "published" : schedule?.version.status === "draft" ? "draft" : null}
+          onPublish={() => void publishSchedule()}
+          publishing={publishing}
         />
       );
     }
 
     return (
       <HomeScreen
-        driverConfirmed={driverConfirmed}
-        onConfirm={() => setDriverConfirmed(true)}
+        myAssignments={myAssignments}
+        assignmentsLoading={assignmentsLoading}
+        schedulePublished={schedule?.version.status === "published"}
+        onConfirmAll={() => void confirmAll()}
         onReview={() => setReviewOpen(true)}
         onCoverage={() => navigate("week")}
         onAccount={() => setAccountOpen(true)}
+        working={confirmWorking}
       />
     );
   };
@@ -1801,7 +1965,7 @@ export default function Prototype() {
             >
               <Icon width="20" height="20" />
               <span>{label}</span>
-              {id === "home" && !driverConfirmed ? <i aria-label="Action needed" /> : null}
+              {id === "home" && myAssignments.some((a) => a.assignment.status === "tentative") ? <i aria-label="Action needed" /> : null}
             </button>
           ))}
         </nav>

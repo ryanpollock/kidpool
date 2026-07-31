@@ -74,6 +74,13 @@ export type GenerateScheduleResult = {
   error?: string;
 };
 
+export type MyDriverAssignment = {
+  assignment: Tables<"driver_assignments">;
+  trip: Tables<"trips">;
+  vehicle: Tables<"vehicles">;
+  children: Tables<"children">[];
+};
+
 function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
   if (result.error) throw new Error(result.error.message);
   return result.data;
@@ -709,12 +716,87 @@ export class CarpoolRepository {
   async respondToDriverAssignment(
     assignmentId: string,
     response: ConfirmationResponse,
+    declineReason?: string,
   ) {
     return unwrap(
       await this.client.rpc("respond_to_driver_assignment", {
         target_assignment_id: assignmentId,
         driver_response: response,
+        decline_reason: declineReason ?? null,
       }),
+    );
+  }
+
+  async getMyDriverAssignments(
+    scheduleVersionId: string,
+    driverProfileId: string,
+    groupId: string,
+    trips: Tables<"trips">[],
+    children: Tables<"children">[],
+    vehicles: Tables<"vehicles">[],
+  ): Promise<MyDriverAssignment[]> {
+    const assignments = unwrapRequired(
+      await this.client
+        .from("driver_assignments")
+        .select("*")
+        .eq("schedule_version_id", scheduleVersionId)
+        .eq("driver_profile_id", driverProfileId)
+        .eq("group_id", groupId)
+        .order("trip_id"),
+    );
+
+    if (assignments.length === 0) return [];
+
+    const tripById = new Map(trips.map((t) => [t.id, t]));
+    const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
+
+    const riderAssignments = unwrapRequired(
+      await this.client
+        .from("rider_assignments")
+        .select("*")
+        .eq("schedule_version_id", scheduleVersionId)
+        .eq("group_id", groupId)
+        .in(
+          "driver_assignment_id",
+          assignments.map((a) => a.id),
+        ),
+    );
+
+    const childById = new Map(children.map((c) => [c.id, c]));
+    const ridersByAssignment = new Map<string, Tables<"children">[]>();
+    for (const rider of riderAssignments) {
+      const existing = ridersByAssignment.get(rider.driver_assignment_id) ?? [];
+      const child = childById.get(rider.child_id);
+      if (child) existing.push(child);
+      ridersByAssignment.set(rider.driver_assignment_id, existing);
+    }
+
+    return assignments
+      .map((assignment) => {
+        const trip = tripById.get(assignment.trip_id);
+        const vehicle = vehicleById.get(assignment.vehicle_id);
+        if (!trip || !vehicle) return null;
+        return {
+          assignment,
+          trip,
+          vehicle,
+          children: ridersByAssignment.get(assignment.id) ?? [],
+        };
+      })
+      .filter((entry): entry is MyDriverAssignment => entry !== null);
+  }
+
+  async publishSchedule(scheduleVersionId: string): Promise<void> {
+    unwrapRequired(
+      await this.client
+        .from("schedule_versions")
+        .update({
+          status: "published",
+          published_at: new Date().toISOString(),
+        })
+        .eq("id", scheduleVersionId)
+        .select("*")
+        .single(),
     );
   }
 

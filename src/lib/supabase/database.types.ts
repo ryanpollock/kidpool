@@ -177,6 +177,7 @@ export type DriverConfirmationRow = {
   driver_assignment_id: string;
   driver_profile_id: string;
   response: ConfirmationResponse;
+  decline_reason: string | null;
   responded_at: string;
 };
 
@@ -414,6 +415,7 @@ export type Database = {
           driver_assignment_id: string;
           driver_profile_id: string;
           response: ConfirmationResponse;
+          decline_reason?: string | null;
           responded_at?: string;
         }
       >;
@@ -445,6 +447,7 @@ export type Database = {
         Args: {
           target_assignment_id: string;
           driver_response: ConfirmationResponse;
+          decline_reason?: string | null;
         };
         Returns: DriverAssignmentRow;
       };
