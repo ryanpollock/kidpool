@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { Session } from "@supabase/supabase-js";
 import {
   AvatarIcon,
   BackpackIcon,
@@ -14,9 +15,15 @@ import {
   HomeIcon,
   MoonIcon,
   PersonIcon,
+  ReloadIcon,
   SunIcon,
 } from "@radix-ui/react-icons";
-import { MobileScroll } from "./mobile";
+import { KeyboardInput, MobileScroll } from "./mobile";
+import {
+  CarpoolRepository,
+  getSupabaseClient,
+  type Tables,
+} from "./lib/supabase";
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
 type DrivePreference = "prefer" | "available" | "no";
@@ -28,6 +35,249 @@ type DayPlan = {
   afternoonRide: boolean;
   drive: DrivePreference;
 };
+
+type IdentityState = {
+  profile: Tables<"profiles">;
+  group: Tables<"groups">;
+  membership: Tables<"memberships"> | null;
+};
+
+function readableError(error: unknown) {
+  const message = error instanceof Error ? error.message : "Something went wrong.";
+  if (/invalid or expired/i.test(message)) return "That household code is invalid or expired.";
+  if (/already belongs/i.test(message)) return "This Google account already belongs to a household.";
+  if (/network|fetch/i.test(message)) return "We couldn’t reach the carpool service. Check your connection and try again.";
+  return message;
+}
+
+function oauthErrorFromLocation() {
+  const search = new URLSearchParams(window.location.search);
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  return search.get("error_description") ?? hash.get("error_description");
+}
+
+function AuthLoadingScreen() {
+  return (
+    <div className="auth-screen auth-loading-screen" data-testid="auth-loading">
+      <span className="auth-mark"><PersonIcon width="25" height="25" /></span>
+      <ReloadIcon className="auth-spinner" width="22" height="22" />
+      <strong>Opening Midtown Carpool…</strong>
+      <small>Checking your secure session</small>
+    </div>
+  );
+}
+
+function SignInScreen({
+  error,
+  working,
+  onSignIn,
+}: {
+  error: string | null;
+  working: boolean;
+  onSignIn: () => void;
+}) {
+  return (
+    <div className="auth-screen sign-in-screen" data-testid="sign-in-screen">
+      <div className="auth-brand">
+        <span className="auth-mark"><PersonIcon width="25" height="25" /></span>
+        <span>
+          <strong>Midtown Carpool</strong>
+          <small>Clarendon families · Presidio Middle School</small>
+        </span>
+      </div>
+
+      <div className="sign-in-copy">
+        <span className="eyebrow">A simpler school week</span>
+        <h1>Know who’s driving—and who’s riding.</h1>
+        <p>
+          Coordinate rides between Midtown Terrace and Presidio with the families
+          you already know.
+        </p>
+      </div>
+
+      <div className="trust-list" aria-label="How the carpool works">
+        <span><CheckCircledIcon /> Parents and children are named clearly</span>
+        <span><CheckCircledIcon /> Drivers confirm before the schedule is final</span>
+        <span><CheckCircledIcon /> Carpool details stay behind sign-in</span>
+      </div>
+
+      {error ? <div className="auth-error" role="alert">{error}</div> : null}
+
+      <button
+        className="google-button"
+        data-testid="google-sign-in"
+        disabled={working}
+        onClick={onSignIn}
+      >
+        <span className="google-g" aria-hidden="true">G</span>
+        {working ? "Opening Google…" : "Continue with Google"}
+      </button>
+      <small className="auth-footnote">
+        Use the Google account you want associated with your family’s driving schedule.
+      </small>
+    </div>
+  );
+}
+
+function OnboardingScreen({
+  identity,
+  repository,
+  onComplete,
+  onSignOut,
+}: {
+  identity: IdentityState;
+  repository: CarpoolRepository;
+  onComplete: () => Promise<void>;
+  onSignOut: () => void;
+}) {
+  const [fullName, setFullName] = useState(identity.profile.full_name);
+  const [mode, setMode] = useState<"choose" | "create" | "join">("choose");
+  const [householdName, setHouseholdName] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [createdCode, setCreatedCode] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const saveProfile = async () => {
+    const normalizedName = fullName.trim().replace(/\s+/g, " ");
+    if (normalizedName.split(" ").filter(Boolean).length < 2) {
+      throw new Error("Please enter the full name other parents should see.");
+    }
+    await repository.updateCurrentProfile(normalizedName);
+  };
+
+  const createHousehold = async () => {
+    setWorking(true);
+    setError(null);
+    try {
+      await saveProfile();
+      if (!householdName.trim()) throw new Error("Enter a household name.");
+      const created = await repository.createHousehold(identity.group.id, householdName);
+      setCreatedCode(created.join_code);
+    } catch (nextError) {
+      setError(readableError(nextError));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const joinHousehold = async () => {
+    setWorking(true);
+    setError(null);
+    try {
+      await saveProfile();
+      if (!joinCode.trim()) throw new Error("Enter the household code.");
+      await repository.joinHousehold(identity.group.id, joinCode);
+      await onComplete();
+    } catch (nextError) {
+      setError(readableError(nextError));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  if (createdCode) {
+    return (
+      <div className="screen-content onboarding-screen onboarding-success" data-testid="household-created">
+        <span className="success-orb"><CheckCircledIcon width="30" height="30" /></span>
+        <span className="eyebrow">Household created</span>
+        <h1>Your family is connected.</h1>
+        <p>Share this code with another parent in your household. They’ll sign in with their own Google account, then enter it once.</p>
+        <div className="join-code-card">
+          <small>Household join code</small>
+          <strong>{createdCode}</strong>
+        </div>
+        <p className="onboarding-note">You can find this code again from your household profile.</p>
+        <button className="primary-button" onClick={() => void onComplete()}>
+          Enter Midtown Carpool <ChevronRightIcon />
+        </button>
+        <button className="onboarding-signout" onClick={onSignOut}>
+          Sign out
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="screen-content onboarding-screen" data-testid="onboarding-screen">
+      <header className="page-title">
+        <span className="eyebrow">First-time setup</span>
+        <h1>Let’s connect your family.</h1>
+        <p>{identity.group.name}</p>
+      </header>
+
+      <label className="auth-field">
+        <span>Your full name</span>
+        <KeyboardInput
+          value={fullName}
+          onChange={(event) => setFullName(event.target.value)}
+          autoComplete="name"
+          placeholder="First and last name"
+        />
+        <small>This is how other parents will see you on driving schedules.</small>
+      </label>
+
+      {mode === "choose" ? (
+        <div className="onboarding-choice">
+          <p>Are you setting up your household, or joining one another parent already created?</p>
+          <button className="choice-card" onClick={() => setMode("create")}>
+            <span><HomeIcon /></span>
+            <span><strong>Create my household</strong><small>I’m the first parent from my family</small></span>
+            <ChevronRightIcon />
+          </button>
+          <button className="choice-card" onClick={() => setMode("join")}>
+            <span><GroupIcon /></span>
+            <span><strong>Join my household</strong><small>I received a code from another parent</small></span>
+            <ChevronRightIcon />
+          </button>
+        </div>
+      ) : null}
+
+      {mode === "create" ? (
+        <div className="onboarding-action">
+          <button className="back-link" onClick={() => setMode("choose")}>← Back</button>
+          <label className="auth-field">
+            <span>Household name</span>
+            <KeyboardInput
+              value={householdName}
+              onChange={(event) => setHouseholdName(event.target.value)}
+              placeholder="For example, Pollock family"
+              autoComplete="off"
+            />
+          </label>
+          {error ? <div className="auth-error" role="alert">{error}</div> : null}
+          <button className="primary-button" disabled={working} onClick={() => void createHousehold()}>
+            {working ? "Creating household…" : "Create household"}
+          </button>
+        </div>
+      ) : null}
+
+      {mode === "join" ? (
+        <div className="onboarding-action">
+          <button className="back-link" onClick={() => setMode("choose")}>← Back</button>
+          <label className="auth-field">
+            <span>Household code</span>
+            <KeyboardInput
+              className="join-code-input"
+              value={joinCode}
+              onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
+              placeholder="Enter 10-character code"
+              autoCapitalize="characters"
+              autoComplete="off"
+            />
+          </label>
+          {error ? <div className="auth-error" role="alert">{error}</div> : null}
+          <button className="primary-button" disabled={working} onClick={() => void joinHousehold()}>
+            {working ? "Joining household…" : "Join household"}
+          </button>
+        </div>
+      ) : null}
+      <button className="onboarding-signout" onClick={onSignOut}>
+        Sign out and use a different Google account
+      </button>
+    </div>
+  );
+}
 
 const initialPlans: DayPlan[] = [
   { day: "Mon", date: "Aug 3", morningRide: true, afternoonRide: true, drive: "prefer" },
@@ -86,11 +336,13 @@ function HomeScreen({
   onConfirm,
   onReview,
   onCoverage,
+  onAccount,
 }: {
   driverConfirmed: boolean;
   onConfirm: () => void;
   onReview: () => void;
   onCoverage: () => void;
+  onAccount: () => void;
 }) {
   return (
     <div className="screen-content home-screen" data-testid="home-screen">
@@ -102,7 +354,7 @@ function HomeScreen({
             <small>Presidio Middle School</small>
           </span>
         </div>
-        <button className="avatar-button" aria-label="Open household profile">
+        <button className="avatar-button" aria-label="Open household profile" onClick={onAccount}>
           <AvatarIcon width="19" height="19" />
         </button>
       </header>
@@ -407,13 +659,140 @@ function CoordinatorScreen({
   );
 }
 
+function AccountScreen({
+  profile,
+  onBack,
+  onSignOut,
+  working,
+}: {
+  profile: Tables<"profiles">;
+  onBack: () => void;
+  onSignOut: () => void;
+  working: boolean;
+}) {
+  return (
+    <div className="screen-content detail-screen account-screen" data-testid="account-screen">
+      <header className="subpage-header">
+        <button onClick={onBack} aria-label="Back to home"><Cross2Icon /></button>
+        <div><span className="eyebrow">Your account</span><h1>Household profile</h1></div>
+      </header>
+      <section className="account-card">
+        <span className="account-avatar">
+          {profile.avatar_url ? <img src={profile.avatar_url} alt="" /> : <PersonIcon />}
+        </span>
+        <div><strong>{profile.full_name}</strong><small>{profile.email}</small></div>
+      </section>
+      <section className="account-info">
+        <span>Signed in with Google</span>
+        <p>Your parent profile is separate from every other adult in your household, so driving availability and confirmations stay clear.</p>
+      </section>
+      <button className="secondary-button sign-out-button" disabled={working} onClick={onSignOut}>
+        {working ? "Signing out…" : "Sign out"}
+      </button>
+    </div>
+  );
+}
+
 export default function Prototype() {
+  const supabase = useMemo(() => getSupabaseClient(), []);
+  const repository = useMemo(() => new CarpoolRepository(supabase), [supabase]);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authInitialized, setAuthInitialized] = useState(false);
+  const [identity, setIdentity] = useState<IdentityState | null>(null);
+  const [identityLoading, setIdentityLoading] = useState(false);
+  const [authWorking, setAuthWorking] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(() => oauthErrorFromLocation());
   const [activeTab, setActiveTab] = useState<AppTab>("home");
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [driverConfirmed, setDriverConfirmed] = useState(false);
   const [plans, setPlans] = useState(initialPlans);
   const [planSubmitted, setPlanSubmitted] = useState(false);
   const [backupRequested, setBackupRequested] = useState(false);
+
+  const loadIdentity = useCallback(async () => {
+    setIdentityLoading(true);
+    setAuthError(null);
+    try {
+      const [profile, groups] = await Promise.all([
+        repository.getCurrentProfile(),
+        repository.listAvailableGroups(),
+      ]);
+      const group = groups[0];
+      if (!profile) throw new Error("Your parent profile is still being prepared. Try again.");
+      if (!group) throw new Error("The Midtown carpool group has not been configured.");
+      const membership = await repository.getCurrentMembership(group.id);
+      setIdentity({ profile, group, membership });
+    } catch (error) {
+      setIdentity(null);
+      setAuthError(readableError(error));
+    } finally {
+      setIdentityLoading(false);
+    }
+  }, [repository]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    void supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return;
+      if (error) setAuthError(readableError(error));
+      setSession(data.session);
+      setAuthInitialized(true);
+      if (data.session) void loadIdentity();
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (!mounted) return;
+      setSession(nextSession);
+      setAuthInitialized(true);
+      if (nextSession) {
+        window.setTimeout(() => {
+          if (mounted) void loadIdentity();
+        }, 0);
+      } else {
+        setIdentity(null);
+      }
+    });
+
+    if (window.location.search.includes("error=") || window.location.hash.includes("error=")) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    };
+  }, [loadIdentity, supabase]);
+
+  const signIn = async () => {
+    setAuthWorking(true);
+    setAuthError(null);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: window.location.origin },
+      });
+      if (error) throw error;
+    } catch (error) {
+      setAuthError(readableError(error));
+      setAuthWorking(false);
+    }
+  };
+
+  const signOut = async () => {
+    setAuthWorking(true);
+    setAuthError(null);
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setAuthError(readableError(error));
+    } else {
+      setAccountOpen(false);
+      setReviewOpen(false);
+      setActiveTab("home");
+    }
+    setAuthWorking(false);
+  };
 
   const navItems = useMemo(() => [
     { id: "home" as const, label: "Home", icon: HomeIcon },
@@ -424,10 +803,22 @@ export default function Prototype() {
 
   const navigate = (tab: AppTab) => {
     setReviewOpen(false);
+    setAccountOpen(false);
     setActiveTab(tab);
   };
 
   const renderContent = () => {
+    if (accountOpen && identity) {
+      return (
+        <AccountScreen
+          profile={identity.profile}
+          onBack={() => setAccountOpen(false)}
+          onSignOut={() => void signOut()}
+          working={authWorking}
+        />
+      );
+    }
+
     if (reviewOpen) {
       return (
         <ReviewScreen
@@ -463,9 +854,81 @@ export default function Prototype() {
         onConfirm={() => setDriverConfirmed(true)}
         onReview={() => setReviewOpen(true)}
         onCoverage={() => navigate("week")}
+        onAccount={() => setAccountOpen(true)}
       />
     );
   };
+
+  if (!authInitialized || (session && identityLoading && !identity)) {
+    return (
+      <div className="prototype-shell">
+        <MobileScroll className="app-screen">
+          <main className="app-main" aria-label="Midtown Carpool app">
+            <AuthLoadingScreen />
+          </main>
+        </MobileScroll>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="prototype-shell">
+        <MobileScroll className="app-screen">
+          <main className="app-main" aria-label="Midtown Carpool sign in">
+            <SignInScreen error={authError} working={authWorking} onSignIn={() => void signIn()} />
+          </main>
+        </MobileScroll>
+      </div>
+    );
+  }
+
+  if (authError && !identity) {
+    return (
+      <div className="prototype-shell">
+        <MobileScroll className="app-screen">
+          <main className="app-main" aria-label="Midtown Carpool connection error">
+            <div className="auth-screen auth-recovery-screen">
+              <span className="auth-mark"><ExclamationTriangleIcon width="24" height="24" /></span>
+              <h1>We couldn’t finish signing you in.</h1>
+              <div className="auth-error" role="alert">{authError}</div>
+              <button className="primary-button" onClick={() => void loadIdentity()}>Try again</button>
+              <button className="text-button" onClick={() => void signOut()}>Sign out</button>
+            </div>
+          </main>
+        </MobileScroll>
+      </div>
+    );
+  }
+
+  if (identity && !identity.membership) {
+    return (
+      <div className="prototype-shell">
+        <MobileScroll className="app-screen">
+          <main className="app-main" aria-label="Midtown Carpool onboarding">
+            <OnboardingScreen
+              identity={identity}
+              repository={repository}
+              onComplete={loadIdentity}
+              onSignOut={() => void signOut()}
+            />
+          </main>
+        </MobileScroll>
+      </div>
+    );
+  }
+
+  if (!identity) {
+    return (
+      <div className="prototype-shell">
+        <MobileScroll className="app-screen">
+          <main className="app-main" aria-label="Midtown Carpool app">
+            <AuthLoadingScreen />
+          </main>
+        </MobileScroll>
+      </div>
+    );
+  }
 
   return (
     <div className="prototype-shell">
@@ -474,7 +937,7 @@ export default function Prototype() {
           {renderContent()}
         </main>
       </MobileScroll>
-      {!reviewOpen ? (
+      {!reviewOpen && !accountOpen ? (
         <nav className="bottom-nav" aria-label="Primary navigation">
           {navItems.map(({ id, label, icon: Icon }) => (
             <button
