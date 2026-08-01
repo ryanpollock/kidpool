@@ -2181,6 +2181,20 @@ button {
   padding: 4px;
 }
 
+.push-banner--ios {
+  grid-template-columns: 24px 1fr auto;
+  border-color: #f1d39d;
+  background: var(--amber-pale, #fef9ef);
+}
+
+.push-banner--ios > svg {
+  color: var(--amber);
+}
+
+.push-banner--ios .push-banner-body small {
+  line-height: 1.4;
+}
+
 .coparent-toast {
   margin-top: 8px;
   padding: 6px 12px;

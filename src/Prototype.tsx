@@ -18,6 +18,7 @@ import {
   MoonIcon,
   PersonIcon,
   ReloadIcon,
+  Share2Icon,
   SunIcon,
 } from "@radix-ui/react-icons";
 import { KeyboardInput, MobileScroll } from "./mobile";
@@ -928,6 +929,8 @@ function HomeScreen({
   onAllowPush,
   onDismissPush,
   pushSubscribing,
+  showIOSInstallBanner,
+  onDismissIOSInstall,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -952,6 +955,8 @@ function HomeScreen({
   onAllowPush: () => void;
   onDismissPush: () => void;
   pushSubscribing: boolean;
+  showIOSInstallBanner: boolean;
+  onDismissIOSInstall: () => void;
 }) {
   const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = myAssignments.filter((a) => a.assignment.status === "confirmed");
@@ -989,6 +994,19 @@ function HomeScreen({
             {pushSubscribing ? "…" : "Allow"}
           </button>
           <button className="text-button push-banner-dismiss" aria-label="Dismiss" onClick={onDismissPush}>
+            <Cross2Icon width="14" height="14" />
+          </button>
+        </div>
+      ) : null}
+
+      {showIOSInstallBanner ? (
+        <div className="push-banner push-banner--ios" data-testid="ios-install-banner">
+          <BellIcon width="20" height="20" />
+          <div className="push-banner-body">
+            <strong>Get notifications</strong>
+            <small>Tap <Share2Icon width="11" height="11" style={{ display: "inline", verticalAlign: "middle" }} /> Share, then &ldquo;Add to Home Screen&rdquo; to enable alerts.</small>
+          </div>
+          <button className="text-button push-banner-dismiss" aria-label="Dismiss" onClick={onDismissIOSInstall}>
             <Cross2Icon width="14" height="14" />
           </button>
         </div>
@@ -2707,6 +2725,7 @@ export default function Prototype() {
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmWorking, setConfirmWorking] = useState(false);
   const [pushSubscribing, setPushSubscribing] = useState(false);
+  const [iosInstallDismissed, setIOSInstallDismissed] = useState(false);
   const [creatingWeek, setCreatingWeek] = useState(false);
   const [createWeekError, setCreateWeekError] = useState<string | null>(null);
   const [authWorking, setAuthWorking] = useState(false);
@@ -2950,6 +2969,18 @@ export default function Prototype() {
       setPushSubscribing(false);
     }
   }, [repository]);
+
+  // iOS Safari doesn't support PushManager until the app is installed as a PWA.
+  // Show install instructions instead of the standard push permission banner.
+  const shouldShowIOSInstallBanner = (() => {
+    if (!identity) return false;
+    if (iosInstallDismissed) return false;
+    if (localStorage.getItem("ios_install_dismissed") === "true") return false;
+    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    const isStandalone = window.matchMedia("(display-mode: standalone)").matches;
+    const hasPushSupport = "serviceWorker" in navigator && "PushManager" in window;
+    return isIOS && !isStandalone && !hasPushSupport;
+  })();
 
   const shouldShowPushBanner = (() => {
     if (!identity) return false;
@@ -3302,6 +3333,8 @@ export default function Prototype() {
         onAllowPush={() => { setPushPermissionShown(true); void subscribeToPush(); }}
         onDismissPush={() => { setPushPermissionShown(true); localStorage.setItem("push_dismissed", "true"); }}
         pushSubscribing={pushSubscribing}
+        showIOSInstallBanner={shouldShowIOSInstallBanner}
+        onDismissIOSInstall={() => { setIOSInstallDismissed(true); localStorage.setItem("ios_install_dismissed", "true"); }}
       />
     );
   };
