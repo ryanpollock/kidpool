@@ -4,17 +4,38 @@
 // Edge Function, verifies the schedule output and audit events, prints a
 // human-readable summary, then cleans up all test data.
 //
-// Usage: node scripts/pipeline-simulation.mjs
-// Requires: Supabase CLI linked to project ujcrnrcgbvzyqosykkjy.
+// Usage: npm run pipeline-sim
+// Targets the STAGING project by default (jfyjgmhqnlbdcafoarrg).
+// Requires: Supabase CLI linked to the target project (npm run link:test).
 
 import { execSync } from "node:child_process";
-import { writeFileSync, unlinkSync, mkdtempSync } from "node:fs";
+import { writeFileSync, unlinkSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const PROJECT_REF = "ujcrnrcgbvzyqosykkjy";
+const PRODUCTION_REF = "ujcrnrcgbvzyqosykkjy";
+const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "jfyjgmhqnlbdcafoarrg";
 const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`;
 const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
+
+if (PROJECT_REF === PRODUCTION_REF) {
+  console.error("Aborting: pipeline-sim must not run against production. Run `npm run link:test` first.");
+  process.exit(1);
+}
+
+function verifyLinkedProject() {
+  try {
+    const linkedRef = readFileSync(path.join(import.meta.dirname, "..", "supabase/.temp/project-ref"), "utf8").trim();
+    if (linkedRef !== PROJECT_REF) {
+      console.error(`CLI linked to ${linkedRef} but PROJECT_REF is ${PROJECT_REF}. Run "npm run link:test" or "npm run link:prod".`);
+      process.exit(1);
+    }
+  } catch {
+    console.error("Could not read linked project ref. Run 'npm run link:test' or 'npm run link:prod'.");
+    process.exit(1);
+  }
+}
+verifyLinkedProject();
 
 // Deterministic UUIDs for test data (all start with 'deadbeef' for easy cleanup)
 const UID = (n) => `deadbeef-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -59,7 +80,7 @@ function getServiceRoleKey(cliToken) {
   const parsed = JSON.parse(result);
   const keyList = Array.isArray(parsed) ? parsed : (parsed.keys ?? []);
   for (const k of keyList) {
-    if (k.prefix === "iAHHB") return k.api_key;
+    if (k.id === "service_role") return k.api_key;
   }
   throw new Error("Could not find legacy service_role key");
 }

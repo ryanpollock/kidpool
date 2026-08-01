@@ -2,19 +2,33 @@
 // Hard-delete a user account and all related data from the live Supabase project.
 //
 // Usage:
-//   node scripts/delete-user.mjs <email>          # delete if sole household member
-//   node scripts/delete-user.mjs <email> --force   # delete even if household has co-parents
+//   npm run delete-user <email>          # delete if sole household member
+//   npm run delete-user <email> --force   # delete even if household has co-parents
 //
-// Requires: Supabase CLI linked to project ujcrnrcgbvzyqosykkjy.
-// Resolves the service key the same way the integration tests do.
+// Defaults to production (ujcrnrcgbvzyqosykkjy). Override with SUPABASE_PROJECT_REF.
+// Requires: Supabase CLI linked to the target project (npm run link:prod).
 
 import { execSync } from "node:child_process";
-import { writeFileSync, unlinkSync, mkdtempSync } from "node:fs";
+import { writeFileSync, unlinkSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const PROJECT_REF = "ujcrnrcgbvzyqosykkjy";
+const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "ujcrnrcgbvzyqosykkjy";
 const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`;
+
+function verifyLinkedProject() {
+  try {
+    const linkedRef = readFileSync(path.join(import.meta.dirname, "..", "supabase/.temp/project-ref"), "utf8").trim();
+    if (linkedRef !== PROJECT_REF) {
+      console.error(`CLI linked to ${linkedRef} but PROJECT_REF is ${PROJECT_REF}. Run "npm run link:test" or "npm run link:prod".`);
+      process.exit(1);
+    }
+  } catch {
+    console.error("Could not read linked project ref. Run 'npm run link:test' or 'npm run link:prod'.");
+    process.exit(1);
+  }
+}
+verifyLinkedProject();
 
 // ── Arg parsing ──────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -40,7 +54,7 @@ function getServiceKey() {
     const parsed = JSON.parse(result);
     const keyList = Array.isArray(parsed) ? parsed : (parsed.keys ?? []);
     for (const k of keyList) {
-      if (k.prefix === "iAHHB") return k.api_key;
+      if (k.id === "service_role") return k.api_key;
     }
   } catch {}
   return null;
@@ -186,6 +200,10 @@ async function main() {
       DELETE FROM public.driver_assignments
       WHERE driver_profile_id = '${profileId}'
          OR vehicle_id IN (SELECT id FROM public.vehicles WHERE household_id IN (${householdList}));
+
+      -- b2. rider_assignments (RESTRICT on child_id → children)
+      DELETE FROM public.rider_assignments
+      WHERE child_id IN (SELECT id FROM public.children WHERE household_id IN (${householdList}));
 
       -- c. driver_availability (RESTRICT on vehicle_id → vehicles)
       DELETE FROM public.driver_availability

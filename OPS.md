@@ -6,12 +6,25 @@ Production operations runbook for the Clarendon Presidio carpool pilot.
 
 | Component | Value |
 |---|---|
-| Supabase project | `ujcrnrcgbvzyqosykkjy` (https://ujcrnrcgbvzyqosykkjy.supabase.co) |
+| Production Supabase | `ujcrnrcgbvzyqosykkjy` (https://ujcrnrcgbvzyqosykkjy.supabase.co) |
+| Staging Supabase | `jfyjgmhqnlbdcafoarrg` (https://jfyjgmhqnlbdcafoarrg.supabase.co) |
 | Supabase region | U.S. |
 | Frontend hosting | Vercel (project `kidpool`, URL `https://kidpool-sf.vercel.app`) |
 | Auth provider | Google OAuth (Supabase Auth) |
-| Edge Functions | `generate-schedule` (Supabase Functions, Deno) |
+| Edge Functions | `generate-schedule`, `send-push` (Supabase Functions, Deno) |
 | Timezone | `America/Los_Angeles` for all carpool scheduling |
+
+### Project switching
+
+```bash
+npm run link:prod   # supabase link --project-ref ujcrnrcgbvzyqosykkjy  (production)
+npm run link:test   # supabase link --project-ref jfyjgmhqnlbdcafoarrg  (staging)
+```
+
+Production: real pilot families, Vercel-hosted frontend.
+Staging: demo families (`npm run seed-demo`), integration tests, E2E tests, pipeline simulations. No frontend hosting — use `npm run dev:staging` for local development against staging.
+
+All test/seed scripts abort if run against production. `delete-user` targets production by default.
 
 ## 2. Database backup and recovery
 
@@ -78,17 +91,28 @@ Only coordinators can:
 
 ## 5. Edge Function deployment
 
-The `generate-schedule` Edge Function runs on Supabase Functions (Deno).
+The `generate-schedule` and `send-push` Edge Functions run on Supabase Functions (Deno).
 
 ```bash
+# Production
+npm run link:prod
 supabase functions deploy generate-schedule --project-ref ujcrnrcgbvzyqosykkjy
+supabase functions deploy send-push --project-ref ujcrnrcgbvzyqosykkjy
+
+# Staging
+npm run link:test
+supabase functions deploy generate-schedule --project-ref jfyjgmhqnlbdcafoarrg
+supabase functions deploy send-push --project-ref jfyjgmhqnlbdcafoarrg
 ```
 
-Required Supabase secrets (set in dashboard → **Project Settings → Edge Functions → Secrets**):
+Required Supabase secrets (set via `supabase secrets set`):
 - `SUPABASE_URL` — auto-set by Supabase.
 - `SUPABASE_ANON_KEY` — auto-set by Supabase.
+- `VAPID_PUBLIC_KEY` — web push VAPID public key (staging has its own key pair).
+- `VAPID_PRIVATE_KEY` — web push VAPID private key.
+- `CRON_SECRET` — shared secret for pg_cron deadline reminders.
 
-No additional secrets required for the MVP. The function authenticates via the caller's JWT.
+The `generate-schedule` function authenticates via the caller's JWT. The `send-push` function verifies JWT or accepts `CRON_SECRET` / `SERVICE_ROLE_KEY`.
 
 ## 6. Frontend deployment (Vercel)
 
@@ -170,7 +194,8 @@ limit 100;
 - No emergency contact details are stored in the MVP.
 - Household data export: query all tables where `household_id = '<uuid>'`.
 - Household data deletion: set `memberships.status = 'removed'` and `children.active = false`. The household record is retained for audit history.
-- Hard-delete a user account (testing/reset): `npm run delete-user <email>` — removes profile, auth user, household, children, vehicles, checkins, assignments, and audit events in FK-safe order. Add `--force` if the household has co-parents. See `scripts/delete-user.mjs`.
+- Hard-delete a user account (testing/reset): `npm run delete-user <email>` — removes profile, auth user, household, children, vehicles, checkins, assignments, rider_assignments, and audit events in FK-safe order. Add `--force` if the household has co-parents. Defaults to production; override with `SUPABASE_PROJECT_REF`. See `scripts/delete-user.mjs`.
+- Delete demo families from staging: `npm run delete-seed` — removes all `@seed.kidpool` profiles, households, and auth users. Staging only (aborts on production).
 - End-of-school-year archival: export all tables, then delete child and vehicle records. Retain `audit_events` for one school year, then delete on a documented schedule.
 - A plain-language privacy notice should be shared with participating families before the pilot.
 

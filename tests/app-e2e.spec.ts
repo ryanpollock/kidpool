@@ -4,18 +4,40 @@
 // the actual UI: sign-in, onboarding, check-in, schedule, confirmation,
 // publication, and navigation.
 //
-// Gated behind SUPABASE_TEST_SERVICE_KEY env var (or keychain access).
-// Run: npx playwright test tests/app-e2e.spec.ts
+// Targets the STAGING project by default (jfyjgmhqnlbdcafoarrg).
+// Run: npm run test:runtime
+// Requires: npm run link:test (CLI linked to staging)
 
 import { expect, test, type Page } from "@playwright/test";
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
-const PROJECT_REF = "ujcrnrcgbvzyqosykkjy";
+const PRODUCTION_REF = "ujcrnrcgbvzyqosykkjy";
+const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "jfyjgmhqnlbdcafoarrg";
 const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`;
 const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
 const UID = (n: number) => `deadbeef-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVqY3JucmNnYnZ6eXFvc3lra2p5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU0NTM0NTAsImV4cCI6MjEwMTAyOTQ1MH0.ioezqb2UvBwn01Pd3bnbG9KL8-oqJCtu3MZbr-xI4ZI";
 const TEST_PASSWORD = "TestPass123!";
+
+if (PROJECT_REF === PRODUCTION_REF) {
+  console.error("Aborting: E2E tests must not run against production. Run `npm run link:test` first.");
+  process.exit(1);
+}
+
+function verifyLinkedProject() {
+  try {
+    const linkedRef = readFileSync(path.join(import.meta.dirname, "..", "supabase/.temp/project-ref"), "utf8").trim();
+    if (linkedRef !== PROJECT_REF) {
+      console.error(`CLI linked to ${linkedRef} but PROJECT_REF is ${PROJECT_REF}. Run "npm run link:test" or "npm run link:prod".`);
+      process.exit(1);
+    }
+  } catch {
+    console.error("Could not read linked project ref. Run 'npm run link:test' or 'npm run link:prod'.");
+    process.exit(1);
+  }
+}
+verifyLinkedProject();
 
 function getServiceKey(): string | null {
   if (process.env.SUPABASE_TEST_SERVICE_KEY) return process.env.SUPABASE_TEST_SERVICE_KEY;
@@ -28,7 +50,7 @@ function getServiceKey(): string | null {
     const parsed = JSON.parse(result);
     const keyList = Array.isArray(parsed) ? parsed : (parsed.keys ?? []);
     for (const k of keyList) {
-      if (k.prefix === "iAHHB") return k.api_key;
+      if (k.id === "service_role") return k.api_key;
     }
   } catch {}
   return null;

@@ -1,18 +1,39 @@
 #!/usr/bin/env node
 // Seed 6 demo families into the pilot group for the upcoming week.
 //
-// Usage: node scripts/seed-demo-families.mjs
-// Requires: Supabase CLI linked to project ujcrnrcgbvzyqosykkjy.
-// Cleanup: npm run delete-seed
+// Usage: npm run seed-demo
+// Targets the STAGING project by default (jfyjgmhqnlbdcafoarrg).
+// Override with SUPABASE_PROJECT_REF env var (aborts if set to production).
+// Requires: Supabase CLI linked to the target project (npm run link:test).
 
 import { execSync } from "node:child_process";
-import { writeFileSync, unlinkSync, mkdtempSync } from "node:fs";
+import { writeFileSync, unlinkSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const PROJECT_REF = "ujcrnrcgbvzyqosykkjy";
+const PRODUCTION_REF = "ujcrnrcgbvzyqosykkjy";
+const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "jfyjgmhqnlbdcafoarrg";
 const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`;
 const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
+
+if (PROJECT_REF === PRODUCTION_REF) {
+  console.error("Aborting: seed-demo must not run against production. Run `npm run link:test` first.");
+  process.exit(1);
+}
+
+function verifyLinkedProject() {
+  try {
+    const linkedRef = readFileSync(path.join(import.meta.dirname, "..", "supabase/.temp/project-ref"), "utf8").trim();
+    if (linkedRef !== PROJECT_REF) {
+      console.error(`CLI linked to ${linkedRef} but PROJECT_REF is ${PROJECT_REF}. Run "npm run link:test" or "npm run link:prod".`);
+      process.exit(1);
+    }
+  } catch {
+    console.error("Could not read linked project ref. Run 'npm run link:test' or 'npm run link:prod'.");
+    process.exit(1);
+  }
+}
+verifyLinkedProject();
 
 const FAMILIES = [
   { name: "Chen",    first: "Wei",   email: "chen@seed.kidpool",    kids: [["Lily","Chen"],["Max","Chen"]],     vehicle: "Silver Honda",  seats: 4, maxDrives: 3 },
@@ -41,7 +62,7 @@ function getServiceKey() {
     const result = execSync(`curl -s -H "Authorization: Bearer ${cliToken}" "https://api.supabase.com/v1/projects/${PROJECT_REF}/api-keys"`, { encoding: "utf8" });
     const parsed = JSON.parse(result);
     const keyList = Array.isArray(parsed) ? parsed : (parsed.keys ?? []);
-    for (const k of keyList) { if (k.prefix === "iAHHB") return k.api_key; }
+    for (const k of keyList) { if (k.id === "service_role") return k.api_key; }
   } catch {}
   return null;
 }
@@ -222,7 +243,7 @@ async function main() {
   console.log(`    checkins:           ${v.checkins}`);
   console.log(`    ride_requests:      ${v.ride_requests}`);
   console.log(`    driver_availability: ${v.driver_availability}`);
-  console.log("\n  Done. Sign in at https://kidpool-sf.vercel.app to test.\n");
+  console.log("\n  Done. Sign in at https://carpool-staging.vercel.app to test.\n");
 }
 
 main().catch((e) => { console.error("\n  Error:", e.message, "\n"); process.exit(1); });

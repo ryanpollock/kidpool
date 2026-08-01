@@ -97,9 +97,34 @@ All 121 tests must pass before pushing to `main`.
 
 In development mode (`import.meta.env.DEV`), the app accepts `?testAuth=email|password` as a URL parameter to sign in with email/password instead of Google OAuth. This is stripped from production builds. Used by `tests/app-e2e.spec.ts` to create and sign in test users without OAuth.
 
+### Staging and test isolation
+
+Two Supabase projects:
+- **Production:** `ujcrnrcgbvzyqosykkjy` — real pilot data only
+- **Staging:** `jfyjgmhqnlbdcafoarrg` — demo families, integration tests, E2E tests, pipeline simulations
+
+Switch between them with:
+```bash
+npm run link:test   # supabase link --project-ref jfyjgmhqnlbdcafoarrg (staging)
+npm run link:prod   # supabase link --project-ref ujcrnrcgbvzyqosykkjy (production)
+```
+
+`.env.local` points to production (used by Vercel builds). `.env.staging.local` points to staging. E2E tests run `npm run dev:staging` (Vite `--mode staging`) to load staging env vars.
+
+All test/seed scripts (`seed-demo`, `pipeline-sim`, `integration.test.mjs`, `app-e2e.spec.ts`) default to staging and abort if `PROJECT_REF` is production. `delete-user` defaults to production (ops tool). All scripts verify the CLI's linked project matches `PROJECT_REF`.
+
 ### Integration test data cleanup
 
 Integration and E2E tests create auth users and DB rows with `@test.kidpool` and `@e2e.kidpool` email domains. The cleanup functions delete ALL data for the pilot group (`c1000000-0000-4000-8000-000000000001`) — not just `deadbeef`-prefixed IDs — because the `weeks` table has a `unique(group_id, starts_on)` constraint that blocks inserts if stale weeks from other tests remain.
+
+### Demo family data
+
+6 demo families (Chen, Garcia, Johnson, Patel, Williams, O'Brien) seeded via `npm run seed-demo` with `@seed.kidpool` email domain. Seeds against staging only.
+
+```bash
+npm run seed-demo       # seed 6 families into staging
+npm run delete-seed     # delete all @seed.kidpool data from staging
+```
 
 ### Hard-deleting a real user account
 
@@ -108,13 +133,14 @@ npm run delete-user <email>          # aborts if household has other active memb
 npm run delete-user <email> --force  # deletes entire household including co-parents
 ```
 
-Deletes profile, auth user, household, children, vehicles, checkins, assignments, and audit events in FK-safe order. `schedule_versions.generated_by` is set to NULL (published schedules preserved). Requires Supabase CLI linked to the project. See `scripts/delete-user.mjs`.
+Deletes profile, auth user, household, children, vehicles, checkins, assignments, rider_assignments, and audit events in FK-safe order. `schedule_versions.generated_by` is set to NULL (published schedules preserved). Defaults to production; override with `SUPABASE_PROJECT_REF`. Requires Supabase CLI linked to the target project. See `scripts/delete-user.mjs`.
 
 ## Deployment
 
 - **GitHub repo:** `ryanpollock/kidpool` (public)
 - **Vercel project:** `kidpool` — connected to GitHub, auto-deploys `main` branch
 - **Production URL:** `https://kidpool-sf.vercel.app`
-- **Supabase:** `ujcrnrcgbvzyqosykkjy` — auth `site_url` set to `https://kidpool-sf.vercel.app`
+- **Production Supabase:** `ujcrnrcgbvzyqosykkjy` — auth `site_url` set to `https://kidpool-sf.vercel.app`
+- **Staging Supabase:** `jfyjgmhqnlbdcafoarrg` — no frontend hosting (use `npm run dev:staging`)
 
 Push to `main` triggers Vercel auto-deploy. The Edge Function (`generate-schedule`) deploys separately via `supabase functions deploy`. See `OPS.md` for the full runbook.
