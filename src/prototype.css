@@ -224,6 +224,55 @@ button {
   text-align: center;
 }
 
+.demo-accounts-panel {
+  max-width: 290px;
+  margin: 28px auto 0;
+  padding: 14px 14px 12px;
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  background: var(--surface-2, #f8f8f8);
+}
+
+.demo-accounts-label {
+  margin: 0 0 10px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  text-align: center;
+}
+
+.demo-accounts-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.demo-account-chip {
+  display: inline-block;
+  padding: 5px 10px;
+  border: 1px solid var(--hair);
+  border-radius: 100px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.demo-account-chip:hover {
+  border-color: var(--ink-soft);
+  background: var(--surface-2, #f0f0f0);
+}
+
+.demo-account-chip:active {
+  background: var(--hair);
+}
+
 .auth-error {
   padding: 11px 12px;
   border: 1px solid #efc3bd;

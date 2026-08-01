@@ -42,6 +42,10 @@ const FAMILIES = [
   { name: "Patel",   first: "Priya", email: "patel@seed.kidpool",    kids: [["Aria","Patel"]],                  vehicle: null,           seats: 0, maxDrives: 0 },
   { name: "Williams",first: "David", email: "williams@seed.kidpool", kids: [["Mason","Williams"],["Ava","Williams"],["Leo","Williams"]], vehicle: "Green Volvo", seats: 4, maxDrives: 3 },
   { name: "OBrien",  first: "Sean",  email: "obrien@seed.kidpool",   kids: [["Finn","OBrien"],["Maeve","OBrien"]], vehicle: "White Mazda",  seats: 3, maxDrives: 3 },
+  { name: "Anderson",first: "Lisa", email: "anderson@seed.kidpool",  kids: [["Ivy","Anderson"],["Theo","Anderson"],["Nora","Anderson"],["Sam","Anderson"]], vehicle: "Navy Prius", seats: 3, maxDrives: 2 },
+  { name: "Thompson",first: "Mark", email: "thompson@seed.kidpool",  kids: [["Olive","Thompson"]],              vehicle: "Gray Odyssey",  seats: 7, maxDrives: 1 },
+  { name: "Martinez",first: "Elena", email: "martinez@seed.kidpool", kids: [["Carlos","Martinez"],["Isabel","Martinez"]], vehicle: null, seats: 0, maxDrives: 0 },
+  { name: "Lee",     first: "James", email: "lee@seed.kidpool",      kids: [["Maya","Lee"]],                    vehicle: "Black Tesla",   seats: 5, maxDrives: 0 },
 ];
 
 // Driver availability per family (day index 1-5 = Mon-Fri, direction morning/afternoon)
@@ -52,6 +56,10 @@ const DRIVER_AVAIL = {
   Patel:    [],
   Williams: [{d:3,dir:"morning",pref:"prefer"},{d:4,dir:"morning",pref:"prefer"},{d:1,dir:"afternoon",pref:"can"},{d:5,dir:"afternoon",pref:"can"}],
   OBrien:   [{d:2,dir:"afternoon",pref:"prefer"},{d:5,dir:"afternoon",pref:"prefer"},{d:1,dir:"afternoon",pref:"can"},{d:3,dir:"afternoon",pref:"can"}],
+  Anderson: [{d:1,dir:"morning",pref:"can"},{d:3,dir:"morning",pref:"can"}],
+  Thompson: [{d:4,dir:"afternoon",pref:"prefer"}],
+  Martinez: [],
+  Lee:      [],
 };
 
 // ── Service key resolution ────────────────────────────────────────

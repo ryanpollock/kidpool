@@ -119,12 +119,29 @@ Integration and E2E tests create auth users and DB rows with `@test.kidpool` and
 
 ### Demo family data
 
-6 demo families (Chen, Garcia, Johnson, Patel, Williams, O'Brien) seeded via `npm run seed-demo` with `@seed.kidpool` email domain. Seeds against staging only.
+10 demo families seeded via `npm run seed-demo` with `@seed.kidpool` email domain. Seeds against staging only. All use password `SeedPass123!`.
+
+| Family | Kids | Vehicle seats | Max drives | Edge case |
+|---|---|---|---|---|
+| Chen | 2 | 4 | 3 | Standard driver |
+| Garcia | 1 | 3 | 3 | Afternoon-only driver |
+| Johnson | 2 | 5 | 5 | High-capacity, all-day |
+| Patel | 1 | — | 0 | Pure rider, no vehicle |
+| Williams | 3 | 4 | 3 | Large family |
+| O'Brien | 2 | 3 | 3 | Afternoon driver |
+| Anderson | 4 | 3 | 2 | More riders than seats |
+| Thompson | 1 | 7 | 1 | Big car, barely drives (volunteer candidate) |
+| Martinez | 2 | — | 0 | Pure rider, no vehicle |
+| Lee | 1 | 5 | 0 | Has car, max_drives 0 (volunteer edge case) |
 
 ```bash
-npm run seed-demo       # seed 6 families into staging
+npm run seed-demo       # seed 10 families into staging
 npm run delete-seed     # delete all @seed.kidpool data from staging
 ```
+
+### Staging sign-in
+
+The staging site (`kidpool-staging.vercel.app`) supports both Google OAuth and email/password via the `?testAuth=email|password` bypass. The bypass is enabled when `VITE_SUPABASE_URL` contains the staging project ref (baked at build time). The sign-in screen shows a "Demo accounts" panel with clickable chips for each demo family. Production builds never show the bypass or the panel.
 
 ### Hard-deleting a real user account
 

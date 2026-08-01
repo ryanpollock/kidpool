@@ -39,6 +39,23 @@ import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreferen
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
 
+// Staging detection: the Supabase URL is baked at build time. On staging
+// builds it contains the staging project ref; on production it doesn't.
+const isStaging = (import.meta.env.VITE_SUPABASE_URL ?? "").includes("jfyjgmhqnlbdcafoarrg");
+
+const DEMO_ACCOUNTS = [
+  { name: "Chen", email: "chen@seed.kidpool", password: "SeedPass123!" },
+  { name: "Garcia", email: "garcia@seed.kidpool", password: "SeedPass123!" },
+  { name: "Johnson", email: "johnson@seed.kidpool", password: "SeedPass123!" },
+  { name: "Patel", email: "patel@seed.kidpool", password: "SeedPass123!" },
+  { name: "Williams", email: "williams@seed.kidpool", password: "SeedPass123!" },
+  { name: "OBrien", email: "obrien@seed.kidpool", password: "SeedPass123!" },
+  { name: "Anderson", email: "anderson@seed.kidpool", password: "SeedPass123!" },
+  { name: "Thompson", email: "thompson@seed.kidpool", password: "SeedPass123!" },
+  { name: "Martinez", email: "martinez@seed.kidpool", password: "SeedPass123!" },
+  { name: "Lee", email: "lee@seed.kidpool", password: "SeedPass123!" },
+];
+
 function CarIcon({ width = 18, height = 18 }: { width?: number | string; height?: number | string }) {
   return (
     <svg width={width} height={height} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -134,7 +151,7 @@ function SignInScreen({
 
       <div className="sign-in-copy">
         <span className="eyebrow">A simpler school week</span>
-        <h1>Know who’s driving—and who’s riding.</h1>
+        <h1>Know who's driving—and who's riding.</h1>
         <p>
           Coordinate rides between Midtown Terrace and Presidio with the families
           you already know.
@@ -159,8 +176,25 @@ function SignInScreen({
         {working ? "Opening Google…" : "Continue with Google"}
       </button>
       <small className="auth-footnote">
-        Use the Google account you want associated with your family’s driving schedule.
+        Use the Google account you want associated with your family's driving schedule.
       </small>
+
+      {isStaging ? (
+        <div className="demo-accounts-panel" data-testid="demo-accounts">
+          <p className="demo-accounts-label">Demo accounts (staging only)</p>
+          <div className="demo-accounts-grid">
+            {DEMO_ACCOUNTS.map((acct) => (
+              <a
+                key={acct.email}
+                className="demo-account-chip"
+                href={`/?testAuth=${acct.email}|${acct.password}`}
+              >
+                {acct.name}
+              </a>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3113,8 +3147,8 @@ export default function Prototype() {
         return;
       }
 
-      // Dev-only test auth bypass: auto sign in with ?testAuth=email|password
-      if (import.meta.env.DEV) {
+      // Dev/staging test auth bypass: auto sign in with ?testAuth=email|password
+      if (import.meta.env.DEV || isStaging) {
         const params = new URLSearchParams(window.location.search);
         const testAuth = params.get("testAuth");
         if (testAuth) {
@@ -3155,7 +3189,7 @@ export default function Prototype() {
     setAuthWorking(true);
     setAuthError(null);
     try {
-      if (import.meta.env.DEV) {
+      if (import.meta.env.DEV || isStaging) {
         const params = new URLSearchParams(window.location.search);
         const testEmail = params.get("testAuth");
         if (testEmail) {
