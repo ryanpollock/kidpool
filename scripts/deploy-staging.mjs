@@ -17,7 +17,8 @@ console.log("\n  Deploying to Vercel (preview)...\n");
 
 // Deploy as preview (not production)
 const output = run("vercel --yes 2>&1");
-const match = output.match(/Deployment (https:\/\/[^\s]+) ready/);
+// Try "Deployment <url> ready" format, then fall back to "Preview: <url>"
+const match = output.match(/Deployment (https:\/\/[^\s]+) ready/) || output.match(/"url":\s*"(https:\/\/[^"]+)"/);
 if (!match) {
   console.error("  Could not parse deployment URL from Vercel output.");
   console.error(output);
