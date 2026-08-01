@@ -91,6 +91,7 @@ export type DeclinedDriveAlert = {
   driverProfile: Tables<"profiles"> | null;
   children: Tables<"children">[];
   myChildren: Tables<"children">[];
+  volunteerVehicleCapacity: number | null;
 };
 
 function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
@@ -136,6 +137,32 @@ export class CarpoolRepository {
     } catch {
       // Best-effort: do not surface audit failures to the user.
     }
+  }
+
+  /**
+   * Fetch all profiles in a group via the list_group_profiles RPC.
+   * Returns rows with email="" placeholder (email is excluded from
+   * group-scoped reads for privacy).
+   */
+  private async fetchGroupProfiles(
+    groupId: string,
+  ): Promise<Tables<"profiles">[]> {
+    const rows = unwrapRequired(
+      await this.client.rpc("list_group_profiles", {
+        target_group_id: groupId,
+      }),
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      email: "",
+      full_name: r.full_name,
+      avatar_url: r.avatar_url,
+      default_drive_preferences: r.default_drive_preferences as
+        | DefaultDrivePref[]
+        | null,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    }));
   }
 
   async getCurrentProfile() {
@@ -389,18 +416,8 @@ export class CarpoolRepository {
       ),
     ]);
 
-    const profiles = membershipRows.length
-      ? unwrapRequired(
-          await this.client
-            .from("profiles")
-            .select("*")
-            .in(
-              "id",
-              membershipRows.map((membership) => membership.profile_id),
-            ),
-        )
-      : [];
-    const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+    const allProfiles = await this.fetchGroupProfiles(household.group_id);
+    const profileById = new Map(allProfiles.map((profile) => [profile.id, profile]));
 
     return {
       household,
@@ -660,7 +677,33 @@ export class CarpoolRepository {
    * null when no future week exists, so the UI can show "no upcoming week."
    */
   async getPlanWeek(groupId: string): Promise<WeekWithTrips | null> {
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const today = new Date();
+    const todayStr = today.toISOString().slice(0, 10);
+
+    // First, check if today falls within an existing week (Mon–Fri).
+    // This handles Monday morning when the week has already started.
+    const currentRows = unwrapRequired(
+      await this.client
+        .from("weeks")
+        .select("*")
+        .eq("group_id", groupId)
+        .lte("starts_on", todayStr)
+        .order("starts_on", { ascending: false })
+        .limit(1),
+    );
+    const mostRecent = currentRows[0];
+    if (mostRecent) {
+      const weekStart = new Date(mostRecent.starts_on + "T00:00:00");
+      const friday = new Date(weekStart);
+      friday.setDate(weekStart.getDate() + 4);
+      const fridayStr = friday.toISOString().slice(0, 10);
+      if (todayStr >= mostRecent.starts_on && todayStr <= fridayStr) {
+        const trips = await this.listTripsForWeek(mostRecent.id);
+        return { week: mostRecent, trips };
+      }
+    }
+
+    // Otherwise, return the next upcoming week (starts_on > today).
     const futureRows = unwrapRequired(
       await this.client
         .from("weeks")
@@ -1141,15 +1184,7 @@ export class CarpoolRepository {
       ),
     ]);
 
-    const profileIds = [...new Set(memberships.map((m) => m.profile_id))];
-    const profiles = profileIds.length
-      ? unwrapRequired(
-          await this.client
-            .from("profiles")
-            .select("*")
-            .in("id", profileIds),
-        )
-      : [];
+    const profiles = await this.fetchGroupProfiles(groupId);
 
     const childById = new Map(children.map((c) => [c.id, c]));
     const tripById = new Map(trips.map((t) => [t.id, t]));
@@ -1160,6 +1195,11 @@ export class CarpoolRepository {
     for (const m of memberships.filter((m) => m.profile_id === profileId)) {
       householdIds.add(m.household_id);
     }
+
+    const volunteerVehicles = vehicles.filter((v) => householdIds.has(v.household_id));
+    const volunteerVehicleCapacity = volunteerVehicles.length
+      ? Math.max(...volunteerVehicles.map((v) => v.child_passenger_capacity))
+      : null;
 
     const ridersByAssignment = new Map<string, Tables<"children">[]>();
     for (const ra of riderAssignments) {
@@ -1188,6 +1228,7 @@ export class CarpoolRepository {
         driverProfile,
         children: riders,
         myChildren,
+        volunteerVehicleCapacity,
       });
     }
     return alerts;
@@ -1305,15 +1346,7 @@ export class CarpoolRepository {
       ),
     ]);
 
-    const profileIds = [...new Set(memberships.map((m) => m.profile_id))];
-    const profiles = profileIds.length
-      ? unwrapRequired(
-          await this.client
-            .from("profiles")
-            .select("*")
-            .in("id", profileIds),
-        )
-      : [];
+    const profiles = await this.fetchGroupProfiles(groupId);
 
     return { children, vehicles, profiles, memberships };
   }

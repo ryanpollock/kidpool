@@ -336,8 +336,13 @@ function OnboardingScreen({
     setStandardWeekSaving(true);
     setStandardWeekError(null);
     try {
+      // Only save household ride needs if they don't already exist
+      // (prevents a joining co-parent from overwriting the creator's defaults)
       if (onboardingChildren.length > 0) {
-        await repository.saveDefaultRideNeeds(householdId, rideNeeds);
+        const existing = await repository.getDefaultRideNeeds(householdId);
+        if (existing.length === 0) {
+          await repository.saveDefaultRideNeeds(householdId, rideNeeds);
+        }
       }
       await repository.saveDefaultDrivePreferences(driveDefaults);
       await onComplete();
@@ -1018,18 +1023,22 @@ function HomeScreen({
                 </div>
                 {(() => {
                   const riderCount = alert.children.length;
+                  const capacity = alert.volunteerVehicleCapacity;
+                  const tooSmall = capacity !== null && capacity < riderCount;
                   return (
                     <>
                       <p className="decline-alert-meta">
                         {riderCount} child{riderCount !== 1 ? "ren" : ""} need{riderCount === 1 ? "s" : ""} a ride
+                        {capacity !== null ? ` · Your car seats ${capacity}` : ""}
+                        {tooSmall ? ` — not enough seats` : ""}
                       </p>
                       <button
                         className="primary-button decline-alert-volunteer"
                         data-testid={`volunteer-${alert.assignment.id}`}
-                        disabled={volunteerWorking}
+                        disabled={volunteerWorking || tooSmall}
                         onClick={() => onVolunteer(alert.assignment.id)}
                       >
-                        <CheckIcon width="18" height="18" /> I can drive
+                        <CheckIcon width="18" height="18" /> {tooSmall ? "Car too small" : "I can drive"}
                       </button>
                     </>
                   );
@@ -1260,7 +1269,7 @@ function PlanScreen({
 
   useEffect(() => {
     if (checkin) setMaxDrives(String(checkin.max_drives || 2));
-  }, [checkin]);
+  }, [checkin?.id]);
 
   if (weekLoading) {
     return (
@@ -2105,6 +2114,7 @@ function AccountScreen({
   const [joinCode, setJoinCode] = useState<string | null>(null);
   const [codeWorking, setCodeWorking] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
+  const [confirmNewCode, setConfirmNewCode] = useState(false);
 
   const [driveDefaults, setDriveDefaults] = useState<DefaultDrivePref[]>(emptyDriveDefaults());
   const [driveDefaultsLoading, setDriveDefaultsLoading] = useState(true);
@@ -2518,9 +2528,21 @@ function AccountScreen({
           </div>
         ) : null}
         {codeError ? <div className="auth-error" role="alert">{codeError}</div> : null}
-        <button className="secondary-button" disabled={codeWorking} onClick={() => void regenerateCode()}>
-          {codeWorking ? "Generating…" : joinCode ? "Generate new code" : "Get join code"}
-        </button>
+        {confirmNewCode ? (
+          <div className="confirm-code-block" data-testid="confirm-new-code">
+            <p className="confirm-code-warning">This will invalidate the old code. Anyone who hasn&apos;t joined yet will need the new one. Continue?</p>
+            <div className="confirm-code-actions">
+              <button className="primary-button" disabled={codeWorking} onClick={() => { void regenerateCode(); setConfirmNewCode(false); }}>
+                {codeWorking ? "Generating…" : "Yes, get new code"}
+              </button>
+              <button className="text-button" disabled={codeWorking} onClick={() => setConfirmNewCode(false)}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button className="secondary-button" disabled={codeWorking} onClick={() => setConfirmNewCode(true)}>
+            {joinCode ? "Get a new code" : "Get join code"}
+          </button>
+        )}
       </section>
 
       <section className="account-info">
@@ -2552,6 +2574,7 @@ export default function Prototype() {
   const [planWeekError, setPlanWeekError] = useState<string | null>(null);
   const [allWeeks, setAllWeeks] = useState<Tables<"weeks">[]>([]);
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
+  const [viewWeekData, setViewWeekData] = useState<WeekWithTrips | null>(null);
   const [checkin, setCheckin] = useState<Tables<"weekly_checkins"> | null>(null);
   const [checkinDetails, setCheckinDetails] = useState<CheckinDetails | null>(null);
   const [checkinLoading, setCheckinLoading] = useState(false);
@@ -2729,6 +2752,7 @@ export default function Prototype() {
       const viewWeek = selectedWeekId
         ? await repository.getWeekById(selectedWeekId)
         : weekData;
+      setViewWeekData(viewWeek);
       if (!viewWeek) { setSchedule(null); return; }
       const roster = await repository.getGroupRoster(identity.group.id);
       const version = await repository.getLatestScheduleVersion(
@@ -2819,6 +2843,7 @@ export default function Prototype() {
       await loadMyAssignments();
     } catch (error) {
       setConfirmError(readableError(error));
+      await loadMyAssignments();
     } finally {
       setConfirmWorking(false);
     }
@@ -3029,7 +3054,7 @@ export default function Prototype() {
     if (activeTab === "week") {
       return (
         <WeekScreen
-          week={weekData}
+          week={viewWeekData ?? weekData}
           weekLoading={weekLoading}
           weekError={weekError}
           schedule={schedule}

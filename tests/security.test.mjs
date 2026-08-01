@@ -13,6 +13,11 @@ const migrationUrl = new URL(
   "../supabase/migrations/202607300001_exchange_1_foundation.sql",
   import.meta.url,
 );
+
+const privacyMigrationUrl = new URL(
+  "../supabase/migrations/202608020006_tighten_privacy.sql",
+  import.meta.url,
+);
 const exchange6Url = new URL(
   "../supabase/migrations/202607310001_exchange_6_confirmation_reason.sql",
   import.meta.url,
@@ -54,10 +59,16 @@ const householdScopedTables = [
 
 let cachedSql;
 let cachedEx6Sql;
+let cachedPrivacySql;
 
 async function loadSql() {
   if (!cachedSql) cachedSql = await readFile(migrationUrl, "utf8");
   return cachedSql;
+}
+
+async function loadPrivacySql() {
+  if (!cachedPrivacySql) cachedPrivacySql = await readFile(privacyMigrationUrl, "utf8");
+  return cachedPrivacySql;
 }
 
 async function loadEx6Sql() {
@@ -167,9 +178,15 @@ test("Exchange 7 RLS audit_events insert requires actor = auth.uid and group mem
   assert.match(sql, /audit_events_select_group[\s\S]*?is_group_member\(group_id\)/);
 });
 
-test("Exchange 7 RLS profiles are visible only to self or same-group members", async () => {
+test("Exchange 7 RLS profiles are visible only to self (tightened by privacy migration)", async () => {
   const sql = await loadSql();
+  const privacySql = await loadPrivacySql();
+  // Foundation defines the original group-scoped policy; privacy migration drops it
   assert.match(sql, /profiles_select_group[\s\S]*?id = auth\.uid\(\) or public\.shares_group_with_profile\(id\)/);
+  // Privacy migration drops the old policy and replaces with self-only
+  assert.match(privacySql, /drop policy "profiles_select_group" on public\.profiles/);
+  assert.match(privacySql, /profiles_select_self[\s\S]*?id = auth\.uid\(\)/);
+  assert.match(privacySql, /list_group_profiles/);
   assert.match(sql, /profiles_update_self[\s\S]*?id = auth\.uid\(\)/);
 });
 
@@ -198,11 +215,15 @@ test("Exchange 7 RLS ride_requests are scoped to the owning checkin's household"
   assert.match(sql, /ride_requests_select_group[\s\S]*?is_group_member\(group_id\)/);
 });
 
-test("Exchange 7 RLS confirmations are group-scoped for select with no public write policy", async () => {
+test("Exchange 7 RLS confirmations are scoped to driver/coordinator/affected parents (tightened)", async () => {
   const sql = await loadSql();
+  const privacySql = await loadPrivacySql();
+  // Foundation originally had group-scoped select; privacy migration tightens it
   assert.match(sql, /confirmations_select_group[\s\S]*?is_group_member\(group_id\)/);
+  assert.match(privacySql, /drop policy "confirmations_select_group"/);
+  assert.match(privacySql, /confirmations_select_scoped[\s\S]*?driver_profile_id = auth\.uid\(\)/);
   // confirmations are written only via the security-definer RPC, not a direct policy.
-  const insertPolicy = /create policy \w+_insert\w*\s+on public\.driver_confirmions for insert/i;
+  const insertPolicy = /create policy \w+_insert\w*\s+on public\.driver_confirmations for insert/i;
   assert.doesNotMatch(sql, insertPolicy, "driver_confirmations should not have a direct insert policy");
 });
 

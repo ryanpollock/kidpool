@@ -492,6 +492,17 @@ export type Database = {
         Args: { target_assignment_id: string };
         Returns: DriverAssignmentRow;
       };
+      list_group_profiles: {
+        Args: { target_group_id: string };
+        Returns: Array<{
+          id: string;
+          full_name: string;
+          avatar_url: string | null;
+          default_drive_preferences: DefaultDrivePref[] | null;
+          created_at: string;
+          updated_at: string;
+        }>;
+      };
     };
     Enums: {
       app_role: AppRole;
