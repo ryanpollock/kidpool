@@ -1370,6 +1370,25 @@ function PlanScreen({
 
       {submitError ? <div className="auth-error" role="alert">{submitError}</div> : null}
 
+      {!submitted ? (
+        <div className="checkin-summary">
+          <span><strong>{[...rideMap.values()].filter(Boolean).length}</strong> rides needed</span>
+          <span><strong>{[...driveMap.values()].filter((p) => p !== "cannot").length}</strong> trips you can drive</span>
+        </div>
+      ) : null}
+
+      {!submitted ? (
+        children.map((child) => {
+          const childRides = week.trips.filter((t) => rideMap.get(`${t.id}:${child.id}`)).length;
+          if (childRides > 0) return null;
+          return (
+            <div className="checkin-empty-prompt" key={`empty-${child.id}`}>
+              <span>No rides requested for {child.first_name} this week. Do they need any?</span>
+            </div>
+          );
+        })
+      ) : null}
+
       {sortedDates.map((serviceDate) => {
         const dateTrips = tripsByDate.get(serviceDate) ?? [];
         const dateInfo = formatTripDate(serviceDate);
@@ -1386,45 +1405,56 @@ function PlanScreen({
                 <span>{direction === "morning" ? "Morning" : "Afternoon"}</span>
                 <small>{trip.meeting_time} · {trip.origin} → {trip.destination}</small>
               </div>
-              <div className="checkin-rides">
-                {children.map((child) => {
-                  const key = `${trip.id}:${child.id}`;
-                  const riding = rideMap.get(key) ?? false;
-                  return (
-                    <button
-                      key={child.id}
-                      className={riding ? "ride-pill ride-pill--on" : "ride-pill"}
-                      disabled={submitted}
-                      onClick={() => void toggleRide(trip.id, child.id)}
-                      aria-pressed={riding}
-                    >
-                      {child.first_name}
-                    </button>
-                  );
-                })}
+
+              <div className="checkin-section">
+                <span className="checkin-section-label">Rides needed</span>
+                <p className="checkin-section-caption">Tap each child who needs a ride.</p>
+                <div className="checkin-rides">
+                  {children.map((child) => {
+                    const key = `${trip.id}:${child.id}`;
+                    const riding = rideMap.get(key) ?? false;
+                    return (
+                      <button
+                        key={child.id}
+                        className={riding ? "ride-pill ride-pill--on" : "ride-pill"}
+                        disabled={submitted}
+                        onClick={() => void toggleRide(trip.id, child.id)}
+                        aria-pressed={riding}
+                        aria-label={`${child.first_name} ${riding ? "needs a ride" : "does not need a ride"}`}
+                      >
+                        <span>{child.first_name}</span>
+                        <small>{riding ? "Needs ride" : "No ride"}</small>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <div
-                className="drive-segments"
-                role="group"
-                aria-label={`Your driving for ${direction === "morning" ? "morning" : "afternoon"}`}
-              >
-                {(["prefer", "can", "cannot"] as const).map((pref) => {
-                  const currentPref = pendingDrive[trip.id] ?? driveMap.get(trip.id) ?? "cannot";
-                  const active = currentPref === pref;
-                  const busy = pendingDrive[trip.id] !== undefined;
-                  return (
-                    <button
-                      key={pref}
-                      className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
-                      disabled={submitted || busy}
-                      onClick={() => void setDrivePreference(trip.id, pref)}
-                      aria-pressed={active}
-                      aria-label={preferenceLabel(pref)}
-                    >
-                      {pref === "prefer" ? "Prefer" : pref === "can" ? "Can" : "Can't"}
-                    </button>
-                  );
-                })}
+
+              <div className="checkin-section">
+                <span className="checkin-section-label">Your driving</span>
+                <div
+                  className="drive-segments"
+                  role="group"
+                  aria-label={`Your driving for ${direction === "morning" ? "morning" : "afternoon"}`}
+                >
+                  {(["prefer", "can", "cannot"] as const).map((pref) => {
+                    const currentPref = pendingDrive[trip.id] ?? driveMap.get(trip.id) ?? "cannot";
+                    const active = currentPref === pref;
+                    const busy = pendingDrive[trip.id] !== undefined;
+                    return (
+                      <button
+                        key={pref}
+                        className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
+                        disabled={submitted || busy}
+                        onClick={() => void setDrivePreference(trip.id, pref)}
+                        aria-pressed={active}
+                        aria-label={preferenceLabel(pref)}
+                      >
+                        {pref === "prefer" ? "Prefer" : pref === "can" ? "Can" : "Can't"}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           );
@@ -2795,7 +2825,7 @@ export default function Prototype() {
 
   const navItems = useMemo(() => [
     { id: "home" as const, label: "Home", icon: HomeIcon },
-    { id: "plan" as const, label: "Plan", icon: BackpackIcon },
+    { id: "plan" as const, label: "Check-in", icon: BackpackIcon },
     { id: "week" as const, label: "Week", icon: CalendarIcon },
     { id: "coordinate" as const, label: "Status", icon: GroupIcon },
   ], []);
