@@ -158,6 +158,9 @@ async function main() {
     `INSERT INTO public.memberships (group_id, household_id, profile_id, role, status) VALUES ('${GROUP_ID}', 'a2000000-0000-4000-8000-${String(i+1).padStart(12,"0")}', '${f.userId}', 'member', 'active') ON CONFLICT DO NOTHING;`
   ).join("\n");
 
+  // Grant coordinator to the first family (Chen) so coordinator flows work without manual SQL.
+  const coordinatorUpdate = `UPDATE public.memberships SET role = 'coordinator' WHERE profile_id = '${familyData[0].userId}' AND status = 'active';`;
+
   // Children
   let childCounter = 0;
   const childInserts = [];
@@ -217,6 +220,7 @@ async function main() {
     profileUpdates,
     householdInserts,
     membershipInserts,
+    coordinatorUpdate,
     childInserts.join("\n"),
     vehicleInserts.join("\n"),
     checkinInserts,

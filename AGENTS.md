@@ -123,7 +123,7 @@ Integration and E2E tests create auth users and DB rows with `@test.kidpool` and
 
 | Family | Kids | Vehicle seats | Max drives | Edge case |
 |---|---|---|---|---|
-| Chen | 2 | 4 | 3 | Standard driver |
+| Chen | 2 | 4 | 3 | **Coordinator**, standard driver |
 | Garcia | 1 | 3 | 3 | Afternoon-only driver |
 | Johnson | 2 | 5 | 5 | High-capacity, all-day |
 | Patel | 1 | — | 0 | Pure rider, no vehicle |
