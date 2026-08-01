@@ -11,6 +11,7 @@
     "test:integration": "node --test tests/integration.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs",
     "delete-user": "node scripts/delete-user.mjs",
+    "seed-demo": "node scripts/seed-demo-families.mjs",
     "test": "npm run test:foundation && npm run test:sites",
     "predev": "npm run check:runtime",
     "dev": "vite",

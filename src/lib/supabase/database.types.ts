@@ -488,6 +488,10 @@ export type Database = {
         Args: { target_profile_id: string };
         Returns: boolean;
       };
+      volunteer_for_declined_drive: {
+        Args: { target_assignment_id: string };
+        Returns: DriverAssignmentRow;
+      };
     };
     Enums: {
       app_role: AppRole;

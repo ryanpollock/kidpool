@@ -84,6 +84,15 @@ export type MyDriverAssignment = {
   children: Tables<"children">[];
 };
 
+export type DeclinedDriveAlert = {
+  assignment: Tables<"driver_assignments">;
+  trip: Tables<"trips">;
+  vehicle: Tables<"vehicles"> | null;
+  driverProfile: Tables<"profiles"> | null;
+  children: Tables<"children">[];
+  myChildren: Tables<"children">[];
+};
+
 function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
   if (result.error) throw new Error(result.error.message);
   return result.data;
@@ -1072,6 +1081,116 @@ export class CarpoolRepository {
         decline_reason: declineReason ?? null,
       }),
     );
+  }
+
+  async volunteerForDrive(assignmentId: string) {
+    return unwrap(
+      await this.client.rpc("volunteer_for_declined_drive", {
+        target_assignment_id: assignmentId,
+      }),
+    );
+  }
+
+  async getAffectedDeclinedDrives(
+    scheduleVersionId: string,
+    profileId: string,
+    groupId: string,
+  ): Promise<DeclinedDriveAlert[]> {
+    const [driverAssignments, riderAssignments, children, trips, vehicles, memberships] = await Promise.all([
+      unwrapRequired(
+        await this.client
+          .from("driver_assignments")
+          .select("*")
+          .eq("schedule_version_id", scheduleVersionId)
+          .eq("group_id", groupId)
+          .eq("status", "declined"),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("rider_assignments")
+          .select("*")
+          .eq("schedule_version_id", scheduleVersionId)
+          .eq("group_id", groupId),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("children")
+          .select("*")
+          .eq("group_id", groupId)
+          .eq("active", true),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("trips")
+          .select("*")
+          .eq("group_id", groupId),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("vehicles")
+          .select("*")
+          .eq("group_id", groupId)
+          .eq("active", true),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("memberships")
+          .select("*")
+          .eq("group_id", groupId)
+          .eq("status", "active"),
+      ),
+    ]);
+
+    const profileIds = [...new Set(memberships.map((m) => m.profile_id))];
+    const profiles = profileIds.length
+      ? unwrapRequired(
+          await this.client
+            .from("profiles")
+            .select("*")
+            .in("id", profileIds),
+        )
+      : [];
+
+    const childById = new Map(children.map((c) => [c.id, c]));
+    const tripById = new Map(trips.map((t) => [t.id, t]));
+    const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
+    const profileById = new Map(profiles.map((p) => [p.id, p]));
+
+    const householdIds = new Set<string>();
+    for (const m of memberships.filter((m) => m.profile_id === profileId)) {
+      householdIds.add(m.household_id);
+    }
+
+    const ridersByAssignment = new Map<string, Tables<"children">[]>();
+    for (const ra of riderAssignments) {
+      const existing = ridersByAssignment.get(ra.driver_assignment_id) ?? [];
+      const child = childById.get(ra.child_id);
+      if (child) existing.push(child);
+      ridersByAssignment.set(ra.driver_assignment_id, existing);
+    }
+
+    const alerts: DeclinedDriveAlert[] = [];
+    for (const da of driverAssignments) {
+      const riders = ridersByAssignment.get(da.id) ?? [];
+      const myChildren = riders.filter((r) => householdIds.has(r.household_id));
+      if (myChildren.length === 0) continue;
+
+      const trip = tripById.get(da.trip_id);
+      if (!trip) continue;
+
+      const vehicle = vehicleById.get(da.vehicle_id) ?? null;
+      const driverProfile = profileById.get(da.driver_profile_id) ?? null;
+
+      alerts.push({
+        assignment: da,
+        trip,
+        vehicle,
+        driverProfile,
+        children: riders,
+        myChildren,
+      });
+    }
+    return alerts;
   }
 
   async getMyDriverAssignments(

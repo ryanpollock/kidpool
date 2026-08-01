@@ -24,6 +24,7 @@ import {
   CarpoolRepository,
   getSupabaseClient,
   type CheckinDetails,
+  type DeclinedDriveAlert,
   type HouseholdSetup,
   type MyDriverAssignment,
   type ScheduleVersionWithRosters,
@@ -675,6 +676,22 @@ function weekLabel(startsOn: string): string {
   return `Week of ${start.short} – ${end.short}`;
 }
 
+function tripLabel(trip: Tables<"trips">): string {
+  const dateInfo = formatTripDate(trip.service_date);
+  const period = trip.direction === "morning" ? "Morning" : "Afternoon";
+  return `${dateInfo.full} · ${period}`;
+}
+
+function countDeclinedRosters(schedule: ScheduleVersionWithRosters): number {
+  let count = 0;
+  for (const rosters of schedule.rostersByTrip.values()) {
+    count += rosters.filter(
+      (r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released",
+    ).length;
+  }
+  return count;
+}
+
 function preferenceLabel(pref: DrivePreference): string {
   if (pref === "prefer") return "Prefer to drive";
   if (pref === "can") return "Can if needed";
@@ -891,10 +908,14 @@ function HomeScreen({
   onCoverage,
   onAccount,
   onRetryAssignments,
+  onVolunteer,
   working,
+  volunteerWorking,
+  volunteerError,
   avatarUrl,
   weekStartsOn,
   confirmationDeadline,
+  declinedAlerts,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -906,10 +927,14 @@ function HomeScreen({
   onCoverage: () => void;
   onAccount: () => void;
   onRetryAssignments: () => void;
+  onVolunteer: (assignmentId: string) => void;
   working: boolean;
+  volunteerWorking: boolean;
+  volunteerError: string | null;
   avatarUrl: string | null;
   weekStartsOn: string | null;
   confirmationDeadline: string | null;
+  declinedAlerts: DeclinedDriveAlert[];
 }) {
   const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = myAssignments.filter((a) => a.assignment.status === "confirmed");
@@ -971,6 +996,49 @@ function HomeScreen({
       )}
 
       {confirmError ? <div className="auth-error" role="alert">{confirmError}</div> : null}
+
+      {declinedAlerts.length > 0 ? (
+        <section className="decline-alert" data-testid="decline-alert" aria-labelledby="decline-alert-heading">
+          <div className="decline-alert-header">
+            <ExclamationTriangleIcon width="20" height="20" />
+            <h2 id="decline-alert-heading">Your child’s drive was cancelled</h2>
+          </div>
+          <p className="decline-alert-body">
+            A driver declined the following {declinedAlerts.length === 1 ? "trip" : "trips"} that include your child. Another parent on the route can take it over.
+          </p>
+          {volunteerError ? <div className="auth-error" role="alert">{volunteerError}</div> : null}
+          <ul className="decline-alert-list">
+            {declinedAlerts.map((alert) => (
+              <li key={alert.assignment.id}>
+                <div className="decline-alert-trip">
+                  <strong>{tripLabel(alert.trip)}</strong>
+                  <span className="decline-alert-children">
+                    {alert.myChildren.map((c) => `${c.first_name} ${c.last_name}`).join(", ")}
+                  </span>
+                </div>
+                {(() => {
+                  const riderCount = alert.children.length;
+                  return (
+                    <>
+                      <p className="decline-alert-meta">
+                        {riderCount} child{riderCount !== 1 ? "ren" : ""} need{riderCount === 1 ? "s" : ""} a ride
+                      </p>
+                      <button
+                        className="primary-button decline-alert-volunteer"
+                        data-testid={`volunteer-${alert.assignment.id}`}
+                        disabled={volunteerWorking}
+                        onClick={() => onVolunteer(alert.assignment.id)}
+                      >
+                        <CheckIcon width="18" height="18" /> I can drive
+                      </button>
+                    </>
+                  );
+                })()}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {!noAssignments ? (
         <section className="assignment-section" aria-labelledby="assignment-heading">
@@ -1659,13 +1727,23 @@ function WeekScreen({
     const dateTrips = tripsByDate.get(date) ?? [];
     for (const trip of dateTrips) {
       const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
-      const hasUncovered = rosters.length === 0;
-      if (!hasUncovered) count++;
+      const activeRosters = rosters.filter(
+        (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released",
+      );
+      if (activeRosters.length > 0) count++;
     }
     return count;
   }, 0);
   const totalTrips = week.trips.length;
   const uncoveredCount = totalTrips - coveredCount;
+  const declinedCount = sortedDates.reduce((count, date) => {
+    const dateTrips = tripsByDate.get(date) ?? [];
+    for (const trip of dateTrips) {
+      const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
+      count += rosters.filter((r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released").length;
+    }
+    return count;
+  }, 0);
 
   const isPublished = schedule.version.status === "published";
 
@@ -1698,6 +1776,7 @@ function WeekScreen({
       <div className="week-status-strip">
         <span><CheckCircledIcon /> {coveredCount} covered</span>
         {uncoveredCount > 0 ? <span><ExclamationTriangleIcon /> {uncoveredCount} needs assignment</span> : null}
+        {declinedCount > 0 ? <span className="week-status-declined"><ExclamationTriangleIcon /> {declinedCount} declined</span> : null}
       </div>
 
       {isCoordinator && !isPublished ? (
@@ -1716,7 +1795,13 @@ function WeekScreen({
               {dateTrips.map((trip) => {
                 const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
                 const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
-                const uncovered = rosters.length === 0;
+                const activeRosters = rosters.filter(
+                  (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released",
+                );
+                const declinedRosters = rosters.filter(
+                  (r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released",
+                );
+                const uncovered = activeRosters.length === 0;
                 return (
                   <div className={`leg ${uncovered ? "leg--alert" : ""}`} key={trip.id}>
                     <PeriodIcon />
@@ -1727,11 +1812,11 @@ function WeekScreen({
                     {uncovered ? (
                       <span className="mini-status mini-status--alert">No drivers</span>
                     ) : (
-                      <span className="mini-status mini-status--confirmed">{rosters.length} car{rosters.length !== 1 ? "s" : ""}</span>
+                      <span className="mini-status mini-status--confirmed">{activeRosters.length} car{activeRosters.length !== 1 ? "s" : ""}</span>
                     )}
                     {!uncovered ? (
                       <div className="trip-rosters">
-                        {rosters.map((entry) => (
+                        {activeRosters.map((entry) => (
                           <div className="trip-roster" key={entry.driverAssignment.id}>
                             <div className="roster-driver">
                               <strong>{entry.driverProfile.full_name}</strong>
@@ -1741,6 +1826,18 @@ function WeekScreen({
                               {entry.children.length ? entry.children.map((child) => (
                                 <span key={child.id}>{child.first_name} {child.last_name}</span>
                               )) : <span className="roster-empty">No riders assigned</span>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {declinedRosters.length > 0 ? (
+                      <div className="trip-rosters trip-rosters--declined">
+                        {declinedRosters.map((entry) => (
+                          <div className="trip-roster roster--declined" key={entry.driverAssignment.id}>
+                            <div className="roster-driver">
+                              <strong>{entry.driverProfile.full_name}</strong>
+                              <small>{entry.vehicle.label} · {entry.driverAssignment.status === "released" ? "Released" : "Declined"}</small>
                             </div>
                           </div>
                         ))}
@@ -1776,6 +1873,7 @@ function CoordinatorScreen({
   publishing,
   onReloadWeek,
   onReloadOverview,
+  declinedCount,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -1795,6 +1893,7 @@ function CoordinatorScreen({
   publishing: boolean;
   onReloadWeek: () => void;
   onReloadOverview: () => void;
+  declinedCount: number;
 }) {
   if (weekLoading) {
     return (
@@ -1873,6 +1972,18 @@ function CoordinatorScreen({
           <div className="coverage-summary--alert"><strong>{notStartedCount}</strong><span>Not started</span></div>
         </section>
       )}
+
+      {declinedCount > 0 ? (
+        <div className="decline-alert decline-alert--admin" data-testid="decline-alert-admin">
+          <div className="decline-alert-header">
+            <ExclamationTriangleIcon width="20" height="20" />
+            <h2>{declinedCount} drive{declinedCount !== 1 ? "s" : ""} declined</h2>
+          </div>
+          <p className="decline-alert-body">
+            Affected parents can volunteer to cover these from their home screen. If no one steps up, regenerate the draft to reassign.
+          </p>
+        </div>
+      ) : null}
 
       {isCoordinator && week ? (
         <div className="coordinator-generate">
@@ -2457,6 +2568,9 @@ export default function Prototype() {
   const [myAssignments, setMyAssignments] = useState<MyDriverAssignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
+  const [declinedAlerts, setDeclinedAlerts] = useState<DeclinedDriveAlert[]>([]);
+  const [volunteerWorking, setVolunteerWorking] = useState(false);
+  const [volunteerError, setVolunteerError] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmWorking, setConfirmWorking] = useState(false);
   const [creatingWeek, setCreatingWeek] = useState(false);
@@ -2672,8 +2786,17 @@ export default function Prototype() {
         roster.vehicles,
       );
       setMyAssignments(assignments);
+
+      // Load declined drive alerts for affected parents in parallel
+      const alerts = await repository.getAffectedDeclinedDrives(
+        schedule.version.id,
+        identity.profile.id,
+        identity.group.id,
+      );
+      setDeclinedAlerts(alerts);
     } catch (error) {
       setMyAssignments([]);
+      setDeclinedAlerts([]);
       setAssignmentsError(readableError(error));
     } finally {
       setAssignmentsLoading(false);
@@ -2700,6 +2823,20 @@ export default function Prototype() {
       setConfirmWorking(false);
     }
   }, [myAssignments, repository, loadMyAssignments]);
+
+  const volunteerForDrive = useCallback(async (assignmentId: string) => {
+    setVolunteerWorking(true);
+    setVolunteerError(null);
+    try {
+      await repository.volunteerForDrive(assignmentId);
+      await loadMyAssignments();
+      await loadSchedule();
+    } catch (error) {
+      setVolunteerError(readableError(error));
+    } finally {
+      setVolunteerWorking(false);
+    }
+  }, [repository, loadMyAssignments, loadSchedule]);
 
   const publishSchedule = useCallback(async () => {
     if (!schedule) return;
@@ -2933,6 +3070,7 @@ export default function Prototype() {
           publishing={publishing}
           onReloadWeek={() => void loadWeek()}
           onReloadOverview={() => void loadOverview()}
+          declinedCount={schedule ? countDeclinedRosters(schedule) : 0}
         />
       );
     }
@@ -2949,10 +3087,14 @@ export default function Prototype() {
         onCoverage={() => navigate("week")}
         onAccount={() => setAccountOpen(true)}
         onRetryAssignments={() => void loadMyAssignments()}
+        onVolunteer={(assignmentId) => void volunteerForDrive(assignmentId)}
         working={confirmWorking}
+        volunteerWorking={volunteerWorking}
+        volunteerError={volunteerError}
         avatarUrl={identity.profile.avatar_url}
         weekStartsOn={weekData?.week.starts_on ?? null}
         confirmationDeadline={weekData?.week.confirmation_deadline ?? null}
+        declinedAlerts={declinedAlerts}
       />
     );
   };
