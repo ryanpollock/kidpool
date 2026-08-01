@@ -2,17 +2,42 @@
 create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
--- Schedule hourly cron job to check check-in deadlines and trigger push reminders.
-select cron.schedule(
-  'checkin-deadline-reminder',
-  '0 * * * *',
-  $$
-  select net.http_post(
+-- Drop the old cron schedule that used a non-existent GUC
+select cron.unschedule('checkin-deadline-reminder');
+
+-- Wrapper function that reads the cron secret from vault and calls the Edge Function.
+create or replace function public.send_deadline_reminders()
+returns void
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_secret text;
+begin
+  select decrypted_secret into v_secret
+  from vault.decrypted_secrets
+  where name = 'cron_secret'
+  limit 1;
+
+  if v_secret is null then
+    raise notice 'No cron_secret found in vault';
+    return;
+  end if;
+
+  perform net.http_post(
     url := 'https://ujcrnrcgbvzyqosykkjy.supabase.co/functions/v1/send-push',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
-      'Authorization', 'Bearer ' || current_setting('app.service_role_key')
+      'Authorization', 'Bearer ' || v_secret
     ),
     body := jsonb_build_object('type', 'deadline_reminder')
   );
-  $$);
+end;
+$$;
+
+-- Schedule hourly cron job
+select cron.schedule(
+  'checkin-deadline-reminder',
+  '0 * * * *',
+  $$ select public.send_deadline_reminders(); $$);
