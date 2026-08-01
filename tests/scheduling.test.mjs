@@ -69,6 +69,8 @@ function buildInputs() {
       ["p1", 5], ["p2", 5], ["p3", 5],
     ]),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   };
 }
 
@@ -215,4 +217,89 @@ test("Exchange 5 WeekScreen renders real schedule with rosters and coverage stat
   assert.match(source, /roster-children/);
   assert.match(source, /No drivers/);
   assert.match(source, /No draft schedule yet/);
+});
+
+// ── Regression tests for confirmed-driver preservation and decline/expired exclusion ──
+
+test("regression: confirmed driver at max_drives is preserved on their confirmed trip", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  const inputs = buildInputs();
+  // p1 confirmed trip t1, max_drives = 1 (already at limit)
+  inputs.maxDrivesByDriver = new Map([["p1", 1], ["p2", 5], ["p3", 5]]);
+  inputs.existingAssignments = [
+    { trip_id: "t1", driver_profile_id: "p1", household_id: "h1", vehicle_id: "v1", child_passenger_capacity: 3, confirmed: true },
+  ];
+  const result = generateSchedule(inputs);
+
+  // p1 should be preserved on t1 despite being at max_drives
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  const p1Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  assert.ok(p1Assignment, "p1 should have an assignment on t1");
+  assert.equal(p1Assignment.confirmed, true, "p1 assignment should be confirmed");
+
+  // t1 should have coverage (p1 is driving)
+  assert.equal(t1?.uncovered, false, "t1 should not be uncovered");
+
+  // t2: p1 is at max_drives and not confirmed for t2, so should NOT be assigned
+  const t2 = result.trips.find((t) => t.trip_id === "t2");
+  const p1OnT2 = t2?.assignments.find((a) => a.driver_profile_id === "p1");
+  assert.equal(p1OnT2, undefined, "p1 should NOT be assigned to t2 (at max_drives)");
+});
+
+test("regression: declined driver is not re-offered the same trip", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  const inputs = buildInputs();
+  // p1 declined trip t1 in a prior version
+  inputs.declinedTripsByDriver = new Map([["p1", new Set(["t1"])]]);
+  const result = generateSchedule(inputs);
+
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  const p1Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  assert.equal(p1Assignment, undefined, "p1 should NOT be assigned to t1 (declined)");
+
+  // p1 should still be available for other trips they didn't decline
+  const t2 = result.trips.find((t) => t.trip_id === "t2");
+  const p1OnT2 = t2?.assignments.find((a) => a.driver_profile_id === "p1");
+  // p1 has no availability for t2 in buildInputs, so this is expected undefined
+  assert.equal(p1OnT2, undefined, "p1 has no availability for t2");
+});
+
+test("regression: expired driver is not re-offered the same trip", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  const inputs = buildInputs();
+  // p3 let trip t2 expire in a prior version
+  inputs.expiredTripsByDriver = new Map([["p3", new Set(["t2"])]]);
+  const result = generateSchedule(inputs);
+
+  const t2 = result.trips.find((t) => t.trip_id === "t2");
+  const p3Assignment = t2?.assignments.find((a) => a.driver_profile_id === "p3");
+  assert.equal(p3Assignment, undefined, "p3 should NOT be assigned to t2 (expired)");
+
+  // t2 should be uncovered since p3 was the only driver available
+  assert.equal(t2?.uncovered, true, "t2 should be uncovered");
+  assert.ok(t2 && t2.uncovered_rider_count > 0, "t2 should have uncovered riders");
+});
+
+test("regression: confirmed driver with trip_id is correctly keyed", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  const inputs = buildInputs();
+  // Two confirmed assignments for different trips, same driver
+  inputs.maxDrivesByDriver = new Map([["p1", 5], ["p2", 5], ["p3", 5]]);
+  inputs.existingAssignments = [
+    { trip_id: "t1", driver_profile_id: "p1", household_id: "h1", vehicle_id: "v1", child_passenger_capacity: 3, confirmed: true },
+    { trip_id: "t2", driver_profile_id: "p3", household_id: "h3", vehicle_id: "v3", child_passenger_capacity: 2, confirmed: true },
+  ];
+  const result = generateSchedule(inputs);
+
+  // Both confirmed drivers should be preserved on their respective trips
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  const t2 = result.trips.find((t) => t.trip_id === "t2");
+
+  const p1OnT1 = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  const p3OnT2 = t2?.assignments.find((a) => a.driver_profile_id === "p3");
+
+  assert.ok(p1OnT1, "p1 should be preserved on t1");
+  assert.equal(p1OnT1?.confirmed, true, "p1 on t1 should be confirmed");
+  assert.ok(p3OnT2, "p3 should be preserved on t2");
+  assert.equal(p3OnT2?.confirmed, true, "p3 on t2 should be confirmed");
 });

@@ -172,6 +172,8 @@ Deno.serve(async (req: Request) => {
     // ── Load existing assignments for stability ──────────────────
     let existingAssignments: SchedulingAssignment[] = [];
     let nextVersionNumber = 1;
+    const declinedTripsByDriver = new Map<string, Set<string>>();
+    const expiredTripsByDriver = new Map<string, Set<string>>();
     const { data: latestVersion, error: latestVersionError } = await supabase
       .from("schedule_versions")
       .select("id, version_number, status")
@@ -194,12 +196,28 @@ Deno.serve(async (req: Request) => {
       if (priorError) return jsonError("Failed to load prior assignments.", 500);
 
       existingAssignments = (priorDriverAssignments ?? []).map((a) => ({
+        trip_id: a.trip_id,
         driver_profile_id: a.driver_profile_id,
         household_id: profileHouseholdMap.get(a.driver_profile_id) ?? "",
         vehicle_id: a.vehicle_id,
         child_passenger_capacity: a.child_passenger_capacity,
         confirmed: a.status === "confirmed",
       }));
+
+      // Build declined/expired maps so the algorithm doesn't re-offer trips
+      // to drivers who said no or let the confirmation deadline pass.
+      for (const a of (priorDriverAssignments ?? [])) {
+        if (a.status === "declined" || a.status === "released") {
+          let set = declinedTripsByDriver.get(a.driver_profile_id);
+          if (!set) { set = new Set(); declinedTripsByDriver.set(a.driver_profile_id, set); }
+          set.add(a.trip_id);
+        }
+        if (a.status === "expired") {
+          let set = expiredTripsByDriver.get(a.driver_profile_id);
+          if (!set) { set = new Set(); expiredTripsByDriver.set(a.driver_profile_id, set); }
+          set.add(a.trip_id);
+        }
+      }
     }
 
     // ── Run the algorithm ────────────────────────────────────────
@@ -212,21 +230,24 @@ Deno.serve(async (req: Request) => {
       availability,
       maxDrivesByDriver,
       existingAssignments,
+      declinedTripsByDriver,
+      expiredTripsByDriver,
     };
 
     const outputs = generateSchedule(inputs);
 
     // ── Write schedule version ───────────────────────────────────
-    // If the prior version was published, auto-publish the new version
-    // so there is no gap where families have no active schedule.
+    // Always insert as draft first. Only auto-publish after assignments
+    // are written successfully AND zero trips have uncovered riders.
     const wasPublished = latestVersion?.status === "published";
+    const hasUncovered = outputs.trips.some((t) => t.uncovered);
     const { data: newVersion, error: versionError } = await supabase
       .from("schedule_versions")
       .insert({
         group_id: groupId,
         week_id: weekId as string,
         version_number: nextVersionNumber,
-        status: wasPublished ? "published" : "draft",
+        status: "draft",
         algorithm_version: ALGORITHM_VERSION,
         generated_by: userId,
       })
@@ -237,20 +258,12 @@ Deno.serve(async (req: Request) => {
       return jsonError("Failed to create schedule version.", 500);
     }
 
-    // ── Supersede prior version ──────────────────────────────────
-    if (latestVersion && latestVersion.id) {
-      const { error: supersedeError } = await supabase
-        .from("schedule_versions")
-        .update({ status: "superseded" })
-        .eq("id", latestVersion.id);
-      if (supersedeError) {
-        console.warn("Failed to supersede prior version:", supersedeError.message);
-      }
-    }
-
     // ── Write driver and rider assignments ──────────────────────
     let writtenAssignmentCount = 0;
+    let writeFailed = false;
+    let writeErrorMessage = "";
     for (const tripResult of outputs.trips) {
+      if (writeFailed) break;
       for (const assignment of tripResult.assignments) {
         const { data: driverAssignment, error: driverError } = await supabase
           .from("driver_assignments")
@@ -267,7 +280,9 @@ Deno.serve(async (req: Request) => {
           .single();
 
         if (driverError || !driverAssignment) {
-          return jsonError("Failed to create driver assignment.", 500);
+          writeFailed = true;
+          writeErrorMessage = "Failed to create driver assignment.";
+          break;
         }
 
         writtenAssignmentCount++;
@@ -282,9 +297,44 @@ Deno.serve(async (req: Request) => {
           }));
           const { error: riderError } = await supabase.from("rider_assignments").insert(riderInserts);
           if (riderError) {
-            return jsonError("Failed to create rider assignments.", 500);
+            writeFailed = true;
+            writeErrorMessage = "Failed to create rider assignments.";
+            break;
           }
         }
+      }
+    }
+
+    // ── Rollback on write failure ───────────────────────────────
+    if (writeFailed) {
+      // Delete the new version row (cascades to assignments) so the
+      // prior version remains active. Prior version was NOT yet superseded.
+      await supabase.from("schedule_versions").delete().eq("id", newVersion.id);
+      return jsonError(writeErrorMessage, 500);
+    }
+
+    // ── Auto-publish + supersede only if safe ───────────────────
+    // Only auto-publish if the prior was published AND no uncovered trips.
+    // If there are uncovered trips, keep as draft so the coordinator can
+    // review before publishing — preventing a regression from going live.
+    if (wasPublished && !hasUncovered) {
+      const { error: publishError } = await supabase
+        .from("schedule_versions")
+        .update({ status: "published" })
+        .eq("id", newVersion.id);
+      if (publishError) {
+        console.warn("Failed to auto-publish new version:", publishError.message);
+      }
+    }
+
+    // Supersede prior version only after all writes succeeded
+    if (latestVersion && latestVersion.id) {
+      const { error: supersedeError } = await supabase
+        .from("schedule_versions")
+        .update({ status: "superseded" })
+        .eq("id", latestVersion.id);
+      if (supersedeError) {
+        console.warn("Failed to supersede prior version:", supersedeError.message);
       }
     }
 
@@ -301,6 +351,7 @@ Deno.serve(async (req: Request) => {
           week_id: weekId,
           assignment_count: writtenAssignmentCount,
           algorithm: ALGORITHM_VERSION,
+          uncovered_trips: outputs.trips.filter((t) => t.uncovered).length,
         },
       });
     } catch (auditError) {
@@ -312,6 +363,8 @@ Deno.serve(async (req: Request) => {
         success: true,
         version: newVersion,
         algorithm: ALGORITHM_VERSION,
+        uncovered_trips: outputs.trips.filter((t) => t.uncovered).length,
+        warning: hasUncovered ? `${outputs.trips.filter((t) => t.uncovered).length} trip(s) have uncovered children. Schedule saved as draft — review before publishing.` : null,
         trips: outputs.trips.map((t) => ({
           trip_id: t.trip_id,
           rider_count: t.rider_count,

@@ -66,6 +66,8 @@ export type GenerateScheduleResult = {
   success: boolean;
   version?: { id: string; version_number: number };
   algorithm?: string;
+  uncovered_trips?: number;
+  warning?: string | null;
   trips?: Array<{
     trip_id: string;
     rider_count: number;

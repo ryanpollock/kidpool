@@ -2191,6 +2191,34 @@ button {
   gap: 10px;
 }
 
+.confirm-all-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.confirm-all-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--surface-2, #f8f8f8);
+}
+
+.confirm-all-list li strong {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.confirm-all-list li small {
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+
 .push-banner {
   display: grid;
   grid-template-columns: 24px 1fr auto auto;

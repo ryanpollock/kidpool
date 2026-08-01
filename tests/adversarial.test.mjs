@@ -69,6 +69,8 @@ test("Adversarial: empty week (no trips, no riders) returns empty result", async
     availability: [],
     maxDrivesByDriver: new Map(),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   assert.equal(result.trips.length, 0);
@@ -88,6 +90,8 @@ test("Adversarial: trips exist but no riders — zero assignments, zero uncovere
     availability: [],
     maxDrivesByDriver: new Map(),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   assert.equal(result.trips.length, 1);
@@ -110,6 +114,8 @@ test("Adversarial: riders exist but no drivers — all uncovered", async () => {
     availability: [],
     maxDrivesByDriver: new Map(),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   assert.equal(result.trips.length, 1);
@@ -130,6 +136,8 @@ test("Adversarial: driver available but zero capacity vehicle — no assignment"
     availability: [makeAvail("t1", "p1", "v1", "prefer")],
     maxDrivesByDriver: makeMaxDrives({ p1: 5 }),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   assert.equal(result.trips[0].assigned_rider_count, 0);
@@ -149,6 +157,8 @@ test("Adversarial: all drivers decline (preference=cannot) — all uncovered", a
     availability: [makeAvail("t1", "p1", "v1", "cannot"), makeAvail("t1", "p2", "v2", "cannot")],
     maxDrivesByDriver: makeMaxDrives({ p1: 5, p2: 5 }),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   assert.equal(result.trips[0].assigned_rider_count, 0);
@@ -172,6 +182,8 @@ test("Adversarial: driver exceeds max_drives — not assigned", async () => {
     availability: trips.map((t) => makeAvail(t.id, "p1", "v1", "prefer")),
     maxDrivesByDriver: makeMaxDrives({ p1: 2 }),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   // Driver can only drive 2 of 3 trips
@@ -195,6 +207,8 @@ test("Adversarial: single driver bottleneck — own child prioritized", async ()
     availability: [makeAvail("t1", "p1", "v1", "prefer")],
     maxDrivesByDriver: makeMaxDrives({ p1: 5 }),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   // Capacity 2, 3 riders, own child gets priority
@@ -222,6 +236,8 @@ test("Adversarial: all children from same household — one driver covers all", 
     availability: [makeAvail("t1", "p1", "v1", "prefer")],
     maxDrivesByDriver: makeMaxDrives({ p1: 5 }),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   assert.equal(result.trips[0].assigned_rider_count, 3);
@@ -244,6 +260,8 @@ test("Adversarial: capacity exactly matches riders — full coverage, no extras"
     availability: [makeAvail("t1", "p1", "v1", "prefer")],
     maxDrivesByDriver: makeMaxDrives({ p1: 5 }),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   assert.equal(result.trips[0].assigned_rider_count, 2);
@@ -267,6 +285,8 @@ test("Adversarial: re-generation produces identical result (determinism)", async
     availability: [makeAvail("t1", "p1", "v1", "prefer"), makeAvail("t1", "p2", "v2", "can"), makeAvail("t2", "p1", "v1", "can")],
     maxDrivesByDriver: makeMaxDrives({ p1: 5, p2: 3 }),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   };
 
   const result1 = generateSchedule(inputs);
@@ -306,6 +326,8 @@ test("Adversarial: 50-household scale — algorithm completes and covers all", a
     availability,
     maxDrivesByDriver: makeMaxDrives(maxDrives),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   assert.equal(result.trips.length, 1);
@@ -335,15 +357,17 @@ test("Adversarial: confirmed assignments count toward max_drives enforcement", a
     availability: trips.map((t) => makeAvail(t.id, "p1", "v1", "prefer")),
     maxDrivesByDriver: makeMaxDrives({ p1: 2 }),
     existingAssignments: [
-      { driver_profile_id: "p1", household_id: "h1", vehicle_id: "v1", child_passenger_capacity: 4, confirmed: true },
-      { driver_profile_id: "p1", household_id: "h1", vehicle_id: "v1", child_passenger_capacity: 4, confirmed: true },
+      { trip_id: "t1", driver_profile_id: "p1", household_id: "h1", vehicle_id: "v1", child_passenger_capacity: 4, confirmed: true },
+      { trip_id: "t2", driver_profile_id: "p1", household_id: "h1", vehicle_id: "v1", child_passenger_capacity: 4, confirmed: true },
     ],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
-  // Driver already has 2 confirmed, max is 2 — no new assignments
+  // Driver already has 2 confirmed, max is 2 — confirmed trips preserved, 3rd uncovered
   const assignedTrips = result.trips.filter((t) => t.assigned_rider_count > 0);
-  assert.equal(assignedTrips.length, 0);
-  assert.equal(totalUncovered(result), 3);
+  assert.equal(assignedTrips.length, 2);
+  assert.equal(totalUncovered(result), 1);
 });
 
 test("Adversarial: fairness — least-loaded driver gets priority", async () => {
@@ -366,6 +390,8 @@ test("Adversarial: fairness — least-loaded driver gets priority", async () => 
     ],
     maxDrivesByDriver: makeMaxDrives({ p1: 5, p2: 5 }),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   });
 
   // Both trips have the same rider, two equally-preferenced drivers

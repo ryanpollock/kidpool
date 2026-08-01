@@ -192,6 +192,8 @@ function buildPressureInputs() {
     availability: buildAvailability(trips),
     maxDrivesByDriver: buildMaxDrives(),
     existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
   };
 }
 

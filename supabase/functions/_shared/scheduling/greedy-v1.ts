@@ -48,9 +48,9 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
   >();
   for (const assignment of inputs.existingAssignments) {
     if (!assignment.confirmed) continue;
-    const existing = confirmedAssignmentsByTrip.get(assignment.driver_profile_id) ?? [];
+    const existing = confirmedAssignmentsByTrip.get(assignment.trip_id) ?? [];
     existing.push(assignment);
-    confirmedAssignmentsByTrip.set(assignment.driver_profile_id, existing);
+    confirmedAssignmentsByTrip.set(assignment.trip_id, existing);
   }
 
   const assignmentsThisWeek = new Map<string, number>();
@@ -84,6 +84,9 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
 
     const candidateDrivers = eligibleAvailability
       .filter((a) => {
+        // Skip drivers who declined or let expire this specific trip
+        if (inputs.declinedTripsByDriver?.get(a.driver_profile_id)?.has(trip.id)) return false;
+        if (inputs.expiredTripsByDriver?.get(a.driver_profile_id)?.has(trip.id)) return false;
         const maxDrives = inputs.maxDrivesByDriver.get(a.driver_profile_id) ?? 0;
         const already = assignmentsThisWeek.get(a.driver_profile_id) ?? 0;
         if (confirmedDriverIds.has(a.driver_profile_id)) return true;

@@ -734,6 +734,17 @@ function countDeclinedRosters(schedule: ScheduleVersionWithRosters): number {
   return count;
 }
 
+function countUncoveredTrips(schedule: ScheduleVersionWithRosters): number {
+  let count = 0;
+  for (const rosters of schedule.rostersByTrip.values()) {
+    const active = rosters.filter(
+      (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released",
+    );
+    if (active.length === 0) count++;
+  }
+  return count;
+}
+
 function preferenceLabel(pref: DrivePreference): string {
   if (pref === "prefer") return "Prefer to drive";
   if (pref === "can") return "Can if needed";
@@ -992,6 +1003,7 @@ function HomeScreen({
   showIOSInstallBanner: boolean;
   onDismissIOSInstall: () => void;
 }) {
+  const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = myAssignments.filter((a) => a.assignment.status === "confirmed");
   const declined = myAssignments.filter((a) => a.assignment.status === "declined");
@@ -1172,9 +1184,28 @@ function HomeScreen({
           {!allConfirmed ? (
             <>
               {tentative.length > 0 ? (
-                <button className="primary-button" data-testid="confirm-drives" disabled={working} onClick={onConfirmAll}>
+                <button className="primary-button" data-testid="confirm-drives" disabled={working} onClick={() => setConfirmAllOpen(true)}>
                   <CheckIcon width="19" height="19" /> Confirm all drives
                 </button>
+              ) : null}
+              {confirmAllOpen ? (
+                <div className="confirm-code-block" data-testid="confirm-all-dialog">
+                  <p className="confirm-code-warning">You're committing to drive for all {tentative.length} trip{tentative.length !== 1 ? "s" : ""} below. Please verify each one.</p>
+                  <ul className="confirm-all-list">
+                    {tentative.map((entry) => (
+                      <li key={entry.assignment.id}>
+                        <strong>{tripLabel(entry.trip)}</strong>
+                        <small>{entry.vehicle.label} · {entry.children.length} rider{entry.children.length !== 1 ? "s" : ""}</small>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="confirm-code-actions">
+                    <button className="primary-button" disabled={working} onClick={() => { onConfirmAll(); setConfirmAllOpen(false); }}>
+                      {working ? "Confirming…" : "Yes, confirm all"}
+                    </button>
+                    <button className="text-button" disabled={working} onClick={() => setConfirmAllOpen(false)}>Cancel</button>
+                  </div>
+                </div>
               ) : null}
               {declined.length > 0 && tentative.length === 0 ? (
                 <p className="helper-copy">All drives resolved. Use "Review individually" to change a response.</p>
@@ -2025,6 +2056,8 @@ function CoordinatorScreen({
   onReloadWeek,
   onReloadOverview,
   declinedCount,
+  uncoveredCount,
+  generateWarning,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -2045,6 +2078,8 @@ function CoordinatorScreen({
   onReloadWeek: () => void;
   onReloadOverview: () => void;
   declinedCount: number;
+  uncoveredCount: number;
+  generateWarning: string | null;
 }) {
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
 
@@ -2138,6 +2173,24 @@ function CoordinatorScreen({
         </div>
       ) : null}
 
+      {uncoveredCount > 0 ? (
+        <div className="decline-alert decline-alert--admin" data-testid="uncovered-alert-admin">
+          <div className="decline-alert-header">
+            <ExclamationTriangleIcon width="20" height="20" />
+            <h2>{uncoveredCount} trip{uncoveredCount !== 1 ? "s" : ""} with uncovered children</h2>
+          </div>
+          <p className="decline-alert-body">
+            Some children don't have a driver assigned. Check the Week tab for details before publishing.
+          </p>
+        </div>
+      ) : null}
+
+      {generateWarning ? (
+        <div className="auth-error" role="alert" data-testid="generate-warning">
+          {generateWarning}
+        </div>
+      ) : null}
+
       {isCoordinator && week ? (
         <div className="coordinator-generate">
           {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
@@ -2146,10 +2199,14 @@ function CoordinatorScreen({
               <button className="secondary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
                 {generating ? "Generating…" : "Regenerate draft"}
               </button>
-              <button className="primary-button" data-testid="publish-schedule" disabled={publishing} onClick={onPublish}>
-                {publishing ? "Publishing…" : "Publish schedule"}
+              <button className="primary-button" data-testid="publish-schedule" disabled={publishing || uncoveredCount > 0} onClick={onPublish}>
+                {publishing ? "Publishing…" : uncoveredCount > 0 ? "Resolve uncovered first" : "Publish schedule"}
               </button>
-              <small className="helper-copy">Publishing locks this schedule for all families.</small>
+              <small className="helper-copy">
+                {uncoveredCount > 0
+                  ? "Cannot publish — some children don't have a driver. Check the Week tab."
+                  : "Publishing locks this schedule for all families."}
+              </small>
             </>
             ) : scheduleStatus === "published" ? (
               <>
@@ -2748,7 +2805,10 @@ export default function Prototype() {
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [generateWarning, setGenerateWarning] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
+  const [confirmPublish, setConfirmPublish] = useState(false);
+  const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const [myAssignments, setMyAssignments] = useState<MyDriverAssignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
@@ -2954,6 +3014,7 @@ export default function Prototype() {
     if (!weekData) return;
     setGenerating(true);
     setGenerateError(null);
+    setGenerateWarning(null);
     try {
       const result = await repository.generateDraftSchedule(weekData.week.id);
       if (!result.success) {
@@ -2961,6 +3022,9 @@ export default function Prototype() {
       } else {
         await loadSchedule();
         await loadOverview();
+        if (result.warning) {
+          setGenerateWarning(result.warning);
+        }
         // Notify parents of uncovered children
         if (result.version?.id) {
           void repository.sendPushNotification(null, result.version.id, "uncovered");
@@ -3338,6 +3402,8 @@ export default function Prototype() {
           onReloadWeek={() => void loadWeek()}
           onReloadOverview={() => void loadOverview()}
           declinedCount={schedule ? countDeclinedRosters(schedule) : 0}
+          uncoveredCount={schedule ? countUncoveredTrips(schedule) : 0}
+          generateWarning={generateWarning}
         />
       );
     }

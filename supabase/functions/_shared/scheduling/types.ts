@@ -43,6 +43,7 @@ export type SchedulingAvailability = {
 };
 
 export type SchedulingAssignment = {
+  trip_id: string;
   driver_profile_id: string;
   household_id: string;
   vehicle_id: string;
@@ -59,6 +60,8 @@ export type SchedulingInputs = {
   availability: SchedulingAvailability[];
   maxDrivesByDriver: Map<string, number>;
   existingAssignments: SchedulingAssignment[];
+  declinedTripsByDriver: Map<string, Set<string>>;
+  expiredTripsByDriver: Map<string, Set<string>>;
 };
 
 export type SchedulingDriverAssignment = {
