@@ -2141,3 +2141,53 @@ button {
   align-items: center;
   gap: 10px;
 }
+
+.push-banner {
+  display: grid;
+  grid-template-columns: 24px 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--teal-pale, #d0eeec);
+  border-radius: 12px;
+  background: #f0faf9;
+}
+
+.push-banner > svg {
+  color: var(--teal);
+}
+
+.push-banner-body {
+  display: grid;
+  gap: 2px;
+}
+
+.push-banner-body strong {
+  font-size: 12px;
+}
+
+.push-banner-body small {
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+
+.push-banner-allow {
+  font-size: 12px;
+  padding: 6px 14px;
+}
+
+.push-banner-dismiss {
+  padding: 4px;
+}
+
+.coparent-toast {
+  margin-top: 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--teal-pale, #d0eeec);
+  color: var(--teal);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}

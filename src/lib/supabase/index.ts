@@ -1,4 +1,4 @@
-export { CarpoolRepository, type HouseholdSetup, type WeekWithTrips, type CheckinDetails, type TripOverview, type HouseholdCheckinStatus, type WeekOverview, type ScheduleRosterEntry, type ScheduleVersionWithRosters, type GenerateScheduleResult, type MyDriverAssignment, type DeclinedDriveAlert } from "./carpool-repository";
+export { CarpoolRepository, type HouseholdSetup, type WeekWithTrips, type CheckinDetails, type TripOverview, type HouseholdCheckinStatus, type WeekOverview, type ScheduleRosterEntry, type ScheduleVersionWithRosters, type GenerateScheduleResult, type MyDriverAssignment, type DeclinedDriveAlert, type UncoveredChildAlert } from "./carpool-repository";
 export { getSupabaseClient, isSupabaseConfigured } from "./client";
 export type {
   AppRole,

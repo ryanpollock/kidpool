@@ -3,6 +3,7 @@ import type { Session } from "@supabase/supabase-js";
 import {
   AvatarIcon,
   BackpackIcon,
+  BellIcon,
   CalendarIcon,
   CheckCircledIcon,
   CheckIcon,
@@ -29,6 +30,7 @@ import {
   type MyDriverAssignment,
   type ScheduleVersionWithRosters,
   type Tables,
+  type UncoveredChildAlert,
   type WeekOverview,
   type WeekWithTrips,
 } from "./lib/supabase";
@@ -921,6 +923,11 @@ function HomeScreen({
   weekStartsOn,
   confirmationDeadline,
   declinedAlerts,
+  uncoveredAlerts,
+  showPushBanner,
+  onAllowPush,
+  onDismissPush,
+  pushSubscribing,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -940,6 +947,11 @@ function HomeScreen({
   weekStartsOn: string | null;
   confirmationDeadline: string | null;
   declinedAlerts: DeclinedDriveAlert[];
+  uncoveredAlerts: UncoveredChildAlert[];
+  showPushBanner: boolean;
+  onAllowPush: () => void;
+  onDismissPush: () => void;
+  pushSubscribing: boolean;
 }) {
   const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = myAssignments.filter((a) => a.assignment.status === "confirmed");
@@ -965,6 +977,22 @@ function HomeScreen({
           {avatarUrl ? <img src={avatarUrl} alt="" /> : <AvatarIcon width="19" height="19" />}
         </button>
       </header>
+
+      {showPushBanner ? (
+        <div className="push-banner" data-testid="push-banner">
+          <BellIcon width="20" height="20" />
+          <div className="push-banner-body">
+            <strong>Get notified</strong>
+            <small>We'll alert you when your child's drive changes.</small>
+          </div>
+          <button className="primary-button push-banner-allow" disabled={pushSubscribing} onClick={onAllowPush}>
+            {pushSubscribing ? "…" : "Allow"}
+          </button>
+          <button className="text-button push-banner-dismiss" aria-label="Dismiss" onClick={onDismissPush}>
+            <Cross2Icon width="14" height="14" />
+          </button>
+        </div>
+      ) : null}
 
       {assignmentsLoading ? (
         <p className="helper-copy">Loading your drives…</p>
@@ -1049,6 +1077,30 @@ function HomeScreen({
         </section>
       ) : null}
 
+      {uncoveredAlerts.length > 0 ? (
+        <section className="decline-alert" data-testid="uncovered-alert" aria-labelledby="uncovered-heading">
+          <div className="decline-alert-header">
+            <ExclamationTriangleIcon width="20" height="20" />
+            <h2 id="uncovered-heading">Your child needs a ride</h2>
+          </div>
+          <p className="decline-alert-body">
+            The schedule doesn't have a driver for the following {uncoveredAlerts.length === 1 ? "trip" : "trips"}. Contact the admin or check the full schedule.
+          </p>
+          <ul className="decline-alert-list">
+            {uncoveredAlerts.map((alert) => (
+              <li key={alert.trip.id}>
+                <div className="decline-alert-trip">
+                  <strong>{tripLabel(alert.trip)}</strong>
+                  <span className="decline-alert-children">
+                    {alert.children.map((c) => `${c.first_name} ${c.last_name}`).join(", ")}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {!noAssignments ? (
         <section className="assignment-section" aria-labelledby="assignment-heading">
           <div className="section-heading-row">
@@ -1097,11 +1149,13 @@ function ReviewScreen({
   repository,
   onResponded,
   onBack,
+  onDeclined,
 }: {
   myAssignments: MyDriverAssignment[];
   repository: CarpoolRepository;
   onResponded: () => void;
   onBack: () => void;
+  onDeclined: (assignmentId: string) => void;
 }) {
   const [working, setWorking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1116,6 +1170,7 @@ function ReviewScreen({
       setDecliningId(null);
       setDeclineReason("");
       onResponded();
+      if (response === "declined") onDeclined(assignmentId);
     } catch (nextError) {
       setError(readableError(nextError));
     } finally {
@@ -1262,6 +1317,7 @@ function PlanScreen({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [maxDrives, setMaxDrives] = useState("2");
   const [pendingDrive, setPendingDrive] = useState<Record<string, DrivePreference>>({});
+  const [coParentUpdate, setCoParentUpdate] = useState<string | null>(null);
 
   const submitted = checkin?.status === "submitted";
   const children = setup?.children ?? [];
@@ -1270,6 +1326,36 @@ function PlanScreen({
   useEffect(() => {
     if (checkin) setMaxDrives(String(checkin.max_drives || 2));
   }, [checkin?.id]);
+
+  // Realtime: subscribe to checkin changes so co-parents see each other's edits
+  useEffect(() => {
+    if (!checkin) return;
+    const client = getSupabaseClient();
+    const channel = client
+      .channel(`checkin:${checkin.id}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "weekly_checkins", filter: `id=eq.${checkin.id}` },
+        () => {
+          void onReloadCheckin();
+          setCoParentUpdate("Updated just now");
+          setTimeout(() => setCoParentUpdate(null), 3000);
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "ride_requests", filter: `checkin_id=eq.${checkin.id}` },
+        () => void onReloadCheckin(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "driver_availability", filter: `checkin_id=eq.${checkin.id}` },
+        () => void onReloadCheckin(),
+      )
+      .subscribe();
+
+    return () => { client.removeChannel(channel); };
+  }, [checkin?.id, onReloadCheckin]);
 
   if (weekLoading) {
     return (
@@ -1437,6 +1523,10 @@ function PlanScreen({
         <h1>Plan next week</h1>
         <p>{weekLabel(week.week.starts_on)}</p>
       </header>
+
+      {coParentUpdate ? (
+        <div className="coparent-toast" data-testid="coparent-update">{coParentUpdate}</div>
+      ) : null}
 
       {submitted ? (
         <div className="success-banner">
@@ -1904,6 +1994,8 @@ function CoordinatorScreen({
   onReloadOverview: () => void;
   declinedCount: number;
 }) {
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false);
+
   if (weekLoading) {
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
@@ -2008,10 +2100,27 @@ function CoordinatorScreen({
               <small className="helper-copy">Publishing locks this schedule for all families.</small>
             </>
             ) : scheduleStatus === "published" ? (
-              <div className="publish-notice">
-                <CheckCircledIcon width="18" height="18" />
-                <span><strong>Schedule published</strong><small>Families can see the final roster.</small></span>
-              </div>
+              <>
+                <div className="publish-notice">
+                  <CheckCircledIcon width="18" height="18" />
+                  <span><strong>Schedule published</strong><small>Families can see the final roster.</small></span>
+                </div>
+                {confirmRegenerate ? (
+                  <div className="confirm-code-block" data-testid="confirm-regenerate">
+                    <p className="confirm-code-warning">This will replace the published schedule. The new schedule goes live immediately. Continue?</p>
+                    <div className="confirm-code-actions">
+                      <button className="primary-button" data-testid="regenerate-schedule-coord" disabled={generating} onClick={() => { onGenerate(); setConfirmRegenerate(false); }}>
+                        {generating ? "Generating…" : "Yes, replace schedule"}
+                      </button>
+                      <button className="text-button" disabled={generating} onClick={() => setConfirmRegenerate(false)}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button className="secondary-button" disabled={generating} onClick={() => setConfirmRegenerate(true)}>
+                    {generating ? "Generating…" : "Replace published schedule"}
+                  </button>
+                )}
+              </>
             ) : (
               <>
                 <button className="primary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
@@ -2592,10 +2701,12 @@ export default function Prototype() {
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
   const [declinedAlerts, setDeclinedAlerts] = useState<DeclinedDriveAlert[]>([]);
+  const [uncoveredAlerts, setUncoveredAlerts] = useState<UncoveredChildAlert[]>([]);
   const [volunteerWorking, setVolunteerWorking] = useState(false);
   const [volunteerError, setVolunteerError] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmWorking, setConfirmWorking] = useState(false);
+  const [pushSubscribing, setPushSubscribing] = useState(false);
   const [creatingWeek, setCreatingWeek] = useState(false);
   const [createWeekError, setCreateWeekError] = useState<string | null>(null);
   const [authWorking, setAuthWorking] = useState(false);
@@ -2603,6 +2714,16 @@ export default function Prototype() {
   const [activeTab, setActiveTab] = useState<AppTab>("home");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [pushPermissionShown, setPushPermissionShown] = useState(false);
+
+  // Register service worker for PWA push notifications
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {
+        // SW registration failure is non-fatal
+      });
+    }
+  }, []);
 
   const loadIdentity = useCallback(async () => {
     setIdentityLoading(true);
@@ -2787,6 +2908,10 @@ export default function Prototype() {
       } else {
         await loadSchedule();
         await loadOverview();
+        // Notify parents of uncovered children
+        if (result.version?.id) {
+          void repository.sendPushNotification(null, result.version.id, "uncovered");
+        }
       }
     } catch (error) {
       setGenerateError(readableError(error));
@@ -2794,6 +2919,47 @@ export default function Prototype() {
       setGenerating(false);
     }
   }, [weekData, repository, loadSchedule, loadOverview]);
+
+  const subscribeToPush = useCallback(async () => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    setPushSubscribing(true);
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") return;
+
+      const reg = await navigator.serviceWorker.ready;
+      const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+      if (!vapidKey) return;
+
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: vapidKey,
+      });
+
+      const json = sub.toJSON();
+      if (json.keys?.p256dh && json.keys?.auth) {
+        await repository.savePushSubscription(
+          sub.endpoint,
+          json.keys.p256dh,
+          json.keys.auth,
+        );
+      }
+    } catch {
+      // Non-fatal
+    } finally {
+      setPushSubscribing(false);
+    }
+  }, [repository]);
+
+  const shouldShowPushBanner = (() => {
+    if (!identity) return false;
+    if (pushPermissionShown) return false;
+    if (typeof Notification === "undefined") return false;
+    if (Notification.permission !== "default") return false;
+    if (localStorage.getItem("push_dismissed") === "true") return false;
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
+    return true;
+  })();
 
   const loadMyAssignments = useCallback(async () => {
     if (!identity?.group || !schedule) return;
@@ -2811,16 +2977,25 @@ export default function Prototype() {
       );
       setMyAssignments(assignments);
 
-      // Load declined drive alerts for affected parents in parallel
-      const alerts = await repository.getAffectedDeclinedDrives(
-        schedule.version.id,
-        identity.profile.id,
-        identity.group.id,
-      );
+      // Load declined drive alerts and uncovered children for affected parents
+      const [alerts, uncovered] = await Promise.all([
+        repository.getAffectedDeclinedDrives(
+          schedule.version.id,
+          identity.profile.id,
+          identity.group.id,
+        ),
+        repository.getUncoveredChildren(
+          schedule.version.id,
+          identity.profile.id,
+          identity.group.id,
+        ),
+      ]);
       setDeclinedAlerts(alerts);
+      setUncoveredAlerts(uncovered);
     } catch (error) {
       setMyAssignments([]);
       setDeclinedAlerts([]);
+      setUncoveredAlerts([]);
       setAssignmentsError(readableError(error));
     } finally {
       setAssignmentsLoading(false);
@@ -2868,6 +3043,7 @@ export default function Prototype() {
     setPublishing(true);
     try {
       await repository.publishSchedule(schedule.version.id);
+      await repository.sendPushNotification(null, schedule.version.id, "published");
       await loadSchedule();
     } catch (error) {
       setGenerateError(readableError(error));
@@ -3025,6 +3201,7 @@ export default function Prototype() {
           repository={repository}
           onResponded={() => void loadMyAssignments()}
           onBack={() => setReviewOpen(false)}
+          onDeclined={(assignmentId) => void repository.sendPushNotification(assignmentId, null, "declined")}
         />
       );
     }
@@ -3120,6 +3297,11 @@ export default function Prototype() {
         weekStartsOn={weekData?.week.starts_on ?? null}
         confirmationDeadline={weekData?.week.confirmation_deadline ?? null}
         declinedAlerts={declinedAlerts}
+        uncoveredAlerts={uncoveredAlerts}
+        showPushBanner={shouldShowPushBanner}
+        onAllowPush={() => { setPushPermissionShown(true); void subscribeToPush(); }}
+        onDismissPush={() => { setPushPermissionShown(true); localStorage.setItem("push_dismissed", "true"); }}
+        pushSubscribing={pushSubscribing}
       />
     );
   };

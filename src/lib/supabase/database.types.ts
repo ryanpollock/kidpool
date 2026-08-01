@@ -207,6 +207,15 @@ export type AuditEventRow = {
   occurred_at: string;
 };
 
+export type PushSubscriptionRow = Timestamps & {
+  id: string;
+  profile_id: string;
+  group_id: string;
+  endpoint: string;
+  p256dh_key: string;
+  auth_key: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -447,6 +456,18 @@ export type Database = {
           entity_id?: string | null;
           details?: Json;
           occurred_at?: string;
+        }
+      >;
+      push_subscriptions: Table<
+        PushSubscriptionRow,
+        {
+          id?: never;
+          profile_id: string;
+          group_id: string;
+          endpoint: string;
+          p256dh_key: string;
+          auth_key: string;
+          created_at?: string;
         }
       >;
     };

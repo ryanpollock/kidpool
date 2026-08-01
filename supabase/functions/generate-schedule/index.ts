@@ -217,13 +217,16 @@ Deno.serve(async (req: Request) => {
     const outputs = generateSchedule(inputs);
 
     // ── Write schedule version ───────────────────────────────────
+    // If the prior version was published, auto-publish the new version
+    // so there is no gap where families have no active schedule.
+    const wasPublished = latestVersion?.status === "published";
     const { data: newVersion, error: versionError } = await supabase
       .from("schedule_versions")
       .insert({
         group_id: groupId,
         week_id: weekId as string,
         version_number: nextVersionNumber,
-        status: "draft",
+        status: wasPublished ? "published" : "draft",
         algorithm_version: ALGORITHM_VERSION,
         generated_by: userId,
       })

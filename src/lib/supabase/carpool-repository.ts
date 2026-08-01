@@ -94,6 +94,11 @@ export type DeclinedDriveAlert = {
   volunteerVehicleCapacity: number | null;
 };
 
+export type UncoveredChildAlert = {
+  trip: Tables<"trips">;
+  children: Tables<"children">[];
+};
+
 function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
   if (result.error) throw new Error(result.error.message);
   return result.data;
@@ -1359,6 +1364,126 @@ export class CarpoolRepository {
       return { success: false, error: result.error.message };
     }
     return result.data as GenerateScheduleResult;
+  }
+
+  async sendPushNotification(
+    assignmentId: string | null,
+    versionId: string | null,
+    type: "declined" | "uncovered" | "published",
+  ): Promise<void> {
+    try {
+      await this.client.functions.invoke("send-push", {
+        body: { assignment_id: assignmentId, version_id: versionId, type },
+      });
+    } catch {
+      // Best-effort: push failures should not block the primary action
+    }
+  }
+
+  async savePushSubscription(
+    endpoint: string,
+    p256dhKey: string,
+    authKey: string,
+  ): Promise<void> {
+    const userResult = await this.client.auth.getUser();
+    if (userResult.error || !userResult.data.user) return;
+    const { data: membership } = await this.client
+      .from("memberships")
+      .select("group_id")
+      .eq("profile_id", userResult.data.user.id)
+      .eq("status", "active")
+      .maybeSingle();
+    if (!membership) return;
+
+    unwrap(
+      await this.client.from("push_subscriptions").upsert(
+        {
+          profile_id: userResult.data.user.id,
+          group_id: membership.group_id,
+          endpoint,
+          p256dh_key: p256dhKey,
+          auth_key: authKey,
+        },
+        { onConflict: "profile_id,endpoint" },
+      ),
+    );
+  }
+
+  async removePushSubscription(endpoint: string): Promise<void> {
+    unwrap(
+      await this.client
+        .from("push_subscriptions")
+        .delete()
+        .eq("endpoint", endpoint),
+    );
+  }
+
+  async getUncoveredChildren(
+    scheduleVersionId: string,
+    profileId: string,
+    groupId: string,
+  ): Promise<UncoveredChildAlert[]> {
+    const [trips, rideRequests, children, driverAssignments, riderAssignments, memberships] = await Promise.all([
+      unwrapRequired(
+        await this.client.from("trips").select("*").eq("group_id", groupId),
+      ),
+      unwrapRequired(
+        await this.client.from("ride_requests").select("*").eq("group_id", groupId),
+      ),
+      unwrapRequired(
+        await this.client.from("children").select("*").eq("group_id", groupId).eq("active", true),
+      ),
+      unwrapRequired(
+        await this.client.from("driver_assignments").select("*").eq("schedule_version_id", scheduleVersionId).eq("group_id", groupId),
+      ),
+      unwrapRequired(
+        await this.client.from("rider_assignments").select("*").eq("schedule_version_id", scheduleVersionId).eq("group_id", groupId),
+      ),
+      unwrapRequired(
+        await this.client.from("memberships").select("*").eq("profile_id", profileId).eq("status", "active"),
+      ),
+    ]);
+
+    const householdIds = new Set(memberships.map((m) => m.household_id));
+    const myChildren = children.filter((c) => householdIds.has(c.household_id));
+    const myChildIds = new Set(myChildren.map((c) => c.id));
+    const childById = new Map(children.map((c) => [c.id, c]));
+    const tripById = new Map(trips.map((t) => [t.id, t]));
+
+    const activeDriverAssignments = new Set(
+      driverAssignments
+        .filter((da) => da.status === "tentative" || da.status === "confirmed")
+        .map((da) => da.id),
+    );
+
+    const coveredChildrenByTrip = new Map<string, Set<string>>();
+    for (const ra of riderAssignments) {
+      if (!activeDriverAssignments.has(ra.driver_assignment_id)) continue;
+      const existing = coveredChildrenByTrip.get(ra.trip_id) ?? new Set<string>();
+      existing.add(ra.child_id);
+      coveredChildrenByTrip.set(ra.trip_id, existing);
+    }
+
+    const alerts: UncoveredChildAlert[] = [];
+    for (const rr of rideRequests) {
+      if (!rr.needs_ride) continue;
+      if (!myChildIds.has(rr.child_id)) continue;
+
+      const covered = coveredChildrenByTrip.get(rr.trip_id) ?? new Set<string>();
+      if (covered.has(rr.child_id)) continue;
+
+      const trip = tripById.get(rr.trip_id);
+      const child = childById.get(rr.child_id);
+      if (!trip || !child) continue;
+
+      const existing = alerts.find((a) => a.trip.id === trip.id);
+      if (existing) {
+        existing.children.push(child);
+      } else {
+        alerts.push({ trip, children: [child] });
+      }
+    }
+    return alerts;
   }
 
 async getLatestScheduleVersion(

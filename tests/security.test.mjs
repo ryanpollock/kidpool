@@ -18,6 +18,11 @@ const privacyMigrationUrl = new URL(
   "../supabase/migrations/202608020006_tighten_privacy.sql",
   import.meta.url,
 );
+
+const pushMigrationUrl = new URL(
+  "../supabase/migrations/202608020008_push_subscriptions.sql",
+  import.meta.url,
+);
 const exchange6Url = new URL(
   "../supabase/migrations/202607310001_exchange_6_confirmation_reason.sql",
   import.meta.url,
@@ -41,6 +46,7 @@ const protectedTables = [
   "rider_assignments",
   "driver_confirmations",
   "audit_events",
+  "push_subscriptions",
 ];
 
 const coordinatorOnlyTables = [
@@ -60,6 +66,7 @@ const householdScopedTables = [
 let cachedSql;
 let cachedEx6Sql;
 let cachedPrivacySql;
+let cachedPushSql;
 
 async function loadSql() {
   if (!cachedSql) cachedSql = await readFile(migrationUrl, "utf8");
@@ -71,6 +78,11 @@ async function loadPrivacySql() {
   return cachedPrivacySql;
 }
 
+async function loadPushSql() {
+  if (!cachedPushSql) cachedPushSql = await readFile(pushMigrationUrl, "utf8");
+  return cachedPushSql;
+}
+
 async function loadEx6Sql() {
   if (!cachedEx6Sql) cachedEx6Sql = await readFile(exchange6Url, "utf8");
   return cachedEx6Sql;
@@ -78,12 +90,14 @@ async function loadEx6Sql() {
 
 test("Exchange 7 RLS enables row-level security on every protected table", async () => {
   const sql = await loadSql();
+  const privacySql = await loadPrivacySql();
+  const pushSql = await loadPushSql();
+  const allSql = [sql, privacySql, pushSql];
   for (const table of protectedTables) {
-    assert.match(
-      sql,
-      new RegExp(`alter table public\\.${table} enable row level security`, "i"),
-      `RLS not enabled on ${table}`,
+    const found = allSql.some(s =>
+      new RegExp(`alter table public\\.${table} enable row level security`, "i").test(s),
     );
+    assert(found, `RLS not enabled on ${table}`);
   }
 });
 

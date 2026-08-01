@@ -33,6 +33,11 @@ const expectedTables = [
   "audit_events",
 ];
 
+// Tables defined in later migrations (not in the foundation migration)
+const extendedTables = [
+  "push_subscriptions",
+];
+
 test("foundation migration defines every MVP table and enables RLS", async () => {
   const sql = await readFile(migrationUrl, "utf8");
 
@@ -76,7 +81,7 @@ test("foundation migration preserves named-roster and confirmation invariants", 
 test("every database table has a matching TypeScript contract", async () => {
   const types = await readFile(typesUrl, "utf8");
 
-  for (const table of expectedTables) {
+  for (const table of [...expectedTables, ...extendedTables]) {
     assert.match(
       types,
       new RegExp(`\\b${table}: Table<`),
