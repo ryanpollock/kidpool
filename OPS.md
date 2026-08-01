@@ -10,6 +10,7 @@ Production operations runbook for the Clarendon Presidio carpool pilot.
 | Staging Supabase | `jfyjgmhqnlbdcafoarrg` (https://jfyjgmhqnlbdcafoarrg.supabase.co) |
 | Supabase region | U.S. |
 | Frontend hosting | Vercel (project `kidpool`, URL `https://kidpool-sf.vercel.app`) |
+| Staging URL | `https://kidpool-staging.vercel.app` (Vercel preview, staging Supabase) |
 | Auth provider | Google OAuth (Supabase Auth) |
 | Edge Functions | `generate-schedule`, `send-push` (Supabase Functions, Deno) |
 | Timezone | `America/Los_Angeles` for all carpool scheduling |
@@ -22,7 +23,16 @@ npm run link:test   # supabase link --project-ref jfyjgmhqnlbdcafoarrg  (staging
 ```
 
 Production: real pilot families, Vercel-hosted frontend.
-Staging: demo families (`npm run seed-demo`), integration tests, E2E tests, pipeline simulations. No frontend hosting — use `npm run dev:staging` for local development against staging.
+Staging: demo families (`npm run seed-demo`), integration tests, E2E tests, pipeline simulations. Public at `https://kidpool-staging.vercel.app` (Vercel preview with staging env vars).
+
+### Deploy staging site
+
+```bash
+git checkout staging
+git merge main           # sync with latest code
+npm run deploy:staging   # deploys to Vercel + aliases to kidpool-staging.vercel.app
+git checkout main
+```
 
 All test/seed scripts abort if run against production. `delete-user` targets production by default.
 
