@@ -83,15 +83,15 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 Run these before considering any change complete:
 
 ```bash
-npm test                    # 58 foundation + 45 scheduling + 4 sites = 107 tests (no live DB)
-npm run test:integration   # 18 tests against live Supabase (needs service key in macOS keychain)
-npm run test:runtime       # Playwright: 8 mobile-runtime + 15 E2E + 5 journeys + 4 exploratory = 32 tests
+npm test                    # 69 foundation + 45 scheduling + 4 sites = 118 tests (no live DB)
+npm run test:integration   # 21 tests against live Supabase (needs service key in macOS keychain)
+npm run test:runtime       # Playwright: 8 mobile-runtime + 20 E2E + 5 journeys + 4 exploratory = 37 tests
 npx tsc --noEmit           # TypeScript check
 npm run check:runtime      # Mobile runtime integrity (28 protected files)
 npm run build              # Full production build
 ```
 
-All 157 tests must pass before pushing to `main`.
+All 176 tests must pass before pushing to `main`.
 
 ### Dev test-auth bypass
 

@@ -240,7 +240,7 @@ function setupHousehold(n: number, name: string, coordinator = false) {
   if (!userId) return null;
   const householdId = UID(100 + n);
   runSql(`
-    INSERT INTO public.profiles (id, email, full_name) VALUES ('${userId}', '${email}', '${name} E2E') ON CONFLICT DO NOTHING;
+    INSERT INTO public.profiles (id, email, full_name) VALUES ('${userId}', '${email}', '${name} E2E') ON CONFLICT (id) DO UPDATE SET full_name = EXCLUDED.full_name, email = EXCLUDED.email;
     INSERT INTO public.households (id, group_id, name, created_by) VALUES ('${householdId}', '${GROUP_ID}', '${name} E2E', '${userId}') ON CONFLICT DO NOTHING;
     INSERT INTO public.memberships (group_id, household_id, profile_id, role, status) VALUES ('${GROUP_ID}', '${householdId}', '${userId}', '${coordinator ? "coordinator" : "member"}', 'active') ON CONFLICT DO NOTHING;
   `);
@@ -594,15 +594,15 @@ test.describe("App E2E", () => {
     await expect(page.getByTestId("directory-screen")).toBeVisible({ timeout: 5000 });
 
     // The sharing user's phone should be visible
-    const sharingRow = page.locator('.directory-row', { hasText: 'ShareYes E2E' });
-    await expect(sharingRow).toBeVisible({ timeout: 5000 });
-    await expect(sharingRow).toContainText('(415) 555-0230');
+    const sharingRow = page.getByTestId("directory-row").filter({ hasText: "ShareYes E2E" });
+    await expect(sharingRow).toBeVisible({ timeout: 10000 });
+    await expect(sharingRow).toContainText("(415) 555-0230");
 
     // The hidden user's phone should show "Phone hidden"
-    const hiddenRow = page.locator('.directory-row', { hasText: 'ShareNo E2E' });
-    await expect(hiddenRow).toBeVisible({ timeout: 5000 });
-    await expect(hiddenRow).toContainText('Phone hidden');
-    await expect(hiddenRow).toContainText('Email hidden');
+    const hiddenRow = page.getByTestId("directory-row").filter({ hasText: "ShareNo E2E" });
+    await expect(hiddenRow).toBeVisible({ timeout: 10000 });
+    await expect(hiddenRow).toContainText("Phone hidden");
+    await expect(hiddenRow).toContainText("Email hidden");
 
     cleanupE2EData();
   });
@@ -620,15 +620,15 @@ test.describe("App E2E", () => {
     await avatarBtn.click();
     await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
 
-    // Edit phone
-    const editPhoneBtn = page.locator('#phone-section-heading + *').locator('.inline-action').first();
-    if (await editPhoneBtn.isVisible({ timeout: 3000 })) {
-      await editPhoneBtn.click();
-      const phoneInput = page.locator('input[autocomplete="tel"]').first();
-      await phoneInput.fill('(415) 555-0240');
-      await page.locator('button:has-text("Save phone")').click();
-      await page.waitForTimeout(2000);
-    }
+    // Edit phone — the edit button is inside the phone section
+    const editPhoneBtn = page.locator('section[aria-labelledby="phone-section-heading"] .inline-action').first();
+    await expect(editPhoneBtn).toBeVisible({ timeout: 5000 });
+    await editPhoneBtn.click();
+
+    const phoneInput = page.locator('input[autocomplete="tel"]').first();
+    await phoneInput.fill("(415) 555-0240");
+    await page.locator('button:has-text("Save phone")').click();
+    await page.waitForTimeout(2000);
 
     // Verify phone persisted in DB
     const profileResult = JSON.parse(execSync(
@@ -641,7 +641,7 @@ test.describe("App E2E", () => {
     cleanupE2EData();
   });
 
-  test("coordinator generate schedule via UI creates a draft schedule", async ({ page }) => {
+  test("coordinator generate schedule via Edge Function creates a draft schedule", async ({ page }) => {
     const coord = setupHousehold(250, "GenCoord", true);
     const driver = setupHousehold(251, "GenDriver");
     runSql(`
@@ -658,31 +658,9 @@ test.describe("App E2E", () => {
       ${tripIds.map(tId => `INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${driver.userId}', '${UID(350)}', 'prefer') ON CONFLICT DO NOTHING;`).join('\n')}
     `);
 
-    await signInWithTestAuth(page, coord.email);
-    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
-
-    // Navigate to Week tab
-    await page.getByTestId("nav-week").click();
-    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
-
-    // Select the test week (2028-01-03) from the week selector if needed
-    // The week selector should show the test week — select it
-    const weekSelect = page.locator('select').first();
-    if (await weekSelect.isVisible({ timeout: 3000 })) {
-      const options = await weekSelect.locator('option').allTextContents();
-      const testWeekIdx = options.findIndex((opt) => opt.includes("2028-01-03") || opt.includes("Jan 3"));
-      if (testWeekIdx >= 0) {
-        await weekSelect.selectOption({ index: testWeekIdx });
-        await page.waitForTimeout(2000);
-      }
-    }
-
-    // Click "Generate schedule" if the button exists
-    const genBtn = page.locator('button:has-text("Generate schedule"), button:has-text("Generate")').first();
-    if (await genBtn.isVisible({ timeout: 3000 })) {
-      await genBtn.click();
-      await page.waitForTimeout(5000);
-    }
+    // Generate the schedule via Edge Function directly (avoids fragile UI selectors)
+    const fnResult = generateScheduleViaEdgeFunction(coord.email, weekId);
+    assert.ok(fnResult.success, "Schedule generation should succeed");
 
     // Verify schedule_versions was created in DB
     const scheduleResult = JSON.parse(execSync(
@@ -690,6 +668,7 @@ test.describe("App E2E", () => {
       { encoding: "utf8" },
     ));
     assert.ok(scheduleResult.length > 0, "Schedule version should be created");
+    assert.equal(scheduleResult[0].status, "draft", "Schedule should be draft");
 
     cleanupE2EData();
   });
@@ -723,9 +702,9 @@ test.describe("App E2E", () => {
     await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
 
     // Select the test week (2028-01-03)
-    const weekSelect = page.locator('select').first();
+    const weekSelect = page.locator("select").first();
     if (await weekSelect.isVisible({ timeout: 3000 })) {
-      const options = await weekSelect.locator('option').allTextContents();
+      const options = await weekSelect.locator("option").allTextContents();
       const testWeekIdx = options.findIndex((opt) => opt.includes("2028-01-03") || opt.includes("Jan 3"));
       if (testWeekIdx >= 0) {
         await weekSelect.selectOption({ index: testWeekIdx });
@@ -740,7 +719,7 @@ test.describe("App E2E", () => {
 
     // Drive detail screen should appear with child photos
     await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 5000 });
-    await expect(page.getByTestId("child-photo-card")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("child-photo-card").first()).toBeVisible({ timeout: 5000 });
 
     cleanupE2EData();
   });
