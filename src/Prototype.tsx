@@ -2867,8 +2867,8 @@ export default function Prototype() {
   // Register service worker for PWA push notifications
   useEffect(() => {
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {
-        // SW registration failure is non-fatal
+      navigator.serviceWorker.register("/sw.js").catch((err) => {
+        console.error("[carpool] Service worker registration failed:", err);
       });
     }
   }, []);
@@ -3096,8 +3096,8 @@ export default function Prototype() {
           json.keys.auth,
         );
       }
-    } catch {
-      // Non-fatal
+    } catch (err) {
+      console.error("[carpool] Push subscription failed:", err);
     } finally {
       setPushSubscribing(false);
     }

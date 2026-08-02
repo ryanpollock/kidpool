@@ -78,7 +78,7 @@ OPS.md                    # Operations runbook
 
 - **RLS everywhere** — no client-side data access bypasses Postgres row-level security
 - **Pure algorithm** — the scheduler is pure TypeScript with zero runtime imports, swappable behind `algorithm_version`
-- **One-way publish** — publishing is irreversible for MVP; blocks regeneration after publish
+- **Regeneration with confirmation** — coordinators can regenerate after publishing; the prior version is superseded and a confirmation dialog prevents accidental replacement
 - **Single vehicle per household** — multiple-vehicle support deferred
 - **Coordinator role via SQL** — no UI for assigning coordinators in the MVP
 

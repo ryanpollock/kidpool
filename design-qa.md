@@ -102,7 +102,7 @@ No actionable P0, P1, or P2 differences remain.
 ## Follow-up polish
 
 - [P3] The source shows the entire five-day glance at once; the functional prototype scrolls to reveal the lower rows because it includes persistent navigation and live device chrome.
-- [P3] A future brand pass can replace the generic parent icon after the carpool chooses a name and identity.
+- [P3] ~~A future brand pass can replace the generic parent icon after the carpool chooses a name and identity.~~ **Resolved:** Brand pass complete — navy app icon with white car silhouette + teal accents, unified across PWA manifest, favicons, in-app header, and push notification badge.
 
 ## Final result
 

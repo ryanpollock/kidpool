@@ -1377,8 +1377,8 @@ export class CarpoolRepository {
       await this.client.functions.invoke("send-push", {
         body: { assignment_id: assignmentId, version_id: versionId, type },
       });
-    } catch {
-      // Best-effort: push failures should not block the primary action
+    } catch (err) {
+      console.error("[carpool] send-push invocation failed:", err);
     }
   }
 
