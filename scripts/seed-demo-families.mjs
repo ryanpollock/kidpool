@@ -172,6 +172,28 @@ async function main() {
     }
   }
 
+  // Buddy pairings (3-4 demo relationships for manual QA + staging verification)
+  // Child IDs: a3000000-0000-4000-8000-NNNNNNNNNNNN (counter from 1, decimal-padded)
+  // 01=Lily Chen  02=Max Chen  03=Sofia Garcia  04=Emma Johnson  05=Jack Johnson
+  // 06=Aria Patel  07=Mason Williams  08=Ava Williams  09=Leo Williams
+  // 10=Finn OBrien  11=Maeve OBrien  12=Ivy Anderson  13=Theo Anderson
+  // 14=Nora Anderson  15=Sam Anderson  16=Olive Thompson
+  // 17=Carlos Martinez  18=Isabel Martinez  19=Maya Lee
+  const CID = (n) => `a3000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
+  const buddyUpdates = [
+    // Bidirectional: Lily Chen ↔ Sofia Garcia
+    `UPDATE public.children SET preferred_buddy_child_id = '${CID(3)}' WHERE id = '${CID(1)}';`,
+    `UPDATE public.children SET preferred_buddy_child_id = '${CID(1)}' WHERE id = '${CID(3)}';`,
+    // Bidirectional: Emma Johnson ↔ Ivy Anderson
+    `UPDATE public.children SET preferred_buddy_child_id = '${CID(12)}' WHERE id = '${CID(4)}';`,
+    `UPDATE public.children SET preferred_buddy_child_id = '${CID(4)}' WHERE id = '${CID(12)}';`,
+    // One-directional: Mason Williams → Maya Lee
+    `UPDATE public.children SET preferred_buddy_child_id = '${CID(19)}' WHERE id = '${CID(7)}';`,
+    // Bidirectional: Finn OBrien ↔ Olive Thompson
+    `UPDATE public.children SET preferred_buddy_child_id = '${CID(16)}' WHERE id = '${CID(10)}';`,
+    `UPDATE public.children SET preferred_buddy_child_id = '${CID(10)}' WHERE id = '${CID(16)}';`,
+  ];
+
   // Vehicles
   const vehicleInserts = [];
   for (const [fi, f] of familyData.entries()) {
@@ -222,6 +244,7 @@ async function main() {
     membershipInserts,
     coordinatorUpdate,
     childInserts.join("\n"),
+    buddyUpdates.join("\n"),
     vehicleInserts.join("\n"),
     checkinInserts,
     rideRequestInserts.join("\n"),
@@ -241,6 +264,7 @@ async function main() {
       (SELECT count(*) FROM public.profiles WHERE email LIKE '%@seed.kidpool') AS profiles,
       (SELECT count(*) FROM public.households WHERE created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@seed.kidpool')) AS households,
       (SELECT count(*) FROM public.children WHERE household_id IN (SELECT id FROM public.households WHERE created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@seed.kidpool'))) AS children,
+      (SELECT count(*) FROM public.children WHERE household_id IN (SELECT id FROM public.households WHERE created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@seed.kidpool')) AND preferred_buddy_child_id IS NOT NULL) AS buddies,
       (SELECT count(*) FROM public.vehicles WHERE household_id IN (SELECT id FROM public.households WHERE created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@seed.kidpool'))) AS vehicles,
       (SELECT count(*) FROM public.weekly_checkins WHERE household_id IN (SELECT id FROM public.households WHERE created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@seed.kidpool'))) AS checkins,
       (SELECT count(*) FROM public.ride_requests WHERE checkin_id IN (SELECT id FROM public.weekly_checkins WHERE household_id IN (SELECT id FROM public.households WHERE created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@seed.kidpool')))) AS ride_requests,
@@ -251,8 +275,9 @@ async function main() {
   console.log(`    profiles:           ${v.profiles}`);
   console.log(`    households:         ${v.households}`);
   console.log(`    children:           ${v.children}`);
+  console.log(`    buddy preferences:  ${v.buddies}`);
   console.log(`    vehicles:           ${v.vehicles}`);
-  console.log(`    checkins:           ${v.checkins}`);
+  console.log(`    checkins:            ${v.checkins}`);
   console.log(`    ride_requests:      ${v.ride_requests}`);
   console.log(`    driver_availability: ${v.driver_availability}`);
   console.log("\n  Done. Sign in at https://carpool-staging.vercel.app to test.\n");

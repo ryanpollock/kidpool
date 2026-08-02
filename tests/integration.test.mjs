@@ -604,3 +604,188 @@ test("DB: unique constraint on published schedule per week", { skip: !SERVICE_KE
   cleanupAllTestData();
   deleteTestUser(coord.userId);
 });
+
+// ── Riding buddy integration tests ───────────────────────────────
+
+test("Buddy: updateChild sets and reads preferred_buddy_child_id via REST", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(50, "BuddyA");
+  const b = setupHousehold(51, "BuddyB");
+  const childAId = UID(250);
+  const childBId = UID(251);
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childAId}', '${GROUP_ID}', '${a.householdId}', 'Alfie', 'A', '${a.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childBId}', '${GROUP_ID}', '${b.householdId}', 'Bella', 'B', '${b.userId}') ON CONFLICT DO NOTHING;
+  `);
+
+  // Sign in as user A and set buddy for child A → child B
+  const token = signInUser("buddya@test.kidpool");
+  const jwt = token.access_token;
+  assert.ok(jwt, "Should get JWT for BuddyA");
+
+  const updateResult = JSON.parse(execSync(
+    `curl -s -X PATCH -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${jwt}" -H "Content-Type: application/json" -H "Prefer: return=representation" -d '{"preferred_buddy_child_id":"${childBId}"}' "${SUPABASE_URL}/rest/v1/children?id=eq.${childAId}"`,
+    { encoding: "utf8" },
+  ));
+  assert.ok(Array.isArray(updateResult) && updateResult.length > 0, "PATCH should return updated row");
+  assert.equal(updateResult[0].preferred_buddy_child_id, childBId, "Buddy should be set to childB");
+
+  // Read back to verify persistence
+  const readBack = restGet("children", { id: childAId });
+  assert.equal(readBack[0].preferred_buddy_child_id, childBId, "Buddy should persist on read-back");
+
+  // Clear buddy (set to null)
+  const clearResult = JSON.parse(execSync(
+    `curl -s -X PATCH -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${jwt}" -H "Content-Type: application/json" -H "Prefer: return=representation" -d '{"preferred_buddy_child_id":null}' "${SUPABASE_URL}/rest/v1/children?id=eq.${childAId}"`,
+    { encoding: "utf8" },
+  ));
+  assert.equal(clearResult[0].preferred_buddy_child_id, null, "Buddy should be cleared");
+
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+  deleteTestUser(b.userId);
+});
+
+test("Buddy: self-buddy CHECK constraint rejects preferred_buddy_child_id = id", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(52, "SelfBuddy");
+  const childId = UID(252);
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childId}', '${GROUP_ID}', '${a.householdId}', 'Solo', 'Self', '${a.userId}') ON CONFLICT DO NOTHING;
+  `);
+
+  // Attempt to set self as buddy — should fail with CHECK violation
+  const result = runSql(`UPDATE public.children SET preferred_buddy_child_id = '${childId}' WHERE id = '${childId}';`);
+  assert.ok(result.error, "Self-buddy UPDATE should produce an error");
+  assert.match(result.error.message, /children_buddy_not_self/i, "Error should mention the CHECK constraint");
+
+  // Verify the buddy was NOT set
+  const readBack = restGet("children", { id: childId });
+  assert.equal(readBack[0].preferred_buddy_child_id, null, "Self-buddy should not have been saved");
+
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+});
+
+test("Buddy: FK on delete set null clears buddy when buddy child is deleted", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(53, "BuddyHolder");
+  const b = setupHousehold(54, "BuddyTarget");
+  const childAId = UID(253);
+  const childBId = UID(254);
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childAId}', '${GROUP_ID}', '${a.householdId}', 'Holder', 'A', '${a.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childBId}', '${GROUP_ID}', '${b.householdId}', 'Target', 'B', '${b.userId}') ON CONFLICT DO NOTHING;
+    UPDATE public.children SET preferred_buddy_child_id = '${childBId}' WHERE id = '${childAId}';
+  `);
+
+  // Verify buddy is set
+  const before = restGet("children", { id: childAId });
+  assert.equal(before[0].preferred_buddy_child_id, childBId, "Buddy should be set before deletion");
+
+  // Delete the buddy target child
+  runSql(`DELETE FROM public.children WHERE id = '${childBId}';`);
+
+  // Verify buddy pref is now NULL (FK on delete set null)
+  const after = restGet("children", { id: childAId });
+  assert.equal(after[0].preferred_buddy_child_id, null, "Buddy should be NULL after buddy child deleted");
+
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+  deleteTestUser(b.userId);
+});
+
+test("Buddy: group member can read all children with preferred_buddy_child_id column", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(55, "GroupReadA");
+  const b = setupHousehold(56, "GroupReadB");
+  const childAId = UID(255);
+  const childBId = UID(256);
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childAId}', '${GROUP_ID}', '${a.householdId}', 'Reader', 'A', '${a.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childBId}', '${GROUP_ID}', '${b.householdId}', 'Other', 'B', '${b.userId}') ON CONFLICT DO NOTHING;
+    UPDATE public.children SET preferred_buddy_child_id = '${childBId}' WHERE id = '${childAId}';
+  `);
+
+  // Sign in as user A and read all children in the group (this is what listGroupChildren does)
+  const token = signInUser("groupreada@test.kidpool");
+  const jwt = token.access_token;
+  const childrenResult = JSON.parse(execSync(
+    `curl -s -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${jwt}" "${SUPABASE_URL}/rest/v1/children?select=id,first_name,preferred_buddy_child_id&group_id=eq.${GROUP_ID}&active=eq.true&order=first_name.asc"`,
+    { encoding: "utf8" },
+  ));
+
+  assert.ok(Array.isArray(childrenResult), "Should get an array");
+  assert.ok(childrenResult.length >= 2, "Should see at least 2 children in the group");
+
+  // Find child A and verify buddy is set
+  const childA = childrenResult.find((c) => c.id === childAId);
+  assert.ok(childA, "Should find child A in results");
+  assert.equal(childA.preferred_buddy_child_id, childBId, "Child A's buddy should be child B");
+
+  // Find child B and verify it's visible (cross-household read within same group)
+  const childB = childrenResult.find((c) => c.id === childBId);
+  assert.ok(childB, "Should find child B in results (same-group cross-household read)");
+
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+  deleteTestUser(b.userId);
+});
+
+test("Buddy: Edge Function honors preferred_buddy_child_id from DB rows", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(57, "BuddyCoord", "member", true);
+  const driver = setupHousehold(58, "BuddyDriver", "member", false);
+  const other = setupHousehold(59, "BuddyOther", "member", false);
+
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const tripId = tripIds[0];
+
+  const driverChildId = UID(257);
+  const otherChildId = UID(258);
+  const buddyChildId = UID(259);
+
+  // Setup: driver has 1 own child + capacity 2.
+  // Two other children need rides: one has buddy=driver's child, one doesn't.
+  // The buddy child should be assigned over the non-buddy child.
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(357)}', '${GROUP_ID}', '${driver.householdId}', 'BuddyCar', 2, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${driverChildId}', '${GROUP_ID}', '${driver.householdId}', 'Zoe', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${otherChildId}', '${GROUP_ID}', '${other.householdId}', 'Aaron', 'Other', '${other.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${buddyChildId}', '${GROUP_ID}', '${other.householdId}', 'Bella', 'Buddy', '${other.userId}') ON CONFLICT DO NOTHING;
+    -- Bella's buddy is Zoe (the driver's own child)
+    UPDATE public.children SET preferred_buddy_child_id = '${driverChildId}' WHERE id = '${buddyChildId}';
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(557)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(558)}', '${GROUP_ID}', '${weekId}', '${other.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(557)}', '${tripId}', '${driverChildId}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(558)}', '${tripId}', '${otherChildId}', true, '${other.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(558)}', '${tripId}', '${buddyChildId}', true, '${other.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(557)}', '${tripId}', '${driver.userId}', '${UID(357)}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  // Generate schedule as coordinator
+  const coordToken = signInUser("buddycoord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Schedule generation should succeed");
+
+  // Find rider assignments for the trip
+  const riderAssignments = restGet("rider_assignments", { group_id: GROUP_ID });
+  assert.ok(riderAssignments.length > 0, "Should have rider assignments");
+
+  // Driver's own child should be assigned
+  const driverChildAssigned = riderAssignments.some((ra) => ra.child_id === driverChildId);
+  assert.ok(driverChildAssigned, "Driver's own child should be assigned");
+
+  // Buddy child (Bella) should be assigned to the same driver as Zoe
+  // Aaron (no buddy, sorts first alphabetically) should be the one left out
+  const buddyChildAssigned = riderAssignments.some((ra) => ra.child_id === buddyChildId);
+  assert.ok(buddyChildAssigned, "Buddy child should be assigned (buddy priority over name sort)");
+
+  const otherChildAssigned = riderAssignments.some((ra) => ra.child_id === otherChildId);
+  // With capacity 2 (own child + 1 other), only 1 other fits. Buddy child wins.
+  assert.ok(!otherChildAssigned, "Non-buddy child should be uncovered (capacity reached by buddy child)");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+  deleteTestUser(other.userId);
+});

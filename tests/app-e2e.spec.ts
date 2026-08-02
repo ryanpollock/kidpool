@@ -9,6 +9,7 @@
 // Requires: npm run link:test (CLI linked to staging)
 
 import { expect, test, type Page } from "@playwright/test";
+import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -316,6 +317,110 @@ test.describe("App E2E", () => {
       await createWeekBtn.click();
       await page.waitForTimeout(2000);
     }
+
+    cleanupE2EData();
+  });
+
+  // ── Riding buddy picker UI tests ──────────────────────────────────
+
+  test("buddy picker renders on account screen for each child", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const user = setupHousehold(10, "E2eBuddyRender", false);
+    if (!user) { test.skip(); return; }
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(210)}', '${GROUP_ID}', '${user.householdId}', 'BuddyKid', 'Render', '${user.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await signInWithTestAuth(page, user.email);
+    await page.waitForTimeout(2000);
+
+    // Navigate to account screen via avatar button
+    const avatarBtn = page.locator('[aria-label="Open household profile"]').first();
+    await avatarBtn.click();
+    await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
+
+    // Verify buddy picker label and select are visible
+    await expect(page.locator('.buddy-picker > span:has-text("Riding buddy")')).toBeVisible();
+    await expect(page.locator('.buddy-picker select')).toBeVisible();
+
+    cleanupE2EData();
+  });
+
+  test("buddy picker excludes siblings (same-household children)", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const user = setupHousehold(11, "E2eBuddyExclude", false);
+    const other = setupHousehold(12, "E2eBuddyOther", false);
+    if (!user || !other) { test.skip(); return; }
+    // Two children in same household + one in another household
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(211)}', '${GROUP_ID}', '${user.householdId}', 'Sibling1', 'Exclude', '${user.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(212)}', '${GROUP_ID}', '${user.householdId}', 'Sibling2', 'Exclude', '${user.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(213)}', '${GROUP_ID}', '${other.householdId}', 'Friend', 'Other', '${other.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await signInWithTestAuth(page, user.email);
+    await page.waitForTimeout(2000);
+
+    const avatarBtn = page.locator('[aria-label="Open household profile"]').first();
+    await avatarBtn.click();
+    await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
+
+    // Get the first buddy picker select (for Sibling1)
+    const firstSelect = page.locator('.buddy-picker select').first();
+
+    // Read all option texts
+    const optionTexts = await firstSelect.locator('option').allTextContents();
+
+    // Should contain "None" and "Friend Other"
+    assert.ok(optionTexts.includes("None"), "Should have a 'None' option");
+    assert.ok(optionTexts.some((t) => t.includes("Friend")), "Should include the other-household child");
+
+    // Should NOT contain siblings
+    assert.ok(!optionTexts.some((t) => t.includes("Sibling2")), "Should exclude same-household sibling");
+
+    cleanupE2EData();
+  });
+
+  test("buddy picker persists selection after reload", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const user = setupHousehold(13, "E2eBuddyPersist", false);
+    const other = setupHousehold(14, "E2eBuddyFriend", false);
+    if (!user || !other) { test.skip(); return; }
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(214)}', '${GROUP_ID}', '${user.householdId}', 'Picker', 'Persist', '${user.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(215)}', '${GROUP_ID}', '${other.householdId}', 'Target', 'Friend', '${other.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await signInWithTestAuth(page, user.email);
+    await page.waitForTimeout(2000);
+
+    const avatarBtn = page.locator('[aria-label="Open household profile"]').first();
+    await avatarBtn.click();
+    await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
+
+    // Select the friend as buddy
+    const select = page.locator('.buddy-picker select').first();
+    await select.selectOption({ label: /Target/ });
+    await page.waitForTimeout(2000);
+
+    // Verify in DB that the buddy was saved
+    const saved = JSON.parse(execSync(
+      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/children?id=eq.${UID(214)}&select=id,preferred_buddy_child_id"`,
+      { encoding: "utf8" },
+    ));
+    assert.ok(saved.length > 0, "Child should exist");
+    assert.equal(saved[0].preferred_buddy_child_id, UID(215), "Buddy should be saved in DB");
+
+    // Reload the page and verify the select shows the saved buddy
+    await page.reload();
+    await page.waitForTimeout(4000);
+    const avatarBtn2 = page.locator('[aria-label="Open household profile"]').first();
+    await avatarBtn2.click();
+    await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
+
+    const selectAfter = page.locator('.buddy-picker select').first();
+    const selectedValue = await selectAfter.inputValue();
+    assert.ok(selectedValue, "Buddy select should have a non-empty value after reload");
 
     cleanupE2EData();
   });
