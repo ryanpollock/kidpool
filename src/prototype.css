@@ -1286,7 +1286,7 @@ button {
   align-content: center;
   padding: 14px 10px 14px 0;
   border-right: 1px solid var(--line);
-  grid-row: 1 / -1;
+  grid-row: 1 / span 2;
 }
 
 .week-date strong {
