@@ -135,10 +135,10 @@ button {
   width: 44px;
   height: 44px;
   place-items: center;
-  border: 1px solid #b9d7d7;
+  border: 0;
   border-radius: 15px;
-  background: var(--teal-pale);
-  color: var(--ink);
+  background: var(--ink);
+  color: white;
 }
 
 .sign-in-copy {
@@ -676,9 +676,18 @@ button {
 .avatar-button {
   display: grid;
   place-items: center;
+}
+
+.avatar-button {
   border: 1px solid #cbd9dd;
   background: #f2f9f8;
   color: var(--ink);
+}
+
+.brand-mark {
+  border: 0;
+  background: var(--ink);
+  color: white;
 }
 
 .brand-mark {

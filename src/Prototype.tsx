@@ -142,7 +142,7 @@ function SignInScreen({
   return (
     <div className="auth-screen sign-in-screen" data-testid="sign-in-screen">
       <div className="auth-brand">
-        <span className="auth-mark"><PersonIcon width="25" height="25" /></span>
+<span className="auth-mark"><CarIcon width="22" height="22" /></span>
         <span>
           <strong>Midtown Carpool</strong>
           <small>Clarendon families · Presidio Middle School</small>
