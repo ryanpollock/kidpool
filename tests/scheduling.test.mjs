@@ -303,3 +303,50 @@ test("regression: confirmed driver with trip_id is correctly keyed", async () =>
   assert.ok(p3OnT2, "p3 should be preserved on t2");
   assert.equal(p3OnT2?.confirmed, true, "p3 on t2 should be confirmed");
 });
+
+test("regression: driving parent is selected before non-parent driver so their kid rides with them", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  const inputs = {
+    trips: [
+      { id: "t1", service_date: "2026-08-03", direction: "morning" },
+    ],
+    children: [
+      { id: "c1", household_id: "h1", first_name: "Kid", last_name: "Parent" },
+    ],
+    vehicles: [
+      { id: "v1", household_id: "h2", label: "Stranger car", child_passenger_capacity: 4 },
+      { id: "v2", household_id: "h1", label: "Parent car", child_passenger_capacity: 4 },
+    ],
+    profiles: [
+      { id: "p1", full_name: "Stranger Driver", household_id: "h2" },
+      { id: "p2", full_name: "Parent Driver", household_id: "h1" },
+    ],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+    ],
+    availability: [
+      // Stranger prefers to drive, parent only "can" — but parent has own kid
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t1", driver_profile_id: "p2", vehicle_id: "v2", preference: "can" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 5], ["p2", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+
+  // p2 (parent) should be selected as driver despite p1 having higher preference
+  const p2Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p2");
+  assert.ok(p2Assignment, "parent driver p2 should be selected");
+  assert.ok(
+    p2Assignment?.assigned_child_ids.includes("c1"),
+    "parent's child c1 should be in their car",
+  );
+
+  // p1 (stranger with prefer) should NOT be driving this trip
+  const p1Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  assert.equal(p1Assignment, undefined, "stranger p1 should not be driving when parent is available");
+});

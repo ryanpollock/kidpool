@@ -93,6 +93,13 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
         return already < maxDrives;
       })
       .sort((a, b) => {
+        // Prefer drivers whose own children are among this trip's riders
+        const aHousehold = householdByProfileId.get(a.driver_profile_id) ?? "";
+        const bHousehold = householdByProfileId.get(b.driver_profile_id) ?? "";
+        const aHasOwn = riders.some((r) => r.household_id === aHousehold);
+        const bHasOwn = riders.some((r) => r.household_id === bHousehold);
+        if (aHasOwn !== bHasOwn) return aHasOwn ? -1 : 1;
+
         const prefDiff = driverPreferenceRank(a.preference) -
           driverPreferenceRank(b.preference);
         if (prefDiff !== 0) return prefDiff;
