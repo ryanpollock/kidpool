@@ -29,6 +29,7 @@ import {
   type DeclinedDriveAlert,
   type HouseholdSetup,
   type MyDriverAssignment,
+  type ScheduleRosterEntry,
   type ScheduleVersionWithRosters,
   type Tables,
   type UncoveredChildAlert,
@@ -228,6 +229,7 @@ function OnboardingScreen({
   onSignOut: () => void;
 }) {
   const [fullName, setFullName] = useState(identity.profile.full_name);
+  const [phone, setPhone] = useState(identity.profile.phone ?? "");
   const [mode, setMode] = useState<"choose" | "create" | "join">("choose");
   const [householdName, setHouseholdName] = useState("");
   const [joinCode, setJoinCode] = useState("");
@@ -263,7 +265,11 @@ function OnboardingScreen({
     if (normalizedName.split(" ").filter(Boolean).length < 2) {
       throw new Error("Please enter the full name other parents should see.");
     }
-    await repository.updateCurrentProfile(normalizedName);
+    const digits = phone.replace(/\D/g, "");
+    if (digits.length < 7) {
+      throw new Error("Enter a phone number so other parents can reach you.");
+    }
+    await repository.updateCurrentProfile({ fullName: normalizedName, phone });
   };
 
   const createHousehold = async () => {
@@ -646,6 +652,18 @@ function OnboardingScreen({
         <small>This is how other parents will see you on driving schedules.</small>
       </label>
 
+      <label className="auth-field">
+        <span>Your phone number</span>
+        <KeyboardInput
+          value={phone}
+          onChange={(event) => setPhone(event.target.value)}
+          autoComplete="tel"
+          inputMode="tel"
+          placeholder="(415) 555-0100"
+        />
+        <small>Shared with other parents in the carpool directory.</small>
+      </label>
+
       {mode === "choose" ? (
         <div className="onboarding-choice">
           <p>Are you setting up your household, or joining one another parent already created?</p>
@@ -760,6 +778,21 @@ function countUncoveredTrips(schedule: ScheduleVersionWithRosters): number {
     if (active.length === 0) count++;
   }
   return count;
+}
+
+function findDriveDetail(
+  schedule: ScheduleVersionWithRosters,
+  assignmentId: string,
+): { entry: ScheduleRosterEntry; trip: Tables<"trips">; serviceDate: string } | null {
+  for (const trip of schedule.trips) {
+    const rosters = schedule.rostersByTrip.get(trip.id);
+    if (!rosters) continue;
+    const entry = rosters.find((r) => r.driverAssignment.id === assignmentId);
+    if (entry) {
+      return { entry, trip, serviceDate: trip.service_date };
+    }
+  }
+  return null;
 }
 
 function preferenceLabel(pref: DrivePreference): string {
@@ -976,6 +1009,7 @@ function HomeScreen({
   onConfirmAll,
   onReview,
   onCoverage,
+  onDirectory,
   onAccount,
   onRetryAssignments,
   onVolunteer,
@@ -1002,6 +1036,7 @@ function HomeScreen({
   onConfirmAll: () => void;
   onReview: () => void;
   onCoverage: () => void;
+  onDirectory: () => void;
   onAccount: () => void;
   onRetryAssignments: () => void;
   onVolunteer: (assignmentId: string) => void;
@@ -1227,6 +1262,12 @@ function HomeScreen({
       <button className="coverage-alert" onClick={onCoverage} data-testid="coverage-alert">
         <span><ExclamationTriangleIcon width="20" height="20" /></span>
         <span><strong>View full schedule</strong><small>See this week’s coverage</small></span>
+        <ChevronRightIcon />
+      </button>
+
+      <button className="coverage-alert" onClick={onDirectory} data-testid="directory-link">
+        <span><AvatarIcon width="20" height="20" /></span>
+        <span><strong>Parent directory</strong><small>Phone and email for everyone in your carpool</small></span>
         <ChevronRightIcon />
       </button>
     </div>
@@ -1794,6 +1835,7 @@ function WeekScreen({
   onSelectWeek,
   avatarUrl,
   onAccount,
+  onOpenDrive,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -1813,6 +1855,7 @@ function WeekScreen({
   onSelectWeek: (weekId: string) => void;
   avatarUrl: string | null;
   onAccount: () => void;
+  onOpenDrive: (assignmentId: string) => void;
 }) {
   const weekHeading = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const currentIdx = allWeeks.findIndex((w) => w.id === (selectedWeekId ?? week?.week.id));
@@ -2026,7 +2069,12 @@ function WeekScreen({
                     {!uncovered ? (
                       <div className="trip-rosters">
                         {activeRosters.map((entry) => (
-                          <div className="trip-roster" key={entry.driverAssignment.id}>
+                          <button
+                            className="trip-roster"
+                            key={entry.driverAssignment.id}
+                            data-testid={`drive-card-${entry.driverAssignment.id}`}
+                            onClick={() => onOpenDrive(entry.driverAssignment.id)}
+                          >
                             <div className="roster-driver">
                               <strong>{entry.driverProfile.full_name}</strong>
                               <small>{entry.vehicle.label} · {entry.vehicle.child_passenger_capacity} seats</small>
@@ -2036,7 +2084,7 @@ function WeekScreen({
                                 <span key={child.id}>{child.first_name} {child.last_name}</span>
                               )) : <span className="roster-empty">No riders assigned</span>}
                             </div>
-                          </div>
+                          </button>
                         ))}
                       </div>
                     ) : null}
@@ -2351,6 +2399,12 @@ function AccountScreen({
   const [nameWorking, setNameWorking] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
 
+  const [editingPhone, setEditingPhone] = useState(false);
+  const [phoneDraft, setPhoneDraft] = useState(profile.phone ?? "");
+  const [phoneWorking, setPhoneWorking] = useState(false);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [shareWorking, setShareWorking] = useState(false);
+
   const [newChildFirst, setNewChildFirst] = useState("");
   const [newChildLast, setNewChildLast] = useState("");
   const [childWorking, setChildWorking] = useState(false);
@@ -2361,6 +2415,8 @@ function AccountScreen({
   const [editChildWorking, setEditChildWorking] = useState(false);
   const [buddyWorkingId, setBuddyWorkingId] = useState<string | null>(null);
   const [buddyError, setBuddyError] = useState<string | null>(null);
+  const [photoWorkingId, setPhotoWorkingId] = useState<string | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
 
   const [vehicleLabel, setVehicleLabel] = useState("");
   const [vehicleCapacity, setVehicleCapacity] = useState("4");
@@ -2450,6 +2506,49 @@ function AccountScreen({
     }
   };
 
+  const savePhone = async () => {
+    const digits = phoneDraft.replace(/\D/g, "");
+    if (digits.length < 7) {
+      setPhoneError("Enter a phone number so other parents can reach you.");
+      return;
+    }
+    setPhoneWorking(true);
+    setPhoneError(null);
+    try {
+      await repository.updateCurrentProfile({ phone: phoneDraft });
+      setEditingPhone(false);
+      await onReloadHousehold();
+    } catch (nextError) {
+      setPhoneError(readableError(nextError));
+    } finally {
+      setPhoneWorking(false);
+    }
+  };
+
+  const toggleSharePhone = async () => {
+    setShareWorking(true);
+    try {
+      await repository.updateCurrentProfile({ sharePhone: !profile.share_phone });
+      await onReloadHousehold();
+    } catch (nextError) {
+      setNameError(readableError(nextError));
+    } finally {
+      setShareWorking(false);
+    }
+  };
+
+  const toggleShareEmail = async () => {
+    setShareWorking(true);
+    try {
+      await repository.updateCurrentProfile({ shareEmail: !profile.share_email });
+      await onReloadHousehold();
+    } catch (nextError) {
+      setNameError(readableError(nextError));
+    } finally {
+      setShareWorking(false);
+    }
+  };
+
   const addChild = async () => {
     setChildWorking(true);
     setChildError(null);
@@ -2505,6 +2604,21 @@ function AccountScreen({
       setBuddyError(readableError(nextError));
     } finally {
       setBuddyWorkingId(null);
+    }
+  };
+
+  const uploadChildPhoto = async (childId: string, file: File | null) => {
+    if (!file) return;
+    setPhotoWorkingId(childId);
+    setPhotoError(null);
+    try {
+      const publicUrl = await repository.uploadChildPhoto(householdId, childId, file);
+      await repository.updateChild(childId, { photoUrl: publicUrl });
+      await onReloadHousehold();
+    } catch (nextError) {
+      setPhotoError(readableError(nextError));
+    } finally {
+      setPhotoWorkingId(null);
     }
   };
 
@@ -2598,6 +2712,63 @@ function AccountScreen({
         )}
       </section>
 
+      <section className="household-section" aria-labelledby="phone-section-heading">
+        <div className="section-heading-row">
+          <h2 id="phone-section-heading">Your phone</h2>
+          {!editingPhone ? <button className="inline-action" onClick={() => { setPhoneDraft(profile.phone ?? ""); setEditingPhone(true); }}>Edit</button> : null}
+        </div>
+        {editingPhone ? (
+          <div className="household-form">
+            <label className="auth-field">
+              <span>Phone number</span>
+              <KeyboardInput
+                value={phoneDraft}
+                onChange={(event) => setPhoneDraft(event.target.value)}
+                autoComplete="tel"
+                inputMode="tel"
+                placeholder="(415) 555-0100"
+              />
+            </label>
+            {phoneError ? <div className="auth-error" role="alert">{phoneError}</div> : null}
+            <button className="primary-button" disabled={phoneWorking} onClick={() => void savePhone()}>
+              {phoneWorking ? "Saving…" : "Save phone"}
+            </button>
+            <button className="text-button" disabled={phoneWorking} onClick={() => { setEditingPhone(false); setPhoneError(null); }}>Cancel</button>
+          </div>
+        ) : (
+          <p className="household-static">{profile.phone ?? "Not set"}</p>
+        )}
+      </section>
+
+      <section className="household-section" aria-labelledby="sharing-section-heading">
+        <h2 id="sharing-section-heading">Parent directory</h2>
+        <p className="helper-copy">Control what other parents in your carpool can see.</p>
+        <label className="share-toggle-row">
+          <span>
+            <strong>Show my phone in directory</strong>
+            <small>Other parents can see your phone number.</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={profile.share_phone}
+            disabled={shareWorking}
+            onChange={() => void toggleSharePhone()}
+          />
+        </label>
+        <label className="share-toggle-row">
+          <span>
+            <strong>Show my email in directory</strong>
+            <small>Other parents can see your email address.</small>
+          </span>
+          <input
+            type="checkbox"
+            checked={profile.share_email}
+            disabled={shareWorking}
+            onChange={() => void toggleShareEmail()}
+          />
+        </label>
+      </section>
+
       <section className="household-section" aria-labelledby="children-section-heading">
         <div className="section-heading-row">
           <h2 id="children-section-heading">Children</h2>
@@ -2640,24 +2811,39 @@ function AccountScreen({
               ) : (
                 <div className="child-row-content">
                   <div className="child-row-header">
+                    <span className="child-photo-thumb child-photo-thumb--small">
+                      {child.photo_url ? <img src={child.photo_url} alt="" /> : <PersonIcon />}
+                    </span>
                     <span><strong>{child.first_name} {child.last_name}</strong></span>
                     <div className="household-row-actions">
                       <button
                         className="inline-action"
-                        disabled={childWorking || buddyWorkingId === child.id}
+                        disabled={childWorking || buddyWorkingId === child.id || photoWorkingId === child.id}
                         onClick={() => { setEditingChildId(child.id); setEditChildFirst(child.first_name); setEditChildLast(child.last_name); }}
                       >
                         Edit
                       </button>
                       <button
                         className="text-button household-remove"
-                        disabled={childWorking || buddyWorkingId === child.id}
+                        disabled={childWorking || buddyWorkingId === child.id || photoWorkingId === child.id}
                         onClick={() => void removeChild(child.id)}
                         aria-label={`Remove ${child.first_name} ${child.last_name}`}
                       >
                         Remove
                       </button>
                     </div>
+                  </div>
+                  <div className="child-photo-row">
+                    <label className="inline-action child-photo-upload">
+                      <span>{photoWorkingId === child.id ? "Uploading…" : "Upload photo"}</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        disabled={photoWorkingId === child.id}
+                        onChange={(event) => void uploadChildPhoto(child.id, event.target.files?.[0] ?? null)}
+                        style={{ display: "none" }}
+                      />
+                    </label>
                   </div>
                   <label className="buddy-picker">
                     <span>Riding buddy</span>
@@ -2847,6 +3033,184 @@ function AccountScreen({
   );
 }
 
+type DirectoryEntry = {
+  id: string;
+  full_name: string;
+  avatar_url: string | null;
+  email: string | null;
+  phone: string | null;
+  share_phone: boolean;
+  share_email: boolean;
+  household_id: string;
+  household_name: string;
+  role: string;
+};
+
+function DirectoryScreen({
+  groupId,
+  repository,
+  onBack,
+}: {
+  groupId: string;
+  repository: CarpoolRepository;
+  onBack: () => void;
+}) {
+  const [entries, setEntries] = useState<DirectoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    repository
+      .listGroupDirectory(groupId)
+      .then((rows) => {
+        if (!mounted) return;
+        setEntries(rows as DirectoryEntry[]);
+        setError(null);
+      })
+      .catch((err) => {
+        if (!mounted) return;
+        setError(readableError(err));
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+    return () => { mounted = false; };
+  }, [groupId, repository]);
+
+  const byHousehold = new Map<string, DirectoryEntry[]>();
+  for (const e of entries) {
+    const list = byHousehold.get(e.household_id) ?? [];
+    list.push(e);
+    byHousehold.set(e.household_id, list);
+  }
+  const householdOrder = entries.map((e) => e.household_id).filter((hid, i, arr) => arr.indexOf(hid) === i);
+
+  return (
+    <div className="screen-content directory-screen" data-testid="directory-screen">
+      <header className="subpage-header">
+        <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
+        <div><span className="eyebrow">Carpool</span><h1>Parent directory</h1></div>
+      </header>
+
+      {loading ? (
+        <p className="helper-copy">Loading parents…</p>
+      ) : error ? (
+        <div className="auth-error" role="alert">{error}</div>
+      ) : entries.length === 0 ? (
+        <div className="empty-state"><p>No parents found in your carpool.</p></div>
+      ) : (
+        <div className="directory-list">
+          {householdOrder.map((hid) => {
+            const members = byHousehold.get(hid) ?? [];
+            const householdName = members[0]?.household_name ?? "Household";
+            return (
+              <section key={hid} className="directory-household">
+                <h2 className="directory-household-name">{householdName}</h2>
+                {members.map((m) => (
+                  <div key={m.id} className="directory-row" data-testid="directory-row">
+                    <span className="account-avatar directory-avatar">
+                      {m.avatar_url ? <img src={m.avatar_url} alt="" /> : <PersonIcon />}
+                    </span>
+                    <div className="directory-row-info">
+                      <div className="directory-row-name">
+                        <strong>{m.full_name}</strong>
+                        {m.role === "coordinator" ? <span className="role-badge">Admin</span> : null}
+                      </div>
+                      <div className="directory-row-contact">
+                        {m.share_email && m.email ? (
+                          <a href={`mailto:${m.email}`} className="directory-contact-item">{m.email}</a>
+                        ) : (
+                          <span className="directory-contact-item directory-contact-hidden">Email hidden</span>
+                        )}
+                        {m.share_phone && m.phone ? (
+                          <a href={`tel:${m.phone.replace(/\s/g, "")}`} className="directory-contact-item">{m.phone}</a>
+                        ) : (
+                          <span className="directory-contact-item directory-contact-hidden">Phone hidden</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DriveDetailScreen({
+  entry,
+  trip,
+  serviceDate,
+  onBack,
+}: {
+  entry: ScheduleRosterEntry;
+  trip: Tables<"trips">;
+  serviceDate: string;
+  onBack: () => void;
+}) {
+  const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+  });
+  const directionLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
+  const driverName = entry.driverProfile.full_name;
+  const vehicleLabel = entry.vehicle.label;
+  const seats = entry.vehicle.child_passenger_capacity;
+  const children = entry.children;
+
+  return (
+    <div className="screen-content drive-detail-screen" data-testid="drive-detail-screen">
+      <header className="subpage-header">
+        <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
+        <div><span className="eyebrow">{dateLabel}</span><h1>{directionLabel} drive</h1></div>
+      </header>
+
+      <section className="drive-detail-meta">
+        <div className="drive-detail-row">
+          <span className="drive-detail-label">Time</span>
+          <strong>{trip.meeting_time}</strong>
+        </div>
+        <div className="drive-detail-row">
+          <span className="drive-detail-label">Route</span>
+          <strong>{trip.origin} → {trip.destination}</strong>
+        </div>
+        <div className="drive-detail-row">
+          <span className="drive-detail-label">Driver</span>
+          <strong>{driverName}</strong>
+        </div>
+        <div className="drive-detail-row">
+          <span className="drive-detail-label">Vehicle</span>
+          <strong>{vehicleLabel} · {seats} seats</strong>
+        </div>
+      </section>
+
+      <section className="drive-detail-children">
+        <h2>Children on this drive ({children.length})</h2>
+        {children.length === 0 ? (
+          <p className="helper-copy">No children assigned to this drive.</p>
+        ) : (
+          <div className="child-photo-grid">
+            {children.map((child) => (
+              <div key={child.id} className="child-photo-card" data-testid="child-photo-card">
+                <span className="child-photo-thumb">
+                  {child.photo_url ? <img src={child.photo_url} alt="" /> : <PersonIcon />}
+                </span>
+                <strong>{child.first_name} {child.last_name}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 export default function Prototype() {
   const supabase = useMemo(() => getSupabaseClient(), []);
   const repository = useMemo(() => new CarpoolRepository(supabase), [supabase]);
@@ -2901,6 +3265,8 @@ export default function Prototype() {
   const [activeTab, setActiveTab] = useState<AppTab>("home");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [driveDetailId, setDriveDetailId] = useState<string | null>(null);
   const [pushPermissionShown, setPushPermissionShown] = useState(false);
 
   // Register service worker for PWA push notifications
@@ -3361,6 +3727,8 @@ export default function Prototype() {
     setIdentity(null);
     setAccountOpen(false);
     setReviewOpen(false);
+    setDirectoryOpen(false);
+    setDriveDetailId(null);
     setActiveTab("home");
     supabase.auth
       .signOut({ scope: "local" })
@@ -3381,6 +3749,8 @@ export default function Prototype() {
   const navigate = (tab: AppTab) => {
     setReviewOpen(false);
     setAccountOpen(false);
+    setDirectoryOpen(false);
+    setDriveDetailId(null);
     setActiveTab(tab);
   };
 
@@ -3415,6 +3785,30 @@ export default function Prototype() {
           onDeclined={(assignmentId) => void repository.sendPushNotification(assignmentId, null, "declined")}
         />
       );
+    }
+
+    if (directoryOpen && identity) {
+      return (
+        <DirectoryScreen
+          groupId={identity.group.id}
+          repository={repository}
+          onBack={() => setDirectoryOpen(false)}
+        />
+      );
+    }
+
+    if (driveDetailId && identity && schedule) {
+      const found = findDriveDetail(schedule, driveDetailId);
+      if (found) {
+        return (
+          <DriveDetailScreen
+            entry={found.entry}
+            trip={found.trip}
+            serviceDate={found.serviceDate}
+            onBack={() => setDriveDetailId(null)}
+          />
+        );
+      }
     }
 
     if (activeTab === "plan") {
@@ -3462,6 +3856,7 @@ export default function Prototype() {
           onSelectWeek={(id) => { setSelectedWeekId(id); }}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
+          onOpenDrive={(id) => setDriveDetailId(id)}
         />
       );
     }
@@ -3506,6 +3901,7 @@ export default function Prototype() {
         onConfirmAll={() => void confirmAll()}
         onReview={() => setReviewOpen(true)}
         onCoverage={() => navigate("week")}
+        onDirectory={() => setDirectoryOpen(true)}
         onAccount={() => setAccountOpen(true)}
         onRetryAssignments={() => void loadMyAssignments()}
         onVolunteer={(assignmentId) => void volunteerForDrive(assignmentId)}
@@ -3607,7 +4003,7 @@ export default function Prototype() {
           </main>
         </MobileScroll>
       </AppErrorBoundary>
-      {!reviewOpen && !accountOpen ? (
+      {!reviewOpen && !accountOpen && !directoryOpen && !driveDetailId ? (
         <nav className="bottom-nav" aria-label="Primary navigation">
           {navItems.map(({ id, label, icon: Icon }) => (
             <button

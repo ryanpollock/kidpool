@@ -161,16 +161,22 @@ async function main() {
   // Grant coordinator to the first family (Chen) so coordinator flows work without manual SQL.
   const coordinatorUpdate = `UPDATE public.memberships SET role = 'coordinator' WHERE profile_id = '${familyData[0].userId}' AND status = 'active';`;
 
-  // Children
+// Children
   let childCounter = 0;
   const childInserts = [];
   for (const [fi, f] of familyData.entries()) {
     for (const [first, last] of f.kids) {
       childCounter++;
       const childId = `a3000000-0000-4000-8000-${String(childCounter).padStart(12,"0")}`;
-      childInserts.push(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childId}', '${GROUP_ID}', 'a2000000-0000-4000-8000-${String(fi+1).padStart(12,"0")}', '${first}', '${last}', '${f.userId}') ON CONFLICT DO NOTHING;`);
+      const photoUrl = `https://api.dicebear.com/7.x/things/svg?seed=${encodeURIComponent(first)}&backgroundColor=ffd5dc,ffdfbf,c0aede,b6e3f4,d1f4d6`;
+      childInserts.push(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by, photo_url) VALUES ('${childId}', '${GROUP_ID}', 'a2000000-0000-4000-8000-${String(fi+1).padStart(12,"0")}', '${first}', '${last}', '${f.userId}', '${photoUrl}') ON CONFLICT (id) DO UPDATE SET photo_url = EXCLUDED.photo_url;`);
     }
   }
+
+  // Phone numbers for all demo parents (opt-in to directory by default)
+  const phoneUpdates = familyData.map((f, i) =>
+    `UPDATE public.profiles SET phone = '(415) 555-${String(i + 1).padStart(2, "0")}', share_phone = true, share_email = true WHERE id = '${f.userId}';`
+  ).join("\n");
 
   // Buddy pairings (3-4 demo relationships for manual QA + staging verification)
   // Child IDs: a3000000-0000-4000-8000-NNNNNNNNNNNN (counter from 1, decimal-padded)
@@ -240,6 +246,7 @@ async function main() {
   // Run all SQL in one batch
   const allSql = [
     profileUpdates,
+    phoneUpdates,
     householdInserts,
     membershipInserts,
     coordinatorUpdate,
