@@ -155,9 +155,33 @@ Deletes profile, auth user, household, children, vehicles, checkins, assignments
 ## Deployment
 
 - **GitHub repo:** `ryanpollock/kidpool` (public)
-- **Vercel project:** `kidpool` — connected to GitHub, auto-deploys `main` branch
-- **Production URL:** `https://kidpool-sf.vercel.app`
+- **Vercel project:** `kidpool` — connected to GitHub, auto-deploys both `main` and `staging` branches
+- **Production URL:** `https://kidpool-sf.vercel.app` (auto-deploys on push to `main`)
+- **Staging URL:** `https://kidpool-staging.vercel.app` (auto-deploys on push to `staging`)
 - **Production Supabase:** `ujcrnrcgbvzyqosykkjy` — auth `site_url` set to `https://kidpool-sf.vercel.app`
-- **Staging Supabase:** `jfyjgmhqnlbdcafoarrg` — no frontend hosting (use `npm run dev:staging`)
+- **Staging Supabase:** `jfyjgmhqnlbdcafoarrg` — auth `site_url` set to `https://kidpool-staging.vercel.app`
+- **Edge Functions:** auto-deployed by GitHub Action (`.github/workflows/deploy-edge-functions.yml`) on push to `main` (production) and `staging` (staging)
 
-Push to `main` triggers Vercel auto-deploy. The Edge Function (`generate-schedule`) deploys separately via `supabase functions deploy`. See `OPS.md` for the full runbook.
+### Workflow: staging-first
+
+```
+1. git checkout staging && git pull
+2. git checkout -b feature/my-change     # new branch from staging
+3. ...make changes...
+4. git push origin feature/my-change
+   → Vercel auto-builds a PR preview URL (staging env vars)
+   → Test on the PR preview URL
+5. Open PR, merge to staging
+   → Vercel auto-deploys to kidpool-staging.vercel.app
+   → GitHub Action deploys Edge Functions to staging Supabase
+   → Test on staging site
+6. Merge staging to main
+   → Vercel auto-deploys to kidpool-sf.vercel.app (production)
+   → GitHub Action deploys Edge Functions to production Supabase
+```
+
+### What stays manual
+
+- **DB migrations:** Apply to staging first (`npm run link:test && supabase db query --linked -f <file>`), test, then apply to production (`npm run link:prod && supabase db query --linked -f <file>`)
+- **Seed data:** `npm run seed-demo` / `npm run delete-seed` (staging only)
+- **Supabase secrets:** `supabase secrets set` (manual per project)

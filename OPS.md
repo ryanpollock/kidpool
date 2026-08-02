@@ -22,17 +22,25 @@ npm run link:prod   # supabase link --project-ref ujcrnrcgbvzyqosykkjy  (product
 npm run link:test   # supabase link --project-ref jfyjgmhqnlbdcafoarrg  (staging)
 ```
 
-Production: real pilot families, Vercel-hosted frontend.
-Staging: demo families (`npm run seed-demo`), integration tests, E2E tests, pipeline simulations. Public at `https://kidpool-staging.vercel.app` (Vercel preview with staging env vars).
+Production: real pilot families, Vercel-hosted frontend. Auto-deploys on push to `main`.
+Staging: demo families (`npm run seed-demo`), integration tests, E2E tests. Public at `https://kidpool-staging.vercel.app`. Auto-deploys on push to `staging`.
 
-### Deploy staging site
+### Deployment workflow (staging-first)
 
-```bash
-git checkout staging
-git merge main           # sync with latest code
-npm run deploy:staging   # deploys to Vercel + aliases to kidpool-staging.vercel.app
-git checkout main
 ```
+1. git checkout staging && git pull
+2. git checkout -b feature/my-change
+3. ...make changes...
+4. git push origin feature/my-change → PR preview URL (staging env vars)
+5. Test on PR preview URL, merge to staging
+   → Vercel auto-deploys to kidpool-staging.vercel.app
+   → GitHub Action deploys Edge Functions to staging Supabase
+6. Test on staging site, merge staging to main
+   → Vercel auto-deploys to kidpool-sf.vercel.app (production)
+   → GitHub Action deploys Edge Functions to production Supabase
+```
+
+Frontend: Vercel auto-deploys both branches. Edge Functions: GitHub Action auto-deploys. DB migrations: manual (staging first, then production).
 
 All test/seed scripts abort if run against production. `delete-user` targets production by default.
 
@@ -101,18 +109,19 @@ Only coordinators can:
 
 ## 5. Edge Function deployment
 
-The `generate-schedule` and `send-push` Edge Functions run on Supabase Functions (Deno).
+The `generate-schedule` and `send-push` Edge Functions run on Supabase Functions (Deno). They are **auto-deployed** by a GitHub Action (`.github/workflows/deploy-edge-functions.yml`) on every push to `main` (production) and `staging` (staging). The Action uses the `SUPABASE_ACCESS_TOKEN` GitHub secret.
 
+Manual fallback (if the Action fails):
 ```bash
 # Production
 npm run link:prod
-supabase functions deploy generate-schedule --project-ref ujcrnrcgbvzyqosykkjy
-supabase functions deploy send-push --project-ref ujcrnrcgbvzyqosykkjy
+supabase functions deploy generate-schedule --no-verify-jwt
+supabase functions deploy send-push --no-verify-jwt
 
 # Staging
 npm run link:test
-supabase functions deploy generate-schedule --project-ref jfyjgmhqnlbdcafoarrg
-supabase functions deploy send-push --project-ref jfyjgmhqnlbdcafoarrg
+supabase functions deploy generate-schedule --no-verify-jwt
+supabase functions deploy send-push --no-verify-jwt
 ```
 
 Required Supabase secrets (set via `supabase secrets set`):
@@ -126,29 +135,28 @@ The `generate-schedule` function authenticates via the caller's JWT. The `send-p
 
 ## 6. Frontend deployment (Vercel)
 
-### Prerequisites
-- `.env.local` contains `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` (publishable/browser-safe values only).
-- `npm run build` succeeds.
-- `vercel.json` is configured with `outputDirectory: "dist/client"` and SPA rewrite.
-- Vercel project is linked (`vercel link`) and has production env vars set (`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`).
+Vercel is connected to the GitHub repo and **auto-deploys** both branches:
+- `main` → production (`https://kidpool-sf.vercel.app`) using Production env vars
+- `staging` → staging (`https://kidpool-staging.vercel.app`) using Preview env vars
+- Any other branch → ephemeral preview URL using Preview (staging) env vars
 
-### Deploy steps
-1. `vercel --prod --yes` — builds and deploys to production.
-2. The production alias is `https://kidpool-sf.vercel.app`.
-3. After the first deploy, verify Google OAuth redirect URLs in Supabase dashboard → **Authentication → URL Configuration** include the Vercel URL.
+No manual deploy is needed for routine changes. Just push to the appropriate branch.
 
-### Redeploy after code changes
+### Manual redeploy (if needed)
 ```bash
-vercel --prod --yes
+vercel --prod --yes           # force production deploy
+npm run deploy:staging        # force staging deploy + alias (fallback)
 ```
 
-### Production env values
-The build bakes in `VITE_*` env vars at compile time. Vercel reads these from the project's environment variables. To update:
-```bash
-vercel env rm VITE_SUPABASE_URL production
-vercel env add VITE_SUPABASE_URL production
-vercel --prod --yes
-```
+### Environment variables
+
+Vercel bakes in `VITE_*` env vars at build time. The project has separate Production and Preview environments:
+
+| Env var | Production | Preview (staging + PRs) |
+|---|---|---|
+| `VITE_SUPABASE_URL` | `https://ujcrnrcgbvzyqosykkjy.supabase.co` | `https://jfyjgmhqnlbdcafoarrg.supabase.co` |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Production anon key | Staging anon key |
+| `VITE_VAPID_PUBLIC_KEY` | Production VAPID | Staging VAPID |
 
 Never put `SUPABASE_SERVICE_ROLE_KEY` or any secret in a `VITE_*` variable. Browser-side code can only use the publishable anon key; all authorization is enforced by RLS.
 
