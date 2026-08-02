@@ -61,8 +61,8 @@ Test against staging Supabase. Use the demo accounts panel or `?testAuth=email|p
 
 ```bash
 npm test                 # 107 foundation + scheduling + sites tests (no live DB)
-npm run test:integration # 13 tests against live staging Supabase (needs service key in macOS keychain)
-npm run test:runtime     # 28 Playwright (8 runtime + 12 E2E + 5 journeys + 3 exploratory)
+npm run test:integration # 18 tests against live staging Supabase (needs service key in macOS keychain)
+npm run test:runtime     # 32 Playwright (8 runtime + 15 E2E + 5 journeys + 4 exploratory)
 npx tsc --noEmit
 npm run check:runtime    # mobile runtime integrity (28 protected files)
 npm run build            # full production build

@@ -398,9 +398,9 @@ test.describe("App E2E", () => {
     await avatarBtn.click();
     await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
 
-    // Select the friend as buddy
+    // Select the friend as buddy (use the child ID as the option value)
     const select = page.locator('.buddy-picker select').first();
-    await select.selectOption({ label: /Target/ });
+    await select.selectOption({ value: UID(215) });
     await page.waitForTimeout(2000);
 
     // Verify in DB that the buddy was saved

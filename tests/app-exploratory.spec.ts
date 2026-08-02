@@ -136,7 +136,7 @@ function cleanupData() {
 
 async function signInWithTestAuth(page: Page, email: string) {
   await page.goto(`/?testAuth=${email}|${TEST_PASSWORD}`);
-  await page.waitForTimeout(4000);
+  await page.waitForTimeout(6000);
 }
 
 test.describe("Exploratory Checks", () => {
@@ -169,6 +169,7 @@ test.describe("Exploratory Checks", () => {
     await signInWithTestAuth(page, "explore@e2e.kidpool");
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 10000 });
 
+    // Check nav tabs (home, plan, week, coordinate)
     const tabs = ["home", "plan", "week", "coordinate"];
     for (const tab of tabs) {
       await page.getByTestId(`nav-${tab}`).click();
@@ -181,6 +182,11 @@ test.describe("Exploratory Checks", () => {
       const avatarButton = page.locator(".avatar-button");
       await expect(avatarButton).toBeVisible({ timeout: 3000 });
     }
+
+    // Check account screen (opened via avatar button, not a nav tab)
+    await page.locator(".avatar-button").click();
+    await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".brand-lockup")).not.toBeVisible(0);
   });
 
   test("no console errors on any tab", async ({ page }) => {
@@ -210,10 +216,15 @@ test.describe("Exploratory Checks", () => {
     await signInWithTestAuth(page, "exploreconsole@e2e.kidpool");
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 10000 });
 
+    // Visit each nav tab
     for (const tab of ["plan", "week", "coordinate", "home"]) {
       await page.getByTestId(`nav-${tab}`).click();
       await page.waitForTimeout(1500);
     }
+
+    // Visit account screen via avatar button
+    await page.locator(".avatar-button").click();
+    await page.waitForTimeout(1500);
 
     expect(errors, `Console errors found: ${errors.join("; ")}`).toEqual([]);
   });
@@ -255,5 +266,34 @@ test.describe("Exploratory Checks", () => {
         expect(diff, `Morning leg width (${firstWidth.width}px) and afternoon leg width (${secondWidth.width}px) differ by ${diff}px`).toBeLessThan(10);
       }
     }
+  });
+
+  test("buddy picker renders on account screen with correct label", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const userId = createTestUser("explorebuddy@e2e.kidpool");
+    if (!userId) { test.skip(); return; }
+    const householdId = UID(163);
+    runSql(`
+      INSERT INTO public.profiles (id, email, full_name) VALUES ('${userId}', 'explorebuddy@e2e.kidpool', 'Buddy Explore') ON CONFLICT DO NOTHING;
+      INSERT INTO public.households (id, group_id, name, created_by) VALUES ('${householdId}', '${GROUP_ID}', 'Buddy Explore', '${userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.memberships (group_id, household_id, profile_id, role, status) VALUES ('${GROUP_ID}', '${householdId}', '${userId}', 'member', 'active') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(263)}', '${GROUP_ID}', '${householdId}', 'Buddy', 'Kid', '${userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await signInWithTestAuth(page, "explorebuddy@e2e.kidpool");
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 10000 });
+
+    // Navigate to account screen
+    await page.locator(".avatar-button").click();
+    await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
+
+    // Verify buddy picker is visible with correct label
+    await expect(page.locator('.buddy-picker > span:has-text("Riding buddy")')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('.buddy-picker select')).toBeVisible();
+
+    // Verify the select has a "None" option as default
+    const select = page.locator('.buddy-picker select').first();
+    const selectedValue = await select.inputValue();
+    expect(selectedValue).toBe("");
   });
 });

@@ -51,12 +51,12 @@ npm run test:integration  # 13 tests against live Supabase (needs service key in
 npm run test:runtime      # Playwright mobile-runtime + E2E tests
 ```
 
-Test breakdown (148 total):
+Test breakdown (157 total):
 - 58 foundation (schema, RLS, auth, household, check-in, confirmation, security, audit, reliability)
 - 45 scheduling (algorithm, pressure, adversarial edge cases, riding buddy)
 - 4 sites worker
-- 13 integration (live Supabase RLS, RPCs, Edge Function)
-- 28 runtime (Playwright: 8 mobile-runtime + 12 E2E + 5 journeys + 3 exploratory)
+- 18 integration (live Supabase RLS, RPCs, Edge Function, riding buddy DB + Edge Function)
+- 32 runtime (Playwright: 8 mobile-runtime + 15 E2E + 5 journeys + 4 exploratory)
 
 ## Project structure
 
