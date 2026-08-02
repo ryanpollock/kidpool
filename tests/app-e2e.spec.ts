@@ -54,28 +54,45 @@ function getServiceKey(): string | null {
       if (k.id === "service_role") return k.api_key;
     }
   } catch {}
+  try {
+    const keys = JSON.parse(readFileSync("/tmp/kidpool-test-keys.json", "utf8"));
+    if (keys.serviceKey) return keys.serviceKey;
+  } catch {}
   return null;
 }
 
 const SERVICE_KEY = getServiceKey();
 const skip = !SERVICE_KEY;
 
-function runSql(sql: string) {
+function runSql(sql: string): { rows?: Array<Record<string, unknown>>; error?: { message: string } } {
   const tmpFile = `/tmp/kidpool-e2e-query.sql`;
   execSync(`cat > "${tmpFile}" << 'ENDSQL'\n${sql}\nENDSQL`, { shell: "/bin/bash" });
   try {
-    execSync(`supabase db query --linked -f "${tmpFile}" 2>/dev/null`, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
-  } catch {}
+    const result = execSync(`supabase db query --linked -f "${tmpFile}" 2>/dev/null`, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+    try { return JSON.parse(result); } catch { return {}; }
+  } catch (e: unknown) {
+    const stdout = (e as { stdout?: string }).stdout;
+    if (stdout) { try { return JSON.parse(stdout); } catch {} }
+    return {};
+  }
 }
 
 function createTestUser(email: string): string | null {
+  // Delete any existing user with this email first
+  deleteTestUserByEmail(email);
+  runSql(`DELETE FROM public.profiles WHERE email = '${email}';`);
+
   const body = JSON.stringify({ email, password: TEST_PASSWORD, email_confirm: true, user_metadata: { full_name: email } });
-  const result = execSync(
-    `curl -s -X POST -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" -H "Content-Type: application/json" -d '${body}' "${SUPABASE_URL}/auth/v1/admin/users"`,
-    { encoding: "utf8" },
-  );
-  const parsed = JSON.parse(result);
-  return parsed.id || null;
+  try {
+    const result = execSync(
+      `curl -s -X POST -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" -H "Content-Type: application/json" -d '${body}' "${SUPABASE_URL}/auth/v1/admin/users"`,
+      { encoding: "utf8" },
+    );
+    const parsed = JSON.parse(result);
+    return parsed.id || null;
+  } catch {
+    return null;
+  }
 }
 
 function deleteTestUser(userId: string) {
@@ -88,24 +105,78 @@ function deleteTestUser(userId: string) {
   } catch {}
 }
 
-function deleteTestUsersByEmail() {
+function deleteTestUserByEmail(email: string) {
+  // Use SQL to find and delete the auth user directly
   try {
-    const result = execSync(
-      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users?per_page=1000"`,
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
-    );
-    const parsed = JSON.parse(result);
-    const users = parsed.users || parsed || [];
-    for (const user of users) {
-      if (user.email && user.email.endsWith("@e2e.kidpool")) {
-        deleteTestUser(user.id);
+    const result = runSql(`SELECT id FROM auth.users WHERE email = '${email}';`);
+    const rows = result?.rows ?? [];
+    for (const row of rows) {
+      if (row.id) {
+        deleteTestUser(String(row.id));
+        return;
       }
     }
   } catch {}
+
+  // Fall back to admin API pagination
+  let page = 1;
+  const maxPages = 50;
+  while (page <= maxPages) {
+    try {
+      const result = execSync(
+        `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users?page=${page}&per_page=1000"`,
+        { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+      );
+      const parsed = JSON.parse(result);
+      const users = parsed.users || parsed || [];
+      if (users.length === 0) break;
+      for (const user of users) {
+        if (user.email === email) {
+          deleteTestUser(user.id);
+          return;
+        }
+      }
+      if (users.length < 1000) break;
+      page++;
+    } catch {
+      break;
+    }
+  }
+}
+
+function deleteTestUsersByEmail() {
+  // Use SQL to delete auth users directly — more reliable than admin API pagination
+  try {
+    runSql(`DELETE FROM auth.users WHERE email LIKE '%@e2e.kidpool' OR email LIKE '%@test.kidpool';`);
+  } catch {}
+
+  // Also try admin API as fallback for any users SQL can't reach
+  let page = 1;
+  const maxPages = 50;
+  while (page <= maxPages) {
+    try {
+      const result = execSync(
+        `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users?page=${page}&per_page=1000"`,
+        { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+      );
+      const parsed = JSON.parse(result);
+      const users = parsed.users || parsed || [];
+      if (users.length === 0) break;
+      for (const user of users) {
+        if (user.email && (user.email.endsWith("@e2e.kidpool") || user.email.endsWith("@test.kidpool"))) {
+          deleteTestUser(user.id);
+        }
+      }
+      if (users.length < 1000) break;
+      page++;
+    } catch {
+      break;
+    }
+  }
 }
 
 function cleanupE2EData() {
-  deleteTestUsersByEmail();
+  // 1. Delete test data in FK-safe order FIRST
   runSql(`
     -- Test weeks (deadbeef ID) cascade to trips, checkins, schedule_versions, assignments, confirmations
     DELETE FROM public.weeks WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
@@ -123,6 +194,9 @@ function cleanupE2EData() {
       OR created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool')
     );
 
+    -- Nullify schedule_versions.generated_by for test profiles (FK constraint)
+    UPDATE public.schedule_versions SET generated_by = NULL WHERE generated_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool');
+
     -- Test audit events (reference test data or test actors)
     DELETE FROM public.audit_events WHERE group_id = '${GROUP_ID}' AND (
       entity_id::text LIKE 'deadbeef-%'
@@ -132,6 +206,9 @@ function cleanupE2EData() {
     -- Test profiles (by email domain)
     DELETE FROM public.profiles WHERE email LIKE '%@e2e.kidpool';
   `);
+
+  // 2. Delete auth users AFTER profiles/households are gone (FK constraint)
+  deleteTestUsersByEmail();
 }
 
 function setupHousehold(n: number, name: string, coordinator = false) {
@@ -149,8 +226,9 @@ function setupHousehold(n: number, name: string, coordinator = false) {
 
 async function signInWithTestAuth(page: Page, email: string) {
   await page.goto(`/?testAuth=${email}|${TEST_PASSWORD}`);
-  // Wait for auth to complete and app to render past sign-in
-  await page.waitForTimeout(4000);
+  await expect(
+    page.getByTestId("home-screen").or(page.getByTestId("onboarding-screen"))
+  ).toBeVisible({ timeout: 15000 });
 }
 
 test.describe("App E2E", () => {
@@ -264,14 +342,10 @@ test.describe("App E2E", () => {
     `);
 
     await signInWithTestAuth(page, user.email);
-    // Look for the account/profile button in the nav or header
-    await page.waitForTimeout(2000);
-    // The account screen should be reachable via a button or icon
-    const accountButton = page.locator('[data-testid*="account"], button:has-text("Account"), button:has-text("Settings")').first();
-    if (await accountButton.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await accountButton.click();
-      await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
-    }
+    // Click the avatar button to open the account screen
+    await expect(page.locator('.avatar-button')).toBeVisible({ timeout: 5000 });
+    await page.locator('.avatar-button').click();
+    await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
 
     cleanupE2EData();
   });
@@ -290,14 +364,17 @@ test.describe("App E2E", () => {
     if (!user) { test.skip(); return; }
 
     await signInWithTestAuth(page, user.email);
-    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 10000 });
+
+    // Open account screen to access sign-out
+    await expect(page.locator('.avatar-button')).toBeVisible({ timeout: 5000 });
+    await page.locator('.avatar-button').click();
+    await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
 
     // Find and click sign-out button
     const signOutButton = page.locator('button:has-text("Sign out"), button:has-text("Sign Out"), [data-testid*="sign-out"]').first();
-    if (await signOutButton.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await signOutButton.click();
-      await expect(page.getByTestId("sign-in-screen")).toBeVisible({ timeout: 10000 });
-    }
+    await expect(signOutButton).toBeVisible({ timeout: 5000 });
+    await signOutButton.click();
+    await expect(page.getByTestId("sign-in-screen")).toBeVisible({ timeout: 10000 });
 
     cleanupE2EData();
   });
@@ -313,7 +390,7 @@ test.describe("App E2E", () => {
 
     // If there's a "Create week" button, click it
     const createWeekBtn = page.getByTestId("create-week-coord").first();
-    if (await createWeekBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+    if (await createWeekBtn.isVisible({ timeout: 3000 })) {
       await createWeekBtn.click();
       await page.waitForTimeout(2000);
     }

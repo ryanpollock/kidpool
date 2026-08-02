@@ -60,12 +60,17 @@ function getServiceKey(): string | null {
 const SERVICE_KEY = getServiceKey();
 const skip = !SERVICE_KEY;
 
-function runSql(sql: string) {
+function runSql(sql: string): { rows?: Array<Record<string, unknown>>; error?: { message: string } } {
   const tmpFile = `/tmp/kidpool-explore-query.sql`;
   execSync(`cat > "${tmpFile}" << 'ENDSQL'\n${sql}\nENDSQL`, { shell: "/bin/bash" });
   try {
-    execSync(`supabase db query --linked -f "${tmpFile}" 2>/dev/null`, { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
-  } catch {}
+    const result = execSync(`supabase db query --linked -f "${tmpFile}" 2>/dev/null`, { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+    try { return JSON.parse(result); } catch { return {}; }
+  } catch (e: unknown) {
+    const stdout = (e as { stdout?: string }).stdout;
+    if (stdout) { try { return JSON.parse(stdout); } catch {} }
+    return {};
+  }
 }
 
 function createTestUser(email: string): string | null {
@@ -105,23 +110,37 @@ function deleteTestUser(userId: string) {
 }
 
 function deleteTestUsersByEmail() {
+  // Use SQL to delete auth users directly
   try {
-    const result = execSync(
-      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users?per_page=1000"`,
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
-    );
-    const parsed = JSON.parse(result);
-    const users = parsed.users || parsed || [];
-    for (const user of users) {
-      if (user.email && user.email.endsWith("@e2e.kidpool")) {
-        deleteTestUser(user.id);
-      }
-    }
+    runSql(`DELETE FROM auth.users WHERE email LIKE '%@e2e.kidpool';`);
   } catch {}
+
+  // Also try admin API as fallback
+  let page = 1;
+  while (page <= 50) {
+    try {
+      const result = execSync(
+        `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users?page=${page}&per_page=1000"`,
+        { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+      );
+      const parsed = JSON.parse(result);
+      const users = parsed.users || parsed || [];
+      if (users.length === 0) break;
+      for (const user of users) {
+        if (user.email && user.email.endsWith("@e2e.kidpool")) {
+          deleteTestUser(user.id);
+        }
+      }
+      if (users.length < 1000) break;
+      page++;
+    } catch {
+      break;
+    }
+  }
 }
 
 function cleanupData() {
-  deleteTestUsersByEmail();
+  // 1. Delete test data in FK-safe order FIRST
   runSql(`
     DELETE FROM public.weeks WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
     DELETE FROM public.weekly_checkins WHERE group_id = '${GROUP_ID}' AND household_id::text LIKE 'deadbeef-%';
@@ -129,14 +148,19 @@ function cleanupData() {
       id::text LIKE 'deadbeef-%'
       OR created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool')
     );
+    UPDATE public.schedule_versions SET generated_by = NULL WHERE generated_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool');
     DELETE FROM public.audit_events WHERE group_id = '${GROUP_ID}' AND entity_id::text LIKE 'deadbeef-%';
     DELETE FROM public.profiles WHERE email LIKE '%@e2e.kidpool';
   `);
+  // 2. Delete auth users AFTER profiles/households are gone
+  deleteTestUsersByEmail();
 }
 
 async function signInWithTestAuth(page: Page, email: string) {
   await page.goto(`/?testAuth=${email}|${TEST_PASSWORD}`);
-  await page.waitForTimeout(6000);
+  await expect(
+    page.getByTestId("home-screen").or(page.getByTestId("onboarding-screen"))
+  ).toBeVisible({ timeout: 15000 });
 }
 
 test.describe("Exploratory Checks", () => {
