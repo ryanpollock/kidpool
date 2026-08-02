@@ -48,6 +48,9 @@ export type ProfileRow = Timestamps & {
   full_name: string;
   avatar_url: string | null;
   default_drive_preferences: DefaultDrivePref[] | null;
+  phone: string | null;
+  share_phone: boolean;
+  share_email: boolean;
 };
 
 export type GroupRow = Timestamps & {
@@ -85,6 +88,7 @@ export type ChildRow = Timestamps & {
   active: boolean;
   created_by: string;
   preferred_buddy_child_id: string | null;
+  photo_url: string | null;
 };
 
 export type VehicleRow = Timestamps & {
@@ -228,6 +232,9 @@ export type Database = {
           full_name: string;
           avatar_url?: string | null;
           default_drive_preferences?: DefaultDrivePref[] | null;
+          phone?: string | null;
+          share_phone?: boolean;
+          share_email?: boolean;
           created_at?: string;
           updated_at?: string;
         }
@@ -301,6 +308,7 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
           preferred_buddy_child_id?: string | null;
+          photo_url?: string | null;
         }
       >;
       vehicles: Table<
@@ -524,6 +532,21 @@ export type Database = {
           default_drive_preferences: DefaultDrivePref[] | null;
           created_at: string;
           updated_at: string;
+        }>;
+      };
+      list_group_directory: {
+        Args: { target_group_id: string };
+        Returns: Array<{
+          id: string;
+          full_name: string;
+          avatar_url: string | null;
+          email: string | null;
+          phone: string | null;
+          share_phone: boolean;
+          share_email: boolean;
+          household_id: string;
+          household_name: string;
+          role: string;
         }>;
       };
     };

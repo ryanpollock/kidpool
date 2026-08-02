@@ -789,3 +789,75 @@ test("Buddy: Edge Function honors preferred_buddy_child_id from DB rows", { skip
   deleteTestUser(driver.userId);
   deleteTestUser(other.userId);
 });
+
+test("Directory: list_group_directory returns phone/email only when shared", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(60, "DirA");
+  const b = setupHousehold(61, "DirB");
+  runSql(`
+    UPDATE public.profiles SET phone = '(415) 555-0101', share_phone = true, share_email = true WHERE id = '${a.userId}';
+    UPDATE public.profiles SET phone = '(415) 555-0102', share_phone = false, share_email = false WHERE id = '${b.userId}';
+  `);
+
+  const token = signInUser("dira@test.kidpool");
+  const jwt = token.access_token;
+  const result = JSON.parse(execSync(
+    `curl -s -X POST -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${jwt}" -H "Content-Type: application/json" -d '{"target_group_id":"${GROUP_ID}"}' "${SUPABASE_URL}/rest/v1/rpc/list_group_directory"`,
+    { encoding: "utf8" },
+  ));
+  assert.ok(Array.isArray(result), "Directory RPC should return an array");
+  const aRow = result.find((r) => r.id === a.userId);
+  const bRow = result.find((r) => r.id === b.userId);
+  assert.ok(aRow, "User A should appear in directory");
+  assert.ok(bRow, "User B should appear in directory");
+  assert.equal(aRow.phone, "(415) 555-0101", "A's phone should be visible (share_phone=true)");
+  assert.ok(aRow.email && aRow.email.includes("@"), "A's email should be visible (share_email=true)");
+  assert.equal(bRow.phone, null, "B's phone should be null (share_phone=false)");
+  assert.equal(bRow.email, null, "B's email should be null (share_email=false)");
+  assert.equal(aRow.share_phone, true, "share_phone flag should be returned");
+  assert.equal(aRow.household_name, "DirA Test", "household_name should be joined");
+
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+  deleteTestUser(b.userId);
+});
+
+test("Directory: updateCurrentProfile can set phone via REST", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(62, "PhoneUp");
+  const token = signInUser("phoneup@test.kidpool");
+  const jwt = token.access_token;
+
+  const updateResult = JSON.parse(execSync(
+    `curl -s -X PATCH -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${jwt}" -H "Content-Type: application/json" -H "Prefer: return=representation" -d '{"phone":"(415) 555-9999"}' "${SUPABASE_URL}/rest/v1/profiles?id=eq.${a.userId}"`,
+    { encoding: "utf8" },
+  ));
+  assert.ok(Array.isArray(updateResult) && updateResult.length > 0, "PATCH should return updated row");
+  assert.equal(updateResult[0].phone, "(415) 555-9999", "Phone should be updated");
+
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+});
+
+test("Child photo: updateChild can set photo_url via REST", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(63, "PhotoUp");
+  const childId = UID(263);
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childId}', '${GROUP_ID}', '${a.householdId}', 'Photo', 'Kid', '${a.userId}') ON CONFLICT DO NOTHING;
+  `);
+
+  const token = signInUser("photoup@test.kidpool");
+  const jwt = token.access_token;
+
+  const photoUrl = "https://api.dicebear.com/7.x/things/svg?seed=Photo";
+  const updateResult = JSON.parse(execSync(
+    `curl -s -X PATCH -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${jwt}" -H "Content-Type: application/json" -H "Prefer: return=representation" -d '{"photo_url":"${photoUrl}"}' "${SUPABASE_URL}/rest/v1/children?id=eq.${childId}"`,
+    { encoding: "utf8" },
+  ));
+  assert.ok(Array.isArray(updateResult) && updateResult.length > 0, "PATCH should return updated row");
+  assert.equal(updateResult[0].photo_url, photoUrl, "photo_url should be set");
+
+  const readBack = restGet("children", { id: childId });
+  assert.equal(readBack[0].photo_url, photoUrl, "photo_url should persist on read-back");
+
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+});

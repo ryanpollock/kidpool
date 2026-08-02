@@ -12,6 +12,7 @@ const typesUrl = new URL(
 );
 const envExampleUrl = new URL("../.env.example", import.meta.url);
 const seedUrl = new URL("../supabase/seed.sql", import.meta.url);
+const prototypeUrl = new URL("../src/Prototype.tsx", import.meta.url);
 
 const expectedTables = [
   "profiles",
@@ -179,4 +180,68 @@ test("development seed is repeatable and does not bypass Auth", async () => {
   assert.match(seed, /on conflict \(id\) do update/i);
   assert.match(seed, /Midtown Terrace–Presidio Carpool/);
   assert.doesNotMatch(seed, /insert into auth\.users/i);
+});
+
+test("parent directory schema: phone, share_phone, share_email on profiles", async () => {
+  const types = await readFile(typesUrl, "utf8");
+  assert.match(types, /phone:\s*string\s*\|\s*null/);
+  assert.match(types, /share_phone:\s*boolean/);
+  assert.match(types, /share_email:\s*boolean/);
+
+  const migration = await readFile(
+    new URL("../supabase/migrations/202608030001_phone_and_directory_flags.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(migration, /add column if not exists phone text/i);
+  assert.match(migration, /add column if not exists share_phone boolean not null default true/i);
+  assert.match(migration, /add column if not exists share_email boolean not null default true/i);
+});
+
+test("child photo schema: photo_url on children", async () => {
+  const types = await readFile(typesUrl, "utf8");
+  assert.match(types, /photo_url:\s*string\s*\|\s*null/);
+
+  const migration = await readFile(
+    new URL("../supabase/migrations/202608030002_child_photo_url.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(migration, /add column if not exists photo_url text/i);
+});
+
+test("parent directory RPC list_group_directory is typed in database.types.ts", async () => {
+  const types = await readFile(typesUrl, "utf8");
+  assert.match(types, /list_group_directory:/);
+  assert.match(types, /target_group_id:\s*string/);
+  assert.match(types, /household_name:\s*string/);
+});
+
+test("child-photos storage bucket migration creates a public bucket with RLS", async () => {
+  const migration = await readFile(
+    new URL("../supabase/migrations/202608030004_child_photos_bucket.sql", import.meta.url),
+    "utf8",
+  );
+  assert.match(migration, /insert into storage\.buckets.*'child-photos'/s);
+  assert.match(migration, /child-photos-public-read/i);
+  assert.match(migration, /child-photos-household-write/i);
+});
+
+test("onboarding collects a required phone number", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+  assert.match(source, /autoComplete="tel"/);
+  assert.match(source, /inputMode="tel"/);
+  assert.match(source, /Enter a phone number so other parents can reach you/);
+});
+
+test("home screen links to the parent directory", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+  assert.match(source, /data-testid="directory-link"/);
+  assert.match(source, /Parent directory/);
+  assert.match(source, /onDirectory/);
+});
+
+test("drive detail screen renders child photos from the Week tab", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+  assert.match(source, /data-testid="drive-detail-screen"/);
+  assert.match(source, /child-photo-card/);
+  assert.match(source, /onOpenDrive/);
 });
