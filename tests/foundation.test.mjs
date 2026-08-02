@@ -90,6 +90,81 @@ test("every database table has a matching TypeScript contract", async () => {
   }
 });
 
+test("every column added by ALTER TABLE migrations appears in database.types.ts", async () => {
+  // Parse all migration files for "alter table ... add column" statements
+  // and verify each column appears in the corresponding *Row type.
+  const { readdir } = await import("node:fs/promises");
+  const migrationDir = new URL("../supabase/migrations/", import.meta.url);
+  const files = await readdir(migrationDir);
+  const types = await readFile(typesUrl, "utf8");
+
+  // Extract column names from *Row types in database.types.ts
+  // Each Row type is: export type XxxRow = Timestamps & { col1: type; col2: type; ... };
+  const rowTypePattern = /export type (\w+Row) = .*?\{([^}]*)\}/gs;
+  const rowColumns = new Map(); // tableLowerName -> Set<columnName>
+  let match;
+  while ((match = rowTypePattern.exec(types)) !== null) {
+    const typeName = match[1];
+    const body = match[2];
+    // "children" -> "ChildRow" -> table name "children"
+    const colPattern = /(\w+)[?:]?\s*:/g;
+    const cols = new Set();
+    let colMatch;
+    while ((colMatch = colPattern.exec(body)) !== null) {
+      cols.add(colMatch[1]);
+    }
+    rowColumns.set(typeName, cols);
+  }
+
+  // Map table names to Row type names
+  const tableToRowType = {
+    children: "ChildRow",
+    vehicles: "VehicleRow",
+    profiles: "ProfileRow",
+    groups: "GroupRow",
+    households: "HouseholdRow",
+    memberships: "MembershipRow",
+    weeks: "WeekRow",
+    trips: "TripRow",
+    weekly_checkins: "CheckinRow",
+    ride_requests: "RideRequestRow",
+    driver_availability: "DriverAvailabilityRow",
+    schedule_versions: "ScheduleVersionRow",
+    driver_assignments: "DriverAssignmentRow",
+    rider_assignments: "RiderAssignmentRow",
+    driver_confirmations: "DriverConfirmationRow",
+    audit_events: "AuditEventRow",
+    push_subscriptions: null, // no *Row type — uses inline Table<>
+    household_join_codes: null,
+  };
+
+  let checked = 0;
+  for (const file of files) {
+    if (!file.endsWith(".sql")) continue;
+    const sql = await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8");
+    // Match: alter table public.xxx add column [if not exists] col_name ...
+    // "column" is required to exclude "add constraint" statements
+    const alterPattern = /alter table public\.(\w+)\s+add column\s+(?:if not exists\s+)?(\w+)/gi;
+    let alterMatch;
+    while ((alterMatch = alterPattern.exec(sql)) !== null) {
+      const tableName = alterMatch[1];
+      const colName = alterMatch[2];
+      const rowType = tableToRowType[tableName];
+      if (!rowType) continue; // skip tables without Row types
+      const cols = rowColumns.get(rowType);
+      if (!cols) {
+        assert.fail(`Row type ${rowType} for table ${tableName} not found in database.types.ts (column: ${colName} from ${file})`);
+      }
+      assert.ok(
+        cols.has(colName),
+        `Column "${colName}" added to table "${tableName}" in ${file} is missing from ${rowType} in database.types.ts`,
+      );
+      checked++;
+    }
+  }
+  assert.ok(checked > 0, "Should have found at least one ALTER TABLE ADD COLUMN to verify");
+});
+
 test("browser environment contract contains only public Supabase values", async () => {
   const envExample = await readFile(envExampleUrl, "utf8");
 

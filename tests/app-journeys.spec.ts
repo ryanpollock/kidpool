@@ -62,12 +62,17 @@ function getServiceKey(): string | null {
 const SERVICE_KEY = getServiceKey();
 const skip = !SERVICE_KEY;
 
-function runSql(sql: string) {
+function runSql(sql: string): { rows?: Array<Record<string, unknown>>; error?: { message: string } } {
   const tmpFile = `/tmp/kidpool-journey-query.sql`;
   execSync(`cat > "${tmpFile}" << 'ENDSQL'\n${sql}\nENDSQL`, { shell: "/bin/bash" });
   try {
-    execSync(`supabase db query --linked -f "${tmpFile}" 2>/dev/null`, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
-  } catch {}
+    const result = execSync(`supabase db query --linked -f "${tmpFile}" 2>/dev/null`, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+    try { return JSON.parse(result); } catch { return {}; }
+  } catch (e: unknown) {
+    const stdout = (e as { stdout?: string }).stdout;
+    if (stdout) { try { return JSON.parse(stdout); } catch {} }
+    return {};
+  }
 }
 
 function getAnonKey(): string {
@@ -136,23 +141,37 @@ function deleteTestUser(userId: string) {
 }
 
 function deleteTestUsersByEmail() {
+  // Use SQL to delete auth users directly — more reliable than admin API pagination
   try {
-    const result = execSync(
-      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users?per_page=1000"`,
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
-    );
-    const parsed = JSON.parse(result);
-    const users = parsed.users || parsed || [];
-    for (const user of users) {
-      if (user.email && user.email.endsWith("@e2e.kidpool")) {
-        deleteTestUser(user.id);
-      }
-    }
+    runSql(`DELETE FROM auth.users WHERE email LIKE '%@e2e.kidpool';`);
   } catch {}
+
+  // Also try admin API as fallback
+  let page = 1;
+  while (page <= 50) {
+    try {
+      const result = execSync(
+        `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users?page=${page}&per_page=1000"`,
+        { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+      );
+      const parsed = JSON.parse(result);
+      const users = parsed.users || parsed || [];
+      if (users.length === 0) break;
+      for (const user of users) {
+        if (user.email && user.email.endsWith("@e2e.kidpool")) {
+          deleteTestUser(user.id);
+        }
+      }
+      if (users.length < 1000) break;
+      page++;
+    } catch {
+      break;
+    }
+  }
 }
 
 function cleanupJourneyData() {
-  deleteTestUsersByEmail();
+  // 1. Delete test data in FK-safe order FIRST
   runSql(`
     DELETE FROM public.weeks WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
     DELETE FROM public.weekly_checkins WHERE group_id = '${GROUP_ID}' AND household_id::text LIKE 'deadbeef-%';
@@ -160,12 +179,15 @@ function cleanupJourneyData() {
       id::text LIKE 'deadbeef-%'
       OR created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool')
     );
+    UPDATE public.schedule_versions SET generated_by = NULL WHERE generated_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool');
     DELETE FROM public.audit_events WHERE group_id = '${GROUP_ID}' AND (
       entity_id::text LIKE 'deadbeef-%'
       OR actor_profile_id IN (SELECT id FROM public.profiles WHERE email LIKE '%@e2e.kidpool')
     );
     DELETE FROM public.profiles WHERE email LIKE '%@e2e.kidpool';
   `);
+  // 2. Delete auth users AFTER profiles/households are gone
+  deleteTestUsersByEmail();
 }
 
 function setupHousehold(n: number, name: string, coordinator = false) {
@@ -200,7 +222,9 @@ function setupWeekWithTrips() {
 
 async function signInWithTestAuth(page: Page, email: string) {
   await page.goto(`/?testAuth=${email}|${TEST_PASSWORD}`);
-  await page.waitForTimeout(4000);
+  await expect(
+    page.getByTestId("home-screen").or(page.getByTestId("onboarding-screen"))
+  ).toBeVisible({ timeout: 15000 });
 }
 
 async function generateSchedule(coordUserId: string, weekId: string) {
@@ -255,16 +279,14 @@ test.describe("User Journeys", () => {
     await expect(page.getByTestId("plan-screen")).toBeVisible({ timeout: 10000 });
 
     const ridePill = page.locator(`button[aria-label*="Alex"][aria-label*="needs a ride"], button[aria-label*="Alex"][aria-label*="does not need a ride"]`).first();
-    if (await ridePill.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await ridePill.click();
-      await page.waitForTimeout(500);
-    }
+    await expect(ridePill).toBeVisible({ timeout: 5000 });
+    await ridePill.click();
+    await page.waitForTimeout(500);
 
     const preferButton = page.locator('button[aria-label="Prefer to drive"]').first();
-    if (await preferButton.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await preferButton.click();
-      await page.waitForTimeout(500);
-    }
+    await expect(preferButton).toBeVisible({ timeout: 5000 });
+    await preferButton.click();
+    await page.waitForTimeout(500);
 
     await page.getByTestId("submit-plan").click();
     await page.waitForTimeout(2000);
@@ -297,22 +319,19 @@ test.describe("User Journeys", () => {
 
     await signInWithTestAuth(page, driver.email);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 10000 });
-
     await page.waitForTimeout(2000);
 
     const confirmBtn = page.getByTestId("confirm-drives");
-    if (await confirmBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await confirmBtn.click();
-      await page.waitForTimeout(500);
+    await expect(confirmBtn).toBeVisible({ timeout: 10000 });
+    await confirmBtn.click();
+    await page.waitForTimeout(500);
 
-      const confirmAllBtn = page.locator('button:has-text("Yes, confirm all")');
-      if (await confirmAllBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await confirmAllBtn.click();
-        await page.waitForTimeout(2000);
-      }
+    const confirmAllBtn = page.locator('button:has-text("Yes, confirm all")');
+    await expect(confirmAllBtn).toBeVisible({ timeout: 5000 });
+    await confirmAllBtn.click();
+    await page.waitForTimeout(2000);
 
-      await expect(page.locator('.confirmation-hero--done')).toBeVisible({ timeout: 5000 });
-    }
+    await expect(page.locator('.confirmation-hero--done')).toBeVisible({ timeout: 5000 });
   });
 
   // ── Journey 3: Decline with reason + re-accept ───────────────────
@@ -343,33 +362,29 @@ test.describe("User Journeys", () => {
     await page.waitForTimeout(2000);
 
     const reviewBtn = page.locator('button:has-text("Review individually")');
-    if (await reviewBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await reviewBtn.click();
-      await expect(page.getByTestId("review-screen")).toBeVisible({ timeout: 5000 });
+    await expect(reviewBtn).toBeVisible({ timeout: 10000 });
+    await reviewBtn.click();
+    await expect(page.getByTestId("review-screen")).toBeVisible({ timeout: 5000 });
 
-      const declineBtn = page.locator('button:has-text("I can\'t make this one")').first();
-      if (await declineBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await declineBtn.click();
-        await page.waitForTimeout(500);
+    const declineBtn = page.locator('button:has-text("I can\'t make this one")').first();
+    await expect(declineBtn).toBeVisible({ timeout: 5000 });
+    await declineBtn.click();
+    await page.waitForTimeout(500);
 
-        await expect(page.getByTestId("decline-form")).toBeVisible({ timeout: 3000 });
+    await expect(page.getByTestId("decline-form")).toBeVisible({ timeout: 5000 });
 
-        const confirmDeclineBtn = page.locator('button:has-text("Confirm decline")');
-        if (await confirmDeclineBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await confirmDeclineBtn.click();
-          await page.waitForTimeout(2000);
-        }
+    const confirmDeclineBtn = page.locator('button:has-text("Confirm decline")');
+    await expect(confirmDeclineBtn).toBeVisible({ timeout: 5000 });
+    await confirmDeclineBtn.click();
+    await page.waitForTimeout(2000);
 
-        await expect(page.locator('.declined-notice')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('.declined-notice')).toBeVisible({ timeout: 5000 });
 
-        const reacceptBtn = page.locator('button:has-text("Re-accept this drive")');
-        if (await reacceptBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-          await reacceptBtn.click();
-          await page.waitForTimeout(2000);
-          await expect(page.locator('.success-notice')).toBeVisible({ timeout: 5000 });
-        }
-      }
-    }
+    const reacceptBtn = page.locator('button:has-text("Re-accept this drive")');
+    await expect(reacceptBtn).toBeVisible({ timeout: 5000 });
+    await reacceptBtn.click();
+    await page.waitForTimeout(2000);
+    await expect(page.locator('.success-notice')).toBeVisible({ timeout: 5000 });
   });
 
   // ── Journey 4: Coordinator generate + publish ───────────────────
@@ -403,13 +418,12 @@ test.describe("User Journeys", () => {
     await page.waitForTimeout(2000);
 
     const publishBtn = page.getByTestId("publish-schedule");
-    if (await publishBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      const isDisabled = await publishBtn.isDisabled();
-      if (!isDisabled) {
-        await publishBtn.click();
-        await page.waitForTimeout(3000);
-        await expect(page.locator('.publish-notice')).toBeVisible({ timeout: 5000 });
-      }
+    await expect(publishBtn).toBeVisible({ timeout: 10000 });
+    const isDisabled = await publishBtn.isDisabled();
+    if (!isDisabled) {
+      await publishBtn.click();
+      await page.waitForTimeout(3000);
+      await expect(page.locator('.publish-notice')).toBeVisible({ timeout: 5000 });
     }
   });
 
@@ -453,18 +467,16 @@ test.describe("User Journeys", () => {
     await page.waitForTimeout(2000);
 
     const replaceBtn = page.locator('button:has-text("Replace published schedule")');
-    if (await replaceBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await replaceBtn.click();
-      await page.waitForTimeout(500);
+    await expect(replaceBtn).toBeVisible({ timeout: 10000 });
+    await replaceBtn.click();
+    await page.waitForTimeout(500);
 
-      await expect(page.getByTestId("confirm-regenerate")).toBeVisible({ timeout: 3000 });
+    await expect(page.getByTestId("confirm-regenerate")).toBeVisible({ timeout: 5000 });
 
-      await page.getByTestId("regenerate-schedule-coord").click();
-      await page.waitForTimeout(3000);
+    await page.getByTestId("regenerate-schedule-coord").click();
+    await page.waitForTimeout(3000);
 
-      // After regeneration, the confirm dialog should be gone.
-      // The coordinator screen should show either draft or published state.
-      await expect(page.getByTestId("confirm-regenerate")).not.toBeVisible({ timeout: 5000 });
-    }
+    // After regeneration, the confirm dialog should be gone.
+    await expect(page.getByTestId("confirm-regenerate")).not.toBeVisible({ timeout: 5000 });
   });
 });

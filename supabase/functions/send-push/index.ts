@@ -49,6 +49,23 @@ async function supaFetch(table: string, select: string, filters: Record<string, 
   return res.json();
 }
 
+async function supaDelete(table: string, filters: Record<string, string>) {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) params.append(k, v);
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+      method: "DELETE",
+      headers: {
+        "apikey": SERVICE_ROLE_KEY!,
+        "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+        "Content-Type": "application/json",
+      },
+    });
+  } catch (e) {
+    console.error("[send-push] Failed to delete stale subscription:", e);
+  }
+}
+
 async function verifyAuth(authHeader: string): Promise<boolean> {
   if (!authHeader || !authHeader.startsWith("Bearer ")) return false;
   const token = authHeader.replace("Bearer ", "");
@@ -66,7 +83,8 @@ async function verifyAuth(authHeader: string): Promise<boolean> {
       headers: { "Authorization": `Bearer ${token}`, "apikey": ANON_KEY },
     });
     return res.ok;
-  } catch {
+  } catch (e) {
+    console.error("[send-push] Auth verification failed (network error):", e);
     return false;
   }
 }
@@ -207,6 +225,7 @@ Deno.serve(async (req) => {
 
     let sent = 0;
     let failed = 0;
+    let removed = 0;
 
     for (const sub of subscriptions) {
       try {
@@ -221,12 +240,21 @@ Deno.serve(async (req) => {
           },
         );
         sent++;
-      } catch {
+      } catch (error: any) {
         failed++;
+        const statusCode = error?.statusCode ?? 0;
+        // 410 Gone = subscription expired permanently; 404 = endpoint no longer exists
+        if (statusCode === 410 || statusCode === 404) {
+          console.log(`[send-push] Removing dead subscription (status ${statusCode}): ${sub.endpoint.slice(0, 60)}...`);
+          await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+          removed++;
+        } else {
+          console.error(`[send-push] Push failed (status ${statusCode}):`, error?.message ?? error);
+        }
       }
     }
 
-    return jsonResponse({ sent, failed });
+    return jsonResponse({ sent, failed, removed });
   } catch (error) {
     return jsonError(error.message ?? "Internal error", 500);
   }

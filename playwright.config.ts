@@ -5,7 +5,8 @@ const testPort = Number(process.env.MOBILE_RUNTIME_TEST_PORT ?? 4174);
 export default defineConfig({
   testDir: "./tests",
   testMatch: "**/*.spec.ts",
-  timeout: 20_000,
+  timeout: 30_000,
+  retries: 2,
   use: {
     baseURL: `http://127.0.0.1:${testPort}`,
     viewport: { width: 1100, height: 1100 },

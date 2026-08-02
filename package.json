@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "check:runtime": "node scripts/check-mobile-runtime.mjs",
+    "check:schema": "node scripts/check-schema-drift.mjs",
     "update:runtime-lock": "node scripts/update-mobile-runtime-lock.mjs",
     "test:runtime": "playwright test",
     "test:foundation": "node --test tests/foundation.test.mjs tests/auth-flow.test.mjs tests/household-setup.test.mjs tests/weekly-checkin.test.mjs tests/confirmation.test.mjs tests/security.test.mjs tests/audit.test.mjs tests/reliability.test.mjs && node --experimental-strip-types --test tests/scheduling.test.mjs tests/pressure-test.test.mjs tests/adversarial.test.mjs",
