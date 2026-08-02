@@ -14,7 +14,7 @@ test("Exchange 2 protects the app behind persistent Google authentication", asyn
   assert.match(source, /auth\.getSession\(\)/);
   assert.match(source, /auth\.onAuthStateChange/);
   assert.match(source, /signInWithOAuth\(\{[\s\S]*provider: "google"/);
-  assert.match(source, /auth\.signOut\(\)/);
+  assert.match(source, /signOut\(/);
   assert.match(source, /Sign out and use a different Google account/);
   assert.match(source, /data-testid="sign-in-screen"/);
   assert.match(source, /data-testid="onboarding-screen"/);

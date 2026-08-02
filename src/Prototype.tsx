@@ -3357,15 +3357,18 @@ export default function Prototype() {
   const signOut = async () => {
     setAuthWorking(true);
     setAuthError(null);
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      setAuthError(readableError(error));
-    } else {
-      setAccountOpen(false);
-      setReviewOpen(false);
-      setActiveTab("home");
-    }
-    setAuthWorking(false);
+    setSession(null);
+    setIdentity(null);
+    setAccountOpen(false);
+    setReviewOpen(false);
+    setActiveTab("home");
+    supabase.auth
+      .signOut({ scope: "local" })
+      .then(({ error }) => {
+        if (error) console.error("[signOut]", error);
+      })
+      .catch((err) => console.error("[signOut]", err))
+      .finally(() => setAuthWorking(false));
   };
 
   const navItems = useMemo(() => [
