@@ -2324,6 +2324,7 @@ function AccountScreen({
   setup,
   setupLoading,
   setupError,
+  groupChildren,
   repository,
   householdId,
   groupId,
@@ -2336,6 +2337,7 @@ function AccountScreen({
   setup: HouseholdSetup | null;
   setupLoading: boolean;
   setupError: string | null;
+  groupChildren: Tables<"children">[];
   repository: CarpoolRepository;
   householdId: string;
   groupId: string;
@@ -2357,6 +2359,8 @@ function AccountScreen({
   const [editChildFirst, setEditChildFirst] = useState("");
   const [editChildLast, setEditChildLast] = useState("");
   const [editChildWorking, setEditChildWorking] = useState(false);
+  const [buddyWorkingId, setBuddyWorkingId] = useState<string | null>(null);
+  const [buddyError, setBuddyError] = useState<string | null>(null);
 
   const [vehicleLabel, setVehicleLabel] = useState("");
   const [vehicleCapacity, setVehicleCapacity] = useState("4");
@@ -2491,6 +2495,19 @@ function AccountScreen({
     }
   };
 
+  const setBuddy = async (childId: string, buddyChildId: string | null) => {
+    setBuddyWorkingId(childId);
+    setBuddyError(null);
+    try {
+      await repository.updateChild(childId, { preferredBuddyChildId: buddyChildId });
+      await onReloadHousehold();
+    } catch (nextError) {
+      setBuddyError(readableError(nextError));
+    } finally {
+      setBuddyWorkingId(null);
+    }
+  };
+
   const removeVehicle = async () => {
     const activeVehicle = setup?.vehicles.find((v) => v.active) ?? null;
     if (!activeVehicle) return;
@@ -2587,6 +2604,7 @@ function AccountScreen({
         </div>
         {setupLoading && !setup ? <p className="household-static">Loading…</p> : null}
         {setupError ? <div className="auth-error" role="alert">{setupError}</div> : null}
+        {buddyError ? <div className="auth-error" role="alert">{buddyError}</div> : null}
         <ul className="household-list" data-testid="child-list">
           {setup?.children.length ? setup.children.map((child) => (
             <li key={child.id} className="household-list-row">
@@ -2620,26 +2638,46 @@ function AccountScreen({
                   </div>
                 </div>
               ) : (
-                <>
-                  <span><strong>{child.first_name} {child.last_name}</strong></span>
-                  <div className="household-row-actions">
-                    <button
-                      className="inline-action"
-                      disabled={childWorking}
-                      onClick={() => { setEditingChildId(child.id); setEditChildFirst(child.first_name); setEditChildLast(child.last_name); }}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      className="text-button household-remove"
-                      disabled={childWorking}
-                      onClick={() => void removeChild(child.id)}
-                      aria-label={`Remove ${child.first_name} ${child.last_name}`}
-                    >
-                      Remove
-                    </button>
+                <div className="child-row-content">
+                  <div className="child-row-header">
+                    <span><strong>{child.first_name} {child.last_name}</strong></span>
+                    <div className="household-row-actions">
+                      <button
+                        className="inline-action"
+                        disabled={childWorking || buddyWorkingId === child.id}
+                        onClick={() => { setEditingChildId(child.id); setEditChildFirst(child.first_name); setEditChildLast(child.last_name); }}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="text-button household-remove"
+                        disabled={childWorking || buddyWorkingId === child.id}
+                        onClick={() => void removeChild(child.id)}
+                        aria-label={`Remove ${child.first_name} ${child.last_name}`}
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </div>
-                </>
+                  <label className="buddy-picker">
+                    <span>Riding buddy</span>
+                    <select
+                      value={child.preferred_buddy_child_id ?? ""}
+                      disabled={buddyWorkingId === child.id || childWorking}
+                      onChange={(event) => void setBuddy(child.id, event.target.value || null)}
+                      aria-label={`Riding buddy for ${child.first_name} ${child.last_name}`}
+                    >
+                      <option value="">None</option>
+                      {groupChildren
+                        .filter((c) => c.household_id !== child.household_id && c.id !== child.id)
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.first_name} {c.last_name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                </div>
               )}
             </li>
           )) : (
@@ -2819,6 +2857,7 @@ export default function Prototype() {
   const [householdSetup, setHouseholdSetup] = useState<HouseholdSetup | null>(null);
   const [householdLoading, setHouseholdLoading] = useState(false);
   const [householdError, setHouseholdError] = useState<string | null>(null);
+  const [groupChildren, setGroupChildren] = useState<Tables<"children">[]>([]);
   const [weekData, setWeekData] = useState<WeekWithTrips | null>(null);
   const [weekLoading, setWeekLoading] = useState(false);
   const [weekError, setWeekError] = useState<string | null>(null);
@@ -2899,14 +2938,18 @@ export default function Prototype() {
     setHouseholdLoading(true);
     setHouseholdError(null);
     try {
-      const setup = await repository.getHouseholdSetup(identity.membership.household_id);
+      const [setup, groupKids] = await Promise.all([
+        repository.getHouseholdSetup(identity.membership.household_id),
+        repository.listGroupChildren(identity.group.id),
+      ]);
       setHouseholdSetup(setup);
+      setGroupChildren(groupKids);
     } catch (error) {
       setHouseholdError(readableError(error));
     } finally {
       setHouseholdLoading(false);
     }
-  }, [identity?.membership, repository]);
+  }, [identity?.membership, identity?.group?.id, repository]);
 
   useEffect(() => {
     if (identity?.membership) void loadHousehold();
@@ -3347,6 +3390,7 @@ export default function Prototype() {
           setup={householdSetup}
           setupLoading={householdLoading}
           setupError={householdError}
+          groupChildren={groupChildren}
           repository={repository}
           householdId={identity.membership?.household_id ?? ""}
           groupId={identity.group.id}

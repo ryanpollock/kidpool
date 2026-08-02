@@ -14,6 +14,7 @@ export type SchedulingChild = {
   household_id: string;
   first_name: string;
   last_name: string;
+  preferred_buddy_child_id: string | null;
 };
 
 export type SchedulingVehicle = {

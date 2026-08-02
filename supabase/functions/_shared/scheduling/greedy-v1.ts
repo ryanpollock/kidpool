@@ -123,6 +123,7 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
       ) ?? "";
 
       const assigned: string[] = [];
+      const assignedSet = new Set<string>();
       const ownChildren = riders.filter(
         (r) =>
           r.household_id === driverHouseholdId &&
@@ -131,16 +132,41 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
       for (const child of ownChildren) {
         if (assigned.length >= capacity) break;
         assigned.push(child.id);
+        assignedSet.add(child.id);
         remainingRiders.delete(child.id);
       }
-      const otherChildren = riders
+      // Pick best remaining other child each iteration.
+      // Priority: child whose preferred buddy is already in the car,
+      // then deterministic name/ID tiebreak.
+      // Capacity check runs every iteration so we never overfill.
+      const otherPool = riders
         .filter((r) => r.household_id !== driverHouseholdId)
         .sort((a, b) => childSortKey(a).localeCompare(childSortKey(b)));
-      for (const child of otherChildren) {
-        if (assigned.length >= capacity) break;
-        if (!remainingRiders.has(child.id)) continue;
-        assigned.push(child.id);
-        remainingRiders.delete(child.id);
+      while (assigned.length < capacity && otherPool.length > 0) {
+        let bestIdx = 0;
+        for (let i = 1; i < otherPool.length; i++) {
+          const candidate = otherPool[i];
+          const best = otherPool[bestIdx];
+          const candBuddyInCar = candidate.preferred_buddy_child_id != null &&
+            assignedSet.has(candidate.preferred_buddy_child_id);
+          const bestBuddyInCar = best.preferred_buddy_child_id != null &&
+            assignedSet.has(best.preferred_buddy_child_id);
+          if (candBuddyInCar !== bestBuddyInCar) {
+            if (candBuddyInCar) bestIdx = i;
+            continue;
+          }
+          if (childSortKey(candidate).localeCompare(childSortKey(best)) < 0) {
+            bestIdx = i;
+          }
+        }
+        if (!remainingRiders.has(otherPool[bestIdx].id)) {
+          otherPool.splice(bestIdx, 1);
+          continue;
+        }
+        const chosen = otherPool.splice(bestIdx, 1)[0];
+        assigned.push(chosen.id);
+        assignedSet.add(chosen.id);
+        remainingRiders.delete(chosen.id);
       }
       return {
         trip_id: trip.id,

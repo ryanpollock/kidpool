@@ -88,7 +88,7 @@ Deno.serve(async (req: Request) => {
       supabase.from("trips").select("id, service_date, direction, week_id, group_id").eq("week_id", weekId as string).eq("group_id", groupId).order("service_date").order("direction"),
       supabase.from("weekly_checkins").select("id, household_id, max_drives").eq("week_id", weekId as string).eq("group_id", groupId),
       supabase.from("vehicles").select("id, household_id, label, child_passenger_capacity, active, group_id").eq("group_id", groupId).eq("active", true),
-      supabase.from("children").select("id, household_id, first_name, last_name, active, group_id").eq("group_id", groupId).eq("active", true),
+      supabase.from("children").select("id, household_id, first_name, last_name, active, group_id, preferred_buddy_child_id").eq("group_id", groupId).eq("active", true),
       supabase.from("memberships").select("profile_id, household_id, status, group_id").eq("group_id", groupId).eq("status", "active"),
     ]);
 
@@ -138,6 +138,7 @@ Deno.serve(async (req: Request) => {
       household_id: c.household_id,
       first_name: c.first_name,
       last_name: c.last_name,
+      preferred_buddy_child_id: c.preferred_buddy_child_id ?? null,
     }));
 
     const vehicles: SchedulingVehicle[] = (vehiclesRes.data ?? []).map((v) => ({

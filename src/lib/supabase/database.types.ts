@@ -84,6 +84,7 @@ export type ChildRow = Timestamps & {
   last_name: string;
   active: boolean;
   created_by: string;
+  preferred_buddy_child_id: string | null;
 };
 
 export type VehicleRow = Timestamps & {
@@ -299,6 +300,7 @@ export type Database = {
           created_by: string;
           created_at?: string;
           updated_at?: string;
+          preferred_buddy_child_id?: string | null;
         }
       >;
       vehicles: Table<

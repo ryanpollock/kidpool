@@ -471,8 +471,8 @@ export class CarpoolRepository {
     return created;
   }
 
-  async updateChild(childId: string, updates: { firstName?: string; lastName?: string }) {
-    const updatePayload: Partial<{ first_name: string; last_name: string }> = {};
+  async updateChild(childId: string, updates: { firstName?: string; lastName?: string; preferredBuddyChildId?: string | null }) {
+    const updatePayload: Partial<{ first_name: string; last_name: string; preferred_buddy_child_id: string | null }> = {};
     if (updates.firstName !== undefined) {
       const trimmed = updates.firstName.trim();
       if (!trimmed) throw new Error("First name cannot be empty.");
@@ -482,6 +482,12 @@ export class CarpoolRepository {
       const trimmed = updates.lastName.trim();
       if (!trimmed) throw new Error("Last name cannot be empty.");
       updatePayload.last_name = trimmed;
+    }
+    if (updates.preferredBuddyChildId !== undefined) {
+      if (updates.preferredBuddyChildId === childId) {
+        throw new Error("A child cannot be their own riding buddy.");
+      }
+      updatePayload.preferred_buddy_child_id = updates.preferredBuddyChildId;
     }
     if (Object.keys(updatePayload).length === 0) return;
 
@@ -499,6 +505,18 @@ export class CarpoolRepository {
       "child",
       childId,
       { updates },
+    );
+  }
+
+  async listGroupChildren(groupId: string): Promise<Tables<"children">[]> {
+    return unwrapRequired(
+      await this.client
+        .from("children")
+        .select("id, group_id, household_id, first_name, last_name, active, created_by, created_at, updated_at, preferred_buddy_child_id")
+        .eq("group_id", groupId)
+        .eq("active", true)
+        .order("first_name")
+        .order("last_name"),
     );
   }
 
