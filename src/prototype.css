@@ -560,6 +560,33 @@ button {
   margin-top: 24px;
 }
 
+.share-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.share-toggle-row:first-of-type {
+  margin-top: 8px;
+}
+.share-toggle-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.share-toggle-row small {
+  color: var(--muted);
+  font-size: 13px;
+}
+.share-toggle-row input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  accent-color: var(--teal);
+}
+
 .household-static {
   margin: 0;
   color: var(--ink);
@@ -602,6 +629,44 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.child-photo-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.child-photo-thumb--small {
+  width: 36px;
+  height: 36px;
+}
+.child-photo-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.child-photo-thumb svg {
+  width: 20px;
+  height: 20px;
+  color: var(--muted);
+}
+.child-photo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 48px;
+}
+.child-photo-upload {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--teal);
 }
 
 .buddy-picker {
@@ -1128,6 +1193,138 @@ button {
 .page-title h1 {
   font-size: 34px;
   line-height: 1;
+}
+
+.directory-screen,
+.drive-detail-screen {
+  padding-bottom: 40px;
+}
+
+.directory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin-top: 8px;
+}
+.directory-household-name {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.directory-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.directory-avatar {
+  width: 40px;
+  height: 40px;
+}
+.directory-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+.directory-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.directory-row-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.role-badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--teal);
+  background: rgba(17, 139, 140, 0.12);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.directory-row-contact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.directory-contact-item {
+  font-size: 14px;
+  color: var(--ink);
+  text-decoration: none;
+  word-break: break-all;
+}
+a.directory-contact-item:hover {
+  text-decoration: underline;
+  color: var(--teal);
+}
+.directory-contact-hidden {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.drive-detail-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 16px;
+  background: var(--paper);
+  border-radius: 12px;
+}
+.drive-detail-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.drive-detail-label {
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.drive-detail-children {
+  margin-top: 24px;
+}
+.drive-detail-children h2 {
+  font-size: 18px;
+  margin: 0 0 12px;
+}
+.child-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 12px;
+}
+.child-photo-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: var(--paper);
+  border-radius: 12px;
+  text-align: center;
+}
+.child-photo-card .child-photo-thumb {
+  width: 72px;
+  height: 72px;
+}
+.child-photo-card .child-photo-thumb svg {
+  width: 32px;
+  height: 32px;
+}
+.child-photo-card strong {
+  font-size: 14px;
 }
 
 .detail-intro,
@@ -1958,10 +2155,19 @@ button {
 }
 
 .trip-roster {
+  display: block;
+  width: 100%;
   padding: 11px 13px;
   border: 1px solid var(--line);
   border-radius: 11px;
   background: white;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.trip-roster:active {
+  background: var(--paper);
 }
 
 .roster-driver {

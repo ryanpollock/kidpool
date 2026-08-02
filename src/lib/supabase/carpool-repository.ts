@@ -167,9 +167,25 @@ export class CarpoolRepository {
       default_drive_preferences: r.default_drive_preferences as
         | DefaultDrivePref[]
         | null,
+      phone: null,
+      share_phone: true,
+      share_email: true,
       created_at: r.created_at,
       updated_at: r.updated_at,
     }));
+  }
+
+  /**
+   * Fetch the parent directory for a group: all active members with
+   * phone/email returned only when the owner has opted in (share_phone/
+   * share_email). Includes household_name and role.
+   */
+  async listGroupDirectory(groupId: string) {
+    return unwrapRequired(
+      await this.client.rpc("list_group_directory", {
+        target_group_id: groupId,
+      }),
+    );
   }
 
   async getCurrentProfile() {
@@ -186,9 +202,35 @@ export class CarpoolRepository {
     );
   }
 
-  async updateCurrentProfile(fullName: string) {
-    const normalizedName = fullName.trim().replace(/\s+/g, " ");
-    if (!normalizedName) throw new Error("Enter your full name.");
+  async updateCurrentProfile(
+    fields: { fullName?: string; phone?: string | null; sharePhone?: boolean; shareEmail?: boolean },
+  ): Promise<Tables<"profiles">>;
+  async updateCurrentProfile(fullName: string): Promise<Tables<"profiles">>;
+  async updateCurrentProfile(
+    fields:
+      | string
+      | { fullName?: string; phone?: string | null; sharePhone?: boolean; shareEmail?: boolean },
+  ): Promise<Tables<"profiles">> {
+    const payload: {
+      full_name?: string;
+      phone?: string | null;
+      share_phone?: boolean;
+      share_email?: boolean;
+    } = {};
+    if (typeof fields === "string") {
+      const normalizedName = fields.trim().replace(/\s+/g, " ");
+      if (!normalizedName) throw new Error("Enter your full name.");
+      payload.full_name = normalizedName;
+    } else {
+      if (fields.fullName !== undefined) {
+        const normalizedName = fields.fullName.trim().replace(/\s+/g, " ");
+        if (!normalizedName) throw new Error("Enter your full name.");
+        payload.full_name = normalizedName;
+      }
+      if (fields.phone !== undefined) payload.phone = fields.phone;
+      if (fields.sharePhone !== undefined) payload.share_phone = fields.sharePhone;
+      if (fields.shareEmail !== undefined) payload.share_email = fields.shareEmail;
+    }
 
     const userResult = await this.client.auth.getUser();
     if (userResult.error) throw new Error(userResult.error.message);
@@ -197,7 +239,7 @@ export class CarpoolRepository {
     return unwrapRequired(
       await this.client
         .from("profiles")
-        .update({ full_name: normalizedName })
+        .update(payload)
         .eq("id", userResult.data.user.id)
         .select("*")
         .single(),
@@ -471,8 +513,8 @@ export class CarpoolRepository {
     return created;
   }
 
-  async updateChild(childId: string, updates: { firstName?: string; lastName?: string; preferredBuddyChildId?: string | null }) {
-    const updatePayload: Partial<{ first_name: string; last_name: string; preferred_buddy_child_id: string | null }> = {};
+  async updateChild(childId: string, updates: { firstName?: string; lastName?: string; preferredBuddyChildId?: string | null; photoUrl?: string | null }) {
+    const updatePayload: Partial<{ first_name: string; last_name: string; preferred_buddy_child_id: string | null; photo_url: string | null }> = {};
     if (updates.firstName !== undefined) {
       const trimmed = updates.firstName.trim();
       if (!trimmed) throw new Error("First name cannot be empty.");
@@ -488,6 +530,9 @@ export class CarpoolRepository {
         throw new Error("A child cannot be their own riding buddy.");
       }
       updatePayload.preferred_buddy_child_id = updates.preferredBuddyChildId;
+    }
+    if (updates.photoUrl !== undefined) {
+      updatePayload.photo_url = updates.photoUrl;
     }
     if (Object.keys(updatePayload).length === 0) return;
 
@@ -512,12 +557,31 @@ export class CarpoolRepository {
     return unwrapRequired(
       await this.client
         .from("children")
-        .select("id, group_id, household_id, first_name, last_name, active, created_by, created_at, updated_at, preferred_buddy_child_id")
+        .select("id, group_id, household_id, first_name, last_name, active, created_by, created_at, updated_at, preferred_buddy_child_id, photo_url")
         .eq("group_id", groupId)
         .eq("active", true)
         .order("first_name")
         .order("last_name"),
     );
+  }
+
+  /**
+   * Upload a child photo to the child-photos Storage bucket and return
+   * the public URL. Object path: <household_id>/<child_id>.<ext>
+   */
+  async uploadChildPhoto(
+    householdId: string,
+    childId: string,
+    file: File,
+  ): Promise<string> {
+    const ext = (file.name.split(".").pop() ?? "jpg").toLowerCase();
+    const safeExt = /^[a-z0-9]+$/.test(ext) ? ext : "jpg";
+    const path = `${householdId}/${childId}.${safeExt}`;
+    const { error } = await this.client.storage
+      .from("child-photos")
+      .upload(path, file, { upsert: true, contentType: file.type || undefined });
+    if (error) throw new Error(`Photo upload failed: ${error.message}`);
+    return this.client.storage.from("child-photos").getPublicUrl(path).data.publicUrl;
   }
 
   async deactivateChild(childId: string) {
