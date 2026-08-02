@@ -66,6 +66,23 @@ function CarIcon({ width = 18, height = 18 }: { width?: number | string; height?
   );
 }
 
+function AppHeader({ avatarUrl, onAccount }: { avatarUrl: string | null; onAccount: () => void }) {
+  return (
+    <header className="app-header">
+      <div className="brand-lockup">
+        <span className="brand-mark"><CarIcon width="18" height="18" /></span>
+        <span>
+          <strong>Midtown Carpool</strong>
+          <small>Presidio Middle School</small>
+        </span>
+      </div>
+      <button className="avatar-button" aria-label="Open household profile" onClick={onAccount}>
+        {avatarUrl ? <img src={avatarUrl} alt="" /> : <AvatarIcon width="19" height="19" />}
+      </button>
+    </header>
+  );
+}
+
 type IdentityState = {
   profile: Tables<"profiles">;
   group: Tables<"groups">;
@@ -1016,18 +1033,7 @@ function HomeScreen({
 
   return (
     <div className="screen-content home-screen" data-testid="home-screen">
-      <header className="app-header">
-        <div className="brand-lockup">
-          <span className="brand-mark"><CarIcon width="18" height="18" /></span>
-          <span>
-            <strong>Midtown Carpool</strong>
-            <small>Presidio Middle School</small>
-          </span>
-        </div>
-        <button className="avatar-button" aria-label="Open household profile" onClick={onAccount}>
-          {avatarUrl ? <img src={avatarUrl} alt="" /> : <AvatarIcon width="19" height="19" />}
-        </button>
-      </header>
+      <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
 
       {showPushBanner ? (
         <div className="push-banner" data-testid="push-banner">
@@ -1379,6 +1385,8 @@ function PlanScreen({
   onReloadWeek,
   isCoordinator,
   onCreateWeek,
+  avatarUrl,
+  onAccount,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -1395,6 +1403,8 @@ function PlanScreen({
   onReloadWeek: () => void;
   isCoordinator: boolean;
   onCreateWeek: () => void;
+  avatarUrl: string | null;
+  onAccount: () => void;
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1443,6 +1453,7 @@ function PlanScreen({
   if (weekLoading) {
     return (
       <div className="screen-content plan-screen" data-testid="plan-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
           <h1>Plan next week</h1>
@@ -1455,6 +1466,7 @@ function PlanScreen({
   if (weekError) {
     return (
       <div className="screen-content plan-screen" data-testid="plan-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
           <h1>Plan next week</h1>
@@ -1468,6 +1480,7 @@ function PlanScreen({
   if (!week) {
     return (
       <div className="screen-content plan-screen" data-testid="plan-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
           <h1>Plan next week</h1>
@@ -1489,6 +1502,7 @@ function PlanScreen({
   if (checkinError) {
     return (
       <div className="screen-content plan-screen" data-testid="plan-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
           <h1>Plan next week</h1>
@@ -1503,6 +1517,7 @@ function PlanScreen({
   if (children.length === 0) {
     return (
       <div className="screen-content plan-screen" data-testid="plan-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
           <h1>Plan next week</h1>
@@ -1601,6 +1616,7 @@ function PlanScreen({
 
   return (
     <div className="screen-content plan-screen" data-testid="plan-screen">
+      <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
       <header className="page-title">
         <span className="eyebrow">Check-in</span>
         <h1>Plan next week</h1>
@@ -1776,6 +1792,8 @@ function WeekScreen({
   allWeeks,
   selectedWeekId,
   onSelectWeek,
+  avatarUrl,
+  onAccount,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -1793,6 +1811,8 @@ function WeekScreen({
   allWeeks: Tables<"weeks">[];
   selectedWeekId: string | null;
   onSelectWeek: (weekId: string) => void;
+  avatarUrl: string | null;
+  onAccount: () => void;
 }) {
   const weekHeading = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const currentIdx = allWeeks.findIndex((w) => w.id === (selectedWeekId ?? week?.week.id));
@@ -1801,6 +1821,7 @@ function WeekScreen({
   if (weekLoading) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Family schedule</span>
           <h1>{weekHeading}</h1>
@@ -1813,6 +1834,7 @@ function WeekScreen({
   if (weekError) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Family schedule</span>
           <h1>{weekHeading}</h1>
@@ -1826,6 +1848,7 @@ function WeekScreen({
   if (!week) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Family schedule</span>
           <h1>{weekHeading}</h1>
@@ -1851,6 +1874,7 @@ function WeekScreen({
   if (scheduleLoading) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Family schedule</span>
           <h1>{startDate.short} – {endDate.short}</h1>
@@ -1863,6 +1887,7 @@ function WeekScreen({
   if (scheduleError) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Family schedule</span>
           <h1>{startDate.short} – {endDate.short}</h1>
@@ -1876,6 +1901,7 @@ function WeekScreen({
   if (!schedule) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Family schedule</span>
           <h1>{startDate.short} – {endDate.short}</h1>
@@ -1931,6 +1957,7 @@ function WeekScreen({
 
   return (
     <div className="screen-content week-screen" data-testid="week-screen">
+      <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
       <header className="page-title">
         <span className="eyebrow">Family schedule</span>
         <h1>{weekLabel(week.week.starts_on)}</h1>
@@ -2058,6 +2085,8 @@ function CoordinatorScreen({
   declinedCount,
   uncoveredCount,
   generateWarning,
+  avatarUrl,
+  onAccount,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -2080,12 +2109,15 @@ function CoordinatorScreen({
   declinedCount: number;
   uncoveredCount: number;
   generateWarning: string | null;
+  avatarUrl: string | null;
+  onAccount: () => void;
 }) {
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
 
   if (weekLoading) {
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
           <h1>Weekly coverage</h1>
@@ -2098,6 +2130,7 @@ function CoordinatorScreen({
   if (weekError) {
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
           <h1>Weekly coverage</h1>
@@ -2111,6 +2144,7 @@ function CoordinatorScreen({
   if (!week) {
     return (
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
           <h1>Weekly coverage</h1>
@@ -2140,6 +2174,7 @@ function CoordinatorScreen({
 
   return (
     <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
+      <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
       <header className="page-title">
         <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
         <h1>Weekly coverage</h1>
@@ -3353,6 +3388,8 @@ export default function Prototype() {
           onReloadWeek={() => void loadWeek()}
           isCoordinator={identity.membership?.role === "coordinator"}
           onCreateWeek={() => void createWeek()}
+          avatarUrl={identity.profile.avatar_url}
+          onAccount={() => setAccountOpen(true)}
         />
       );
     }
@@ -3376,6 +3413,8 @@ export default function Prototype() {
           allWeeks={allWeeks}
           selectedWeekId={selectedWeekId}
           onSelectWeek={(id) => { setSelectedWeekId(id); }}
+          avatarUrl={identity.profile.avatar_url}
+          onAccount={() => setAccountOpen(true)}
         />
       );
     }
@@ -3404,6 +3443,8 @@ export default function Prototype() {
           declinedCount={schedule ? countDeclinedRosters(schedule) : 0}
           uncoveredCount={schedule ? countUncoveredTrips(schedule) : 0}
           generateWarning={generateWarning}
+          avatarUrl={identity.profile.avatar_url}
+          onAccount={() => setAccountOpen(true)}
         />
       );
     }
