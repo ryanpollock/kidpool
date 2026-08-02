@@ -631,7 +631,7 @@ button {
 
 .screen-content {
   min-height: 100%;
-  padding: 68px 22px calc(var(--mobile-safe-area-height) + 108px);
+  padding: 68px 22px calc(var(--mobile-safe-area-height) + 88px);
 }
 
 .app-header,

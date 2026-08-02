@@ -3513,7 +3513,7 @@ export default function Prototype() {
   return (
     <div className="prototype-shell">
       <AppErrorBoundary>
-        <MobileScroll className="app-screen">
+        <MobileScroll className="app-screen" key={activeTab}>
           <main className="app-main" aria-label="Midtown Carpool app">
             {renderContent()}
           </main>
