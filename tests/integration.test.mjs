@@ -847,7 +847,7 @@ test("Child photo: updateChild can set photo_url via REST", { skip: !SERVICE_KEY
   const token = signInUser("photoup@test.kidpool");
   const jwt = token.access_token;
 
-  const photoUrl = "https://api.dicebear.com/7.x/things/svg?seed=Photo";
+  const photoUrl = "https://api.dicebear.com/9.x/fun-emoji/svg?seed=Photo";
   const updateResult = JSON.parse(execSync(
     `curl -s -X PATCH -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${jwt}" -H "Content-Type: application/json" -H "Prefer: return=representation" -d '{"photo_url":"${photoUrl}"}' "${SUPABASE_URL}/rest/v1/children?id=eq.${childId}"`,
     { encoding: "utf8" },

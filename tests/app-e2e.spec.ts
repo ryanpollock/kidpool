@@ -698,7 +698,7 @@ test.describe("App E2E", () => {
     const coord = setupHousehold(260, "DetailCoord", true);
     const driver = setupHousehold(261, "DetailDriver");
     const childId = UID(260);
-    const photoUrl = "https://api.dicebear.com/7.x/things/svg?seed=Detail";
+    const photoUrl = "https://api.dicebear.com/9.x/fun-emoji/svg?seed=Detail";
     runSql(`
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by, photo_url) VALUES ('${childId}', '${GROUP_ID}', '${driver.householdId}', 'Detail', 'Kid', '${driver.userId}', '${photoUrl}') ON CONFLICT DO NOTHING;
       INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(360)}', '${GROUP_ID}', '${driver.householdId}', 'Detail Car', 4, '${driver.userId}') ON CONFLICT DO NOTHING;
