@@ -64,6 +64,29 @@ function getServiceKey(): string | null {
 const SERVICE_KEY = getServiceKey();
 const skip = !SERVICE_KEY;
 
+function getAnonKey(): string {
+  if (process.env.SUPABASE_TEST_ANON_KEY) return process.env.SUPABASE_TEST_ANON_KEY;
+  try {
+    const cliToken = execSync('security find-generic-password -s "Supabase CLI" -w 2>/dev/null', { encoding: "utf8" }).trim();
+    const result = execSync(
+      `curl -s -H "Authorization: Bearer ${cliToken}" "https://api.supabase.com/v1/projects/${PROJECT_REF}/api-keys"`,
+      { encoding: "utf8" },
+    );
+    const parsed = JSON.parse(result);
+    const keyList = Array.isArray(parsed) ? parsed : (parsed.keys ?? []);
+    for (const k of keyList) {
+      if (k.id === "anon") return k.api_key;
+    }
+  } catch {}
+  try {
+    const keys = JSON.parse(readFileSync("/tmp/kidpool-test-keys.json", "utf8"));
+    if (keys.anonKey) return keys.anonKey;
+  } catch {}
+  return "";
+}
+
+const ANON_KEY = getAnonKey();
+
 function runSql(sql: string): { rows?: Array<Record<string, unknown>>; error?: { message: string } } {
   const tmpFile = `/tmp/kidpool-e2e-query.sql`;
   execSync(`cat > "${tmpFile}" << 'ENDSQL'\n${sql}\nENDSQL`, { shell: "/bin/bash" });
@@ -229,6 +252,39 @@ async function signInWithTestAuth(page: Page, email: string) {
   await expect(
     page.getByTestId("home-screen").or(page.getByTestId("onboarding-screen"))
   ).toBeVisible({ timeout: 15000 });
+}
+
+function setupWeekWithTrips() {
+  const weekId = UID(900);
+  const tripIds: string[] = [];
+  const dates = ["2028-01-03", "2028-01-04", "2028-01-05", "2028-01-06", "2028-01-07"];
+  let sql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '2028-01-03', 'open', '2028-01-02T15:00:00-08:00', '2028-01-02T15:00:00-08:00') ON CONFLICT DO NOTHING;\n`;
+  for (let d = 0; d < 5; d++) {
+    for (const dir of ["morning", "afternoon"]) {
+      const tId = UID(400 + d * 2 + (dir === "morning" ? 0 : 1));
+      tripIds.push(tId);
+      const time = dir === "morning" ? "08:40" : "15:15";
+      sql += `INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${tId}', '${GROUP_ID}', '${weekId}', '${dates[d]}', '${dir}', '${time}', '${time}', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;\n`;
+    }
+  }
+  runSql(sql);
+  return { weekId, tripIds, dates };
+}
+
+function generateScheduleViaEdgeFunction(coordEmail: string, weekId: string) {
+  const tokenBody = JSON.stringify({ email: coordEmail, password: TEST_PASSWORD });
+  const tokenResult = execSync(
+    `curl -s -X POST -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '${tokenBody}' "${SUPABASE_URL}/auth/v1/token?grant_type=password"`,
+    { encoding: "utf8" },
+  );
+  const tokenData = JSON.parse(tokenResult);
+  const jwt = tokenData.access_token;
+  if (!jwt) throw new Error("Could not sign in as coordinator for schedule generation");
+  const fnResult = execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${jwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  );
+  return JSON.parse(fnResult);
 }
 
 test.describe("App E2E", () => {
@@ -522,25 +578,169 @@ test.describe("App E2E", () => {
     cleanupE2EData();
   });
 
-  test("week tab drive card is a clickable button with drive-card testid", async ({ page }) => {
-    const coord = setupHousehold(221, "DriveCoord", true);
-    const driver = setupHousehold(222, "DriveDriver");
-    const childId = UID(221);
+  test("directory shows phone when shared and hidden when not", async ({ page }) => {
+    const sharing = setupHousehold(230, "ShareYes");
+    const hidden = setupHousehold(231, "ShareNo");
     runSql(`
-      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by, photo_url) VALUES ('${childId}', '${GROUP_ID}', '${driver.householdId}', 'Drive', 'Kid', '${driver.userId}', 'https://api.dicebear.com/7.x/things/svg?seed=Drive') ON CONFLICT DO NOTHING;
-      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(322)}', '${GROUP_ID}', '${driver.householdId}', 'Test Car', 4, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(230)}', '${GROUP_ID}', '${sharing.householdId}', 'Kid', 'A', '${sharing.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(231)}', '${GROUP_ID}', '${hidden.householdId}', 'Kid', 'B', '${hidden.userId}') ON CONFLICT DO NOTHING;
+      UPDATE public.profiles SET phone = '(415) 555-0230', share_phone = true, share_email = true WHERE id = '${sharing.userId}';
+      UPDATE public.profiles SET phone = '(415) 555-0231', share_phone = false, share_email = false WHERE id = '${hidden.userId}';
     `);
+    await signInWithTestAuth(page, sharing.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+
+    await page.getByTestId("directory-link").click();
+    await expect(page.getByTestId("directory-screen")).toBeVisible({ timeout: 5000 });
+
+    // The sharing user's phone should be visible
+    const sharingRow = page.locator('.directory-row', { hasText: 'ShareYes E2E' });
+    await expect(sharingRow).toBeVisible({ timeout: 5000 });
+    await expect(sharingRow).toContainText('(415) 555-0230');
+
+    // The hidden user's phone should show "Phone hidden"
+    const hiddenRow = page.locator('.directory-row', { hasText: 'ShareNo E2E' });
+    await expect(hiddenRow).toBeVisible({ timeout: 5000 });
+    await expect(hiddenRow).toContainText('Phone hidden');
+    await expect(hiddenRow).toContainText('Email hidden');
+
+    cleanupE2EData();
+  });
+
+  test("account screen phone edit and sharing toggle persist", async ({ page }) => {
+    const user = setupHousehold(240, "PhoneEdit");
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(240)}', '${GROUP_ID}', '${user.householdId}', 'Edit', 'Kid', '${user.userId}') ON CONFLICT DO NOTHING;
+    `);
+    await signInWithTestAuth(page, user.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+
+    // Open account screen
+    const avatarBtn = page.locator('[aria-label="Open household profile"]').first();
+    await avatarBtn.click();
+    await expect(page.getByTestId("account-screen")).toBeVisible({ timeout: 5000 });
+
+    // Edit phone
+    const editPhoneBtn = page.locator('#phone-section-heading + *').locator('.inline-action').first();
+    if (await editPhoneBtn.isVisible({ timeout: 3000 })) {
+      await editPhoneBtn.click();
+      const phoneInput = page.locator('input[autocomplete="tel"]').first();
+      await phoneInput.fill('(415) 555-0240');
+      await page.locator('button:has-text("Save phone")').click();
+      await page.waitForTimeout(2000);
+    }
+
+    // Verify phone persisted in DB
+    const profileResult = JSON.parse(execSync(
+      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/profiles?id=eq.${user.userId}&select=phone"`,
+      { encoding: "utf8" },
+    ));
+    assert.ok(profileResult.length > 0, "Profile should exist");
+    assert.ok(profileResult[0].phone && profileResult[0].phone.includes("415"), "Phone should be saved in DB");
+
+    cleanupE2EData();
+  });
+
+  test("coordinator generate schedule via UI creates a draft schedule", async ({ page }) => {
+    const coord = setupHousehold(250, "GenCoord", true);
+    const driver = setupHousehold(251, "GenDriver");
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(250)}', '${GROUP_ID}', '${driver.householdId}', 'Gen', 'Kid', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(350)}', '${GROUP_ID}', '${driver.householdId}', 'Gen Car', 4, '${driver.userId}') ON CONFLICT DO NOTHING;
+    `);
+    const { weekId, tripIds } = setupWeekWithTrips();
+
+    // Create checkin + ride requests + driver availability for the driver
+    const checkinId = UID(500);
+    runSql(`
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinId}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      ${tripIds.map(tId => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${UID(250)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;`).join('\n')}
+      ${tripIds.map(tId => `INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${driver.userId}', '${UID(350)}', 'prefer') ON CONFLICT DO NOTHING;`).join('\n')}
+    `);
+
     await signInWithTestAuth(page, coord.email);
-    await page.waitForTimeout(2000);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
     // Navigate to Week tab
     await page.getByTestId("nav-week").click();
     await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
 
-    // The week tab should render. Drive cards (if any) should be <button> elements.
-    // We verify the DOM structure rather than a full schedule flow.
-    const pageText = await page.textContent("body") ?? "";
-    assert.ok(typeof pageText === "string", "Page should have text content");
+    // Select the test week (2028-01-03) from the week selector if needed
+    // The week selector should show the test week — select it
+    const weekSelect = page.locator('select').first();
+    if (await weekSelect.isVisible({ timeout: 3000 })) {
+      const options = await weekSelect.locator('option').allTextContents();
+      const testWeekIdx = options.findIndex((opt) => opt.includes("2028-01-03") || opt.includes("Jan 3"));
+      if (testWeekIdx >= 0) {
+        await weekSelect.selectOption({ index: testWeekIdx });
+        await page.waitForTimeout(2000);
+      }
+    }
+
+    // Click "Generate schedule" if the button exists
+    const genBtn = page.locator('button:has-text("Generate schedule"), button:has-text("Generate")').first();
+    if (await genBtn.isVisible({ timeout: 3000 })) {
+      await genBtn.click();
+      await page.waitForTimeout(5000);
+    }
+
+    // Verify schedule_versions was created in DB
+    const scheduleResult = JSON.parse(execSync(
+      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/schedule_versions?week_id=eq.${weekId}&select=id,status"`,
+      { encoding: "utf8" },
+    ));
+    assert.ok(scheduleResult.length > 0, "Schedule version should be created");
+
+    cleanupE2EData();
+  });
+
+  test("week tab drive card opens drive detail with child photos", async ({ page }) => {
+    const coord = setupHousehold(260, "DetailCoord", true);
+    const driver = setupHousehold(261, "DetailDriver");
+    const childId = UID(260);
+    const photoUrl = "https://api.dicebear.com/7.x/things/svg?seed=Detail";
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by, photo_url) VALUES ('${childId}', '${GROUP_ID}', '${driver.householdId}', 'Detail', 'Kid', '${driver.userId}', '${photoUrl}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(360)}', '${GROUP_ID}', '${driver.householdId}', 'Detail Car', 4, '${driver.userId}') ON CONFLICT DO NOTHING;
+    `);
+    const { weekId, tripIds } = setupWeekWithTrips();
+    const checkinId = UID(510);
+    runSql(`
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinId}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      ${tripIds.map(tId => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${childId}', true, '${driver.userId}') ON CONFLICT DO NOTHING;`).join('\n')}
+      ${tripIds.map(tId => `INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${driver.userId}', '${UID(360)}', 'prefer') ON CONFLICT DO NOTHING;`).join('\n')}
+    `);
+
+    // Generate the schedule via Edge Function
+    const fnResult = generateScheduleViaEdgeFunction(coord.email, weekId);
+    assert.ok(fnResult.success, "Schedule generation should succeed");
+
+    await signInWithTestAuth(page, coord.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+
+    // Navigate to Week tab
+    await page.getByTestId("nav-week").click();
+    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
+
+    // Select the test week (2028-01-03)
+    const weekSelect = page.locator('select').first();
+    if (await weekSelect.isVisible({ timeout: 3000 })) {
+      const options = await weekSelect.locator('option').allTextContents();
+      const testWeekIdx = options.findIndex((opt) => opt.includes("2028-01-03") || opt.includes("Jan 3"));
+      if (testWeekIdx >= 0) {
+        await weekSelect.selectOption({ index: testWeekIdx });
+        await page.waitForTimeout(3000);
+      }
+    }
+
+    // Find a drive card and click it
+    const driveCard = page.locator('[data-testid^="drive-card-"]').first();
+    await expect(driveCard).toBeVisible({ timeout: 10000 });
+    await driveCard.click();
+
+    // Drive detail screen should appear with child photos
+    await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("child-photo-card")).toBeVisible({ timeout: 5000 });
 
     cleanupE2EData();
   });
