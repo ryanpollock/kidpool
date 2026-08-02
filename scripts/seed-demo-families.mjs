@@ -287,6 +287,34 @@ async function main() {
   console.log(`    checkins:            ${v.checkins}`);
   console.log(`    ride_requests:      ${v.ride_requests}`);
   console.log(`    driver_availability: ${v.driver_availability}`);
+
+  // 6. Generate draft schedule via Edge Function (as coordinator Chen)
+  console.log("\n  Generating draft schedule...");
+  try {
+    const signInBody = JSON.stringify({ email: familyData[0].email, password: "SeedPass123!" });
+    const tokenResult = JSON.parse(execSync(
+      `curl -s -X POST -H "apikey: ${SERVICE_KEY}" -H "Content-Type: application/json" -d '${signInBody}' "${SUPABASE_URL}/auth/v1/token?grant_type=password"`,
+      { encoding: "utf8" },
+    ));
+    const jwt = tokenResult.access_token;
+    if (!jwt) throw new Error("Could not sign in as coordinator");
+
+    const fnBody = JSON.stringify({ weekId });
+    const fnResult = JSON.parse(execSync(
+      `curl -s -X POST -H "Authorization: Bearer ${jwt}" -H "apikey: ${SERVICE_KEY}" -H "Content-Type: application/json" -d '${fnBody}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+    ));
+    if (fnResult.success) {
+      const driverCount = fnResult.trips?.reduce((sum, t) => sum + (t.driver_count || 0), 0) ?? 0;
+      const riderCount = fnResult.trips?.reduce((sum, t) => sum + (t.assigned_rider_count || 0), 0) ?? 0;
+      console.log(`    schedule: ${driverCount} driver assignments, ${riderCount} rider assignments (draft)`);
+    } else {
+      console.log(`    WARNING: schedule generation failed: ${fnResult.error || "unknown"}`);
+    }
+  } catch (e) {
+    console.log(`    WARNING: could not generate schedule: ${e.message}`);
+  }
+
   console.log("\n  Done. Sign in at https://carpool-staging.vercel.app to test.\n");
 }
 

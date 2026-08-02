@@ -3645,28 +3645,38 @@ export default function Prototype() {
   useEffect(() => {
     let mounted = true;
 
-    void supabase.auth.getSession().then(({ data, error }) => {
+    void supabase.auth.getSession().then(async ({ data, error }) => {
       if (!mounted) return;
       if (error) setAuthError(readableError(error));
-      setSession(data.session);
       setAuthInitialized(true);
-      if (data.session) {
-        void loadIdentity();
-        return;
-      }
 
       // Dev/staging test auth bypass: auto sign in with ?testAuth=email|password
+      // Checked BEFORE the session check so switching demo accounts works even
+      // when a session already exists (signs out the old user first).
       if (import.meta.env.DEV || isStaging) {
         const params = new URLSearchParams(window.location.search);
         const testAuth = params.get("testAuth");
         if (testAuth) {
           const [email, password] = testAuth.split("|");
           if (email && password) {
-            void supabase.auth.signInWithPassword({ email, password }).then(({ error: signInError }) => {
-              if (signInError) setAuthError(readableError(signInError));
-            });
+            // If existing session is for a different user, sign out first
+            if (data.session && data.session.user?.email !== email) {
+              await supabase.auth.signOut({ scope: "local" });
+            }
+            const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+            if (signInError) setAuthError(readableError(signInError));
+            // Clean the URL so testAuth doesn't persist across reloads/navigation
+            window.history.replaceState({}, document.title, window.location.pathname);
+            // onAuthStateChange will handle setting session + loadIdentity
+            return;
           }
         }
+      }
+
+      // Normal flow: no testAuth param
+      setSession(data.session);
+      if (data.session) {
+        void loadIdentity();
       }
     });
 
@@ -3697,18 +3707,6 @@ export default function Prototype() {
     setAuthWorking(true);
     setAuthError(null);
     try {
-      if (import.meta.env.DEV || isStaging) {
-        const params = new URLSearchParams(window.location.search);
-        const testEmail = params.get("testAuth");
-        if (testEmail) {
-          const [email, password] = testEmail.split("|");
-          if (email && password) {
-            const { error } = await supabase.auth.signInWithPassword({ email, password });
-            if (error) throw error;
-            return;
-          }
-        }
-      }
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo: window.location.origin },
@@ -3723,6 +3721,17 @@ export default function Prototype() {
   const signOut = async () => {
     setAuthWorking(true);
     setAuthError(null);
+    // Strip testAuth from URL so reload doesn't re-sign-in
+    if (window.location.search.includes("testAuth=")) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    try {
+      const { error } = await supabase.auth.signOut({ scope: "local" });
+      if (error) console.error("[signOut]", error);
+    } catch (err) {
+      console.error("[signOut]", err);
+    }
+    // Clear all state after signOut completes (not optimistically)
     setSession(null);
     setIdentity(null);
     setAccountOpen(false);
@@ -3730,13 +3739,7 @@ export default function Prototype() {
     setDirectoryOpen(false);
     setDriveDetailId(null);
     setActiveTab("home");
-    supabase.auth
-      .signOut({ scope: "local" })
-      .then(({ error }) => {
-        if (error) console.error("[signOut]", error);
-      })
-      .catch((err) => console.error("[signOut]", err))
-      .finally(() => setAuthWorking(false));
+    setAuthWorking(false);
   };
 
   const navItems = useMemo(() => [
