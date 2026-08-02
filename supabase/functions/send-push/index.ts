@@ -3,16 +3,25 @@ import webpush from "npm:web-push@3.6.7";
 
 const VAPID_PUBLIC_KEY = Deno.env.get("VAPID_PUBLIC_KEY");
 const VAPID_PRIVATE_KEY = Deno.env.get("VAPID_PRIVATE_KEY");
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "https://ujcrnrcgbvzyqosykkjy.supabase.co";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 const CRON_SECRET = Deno.env.get("CRON_SECRET");
 
-webpush.setVapidDetails(
-  "mailto:noreply@kidpool-sf.vercel.app",
-  VAPID_PUBLIC_KEY ?? "",
-  VAPID_PRIVATE_KEY ?? "",
-);
+let vapidInitialized = false;
+
+function ensureVapid(): void {
+  if (vapidInitialized) return;
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+    throw new Error("VAPID keys not configured");
+  }
+  webpush.setVapidDetails(
+    "mailto:noreply@kidpool-sf.vercel.app",
+    VAPID_PUBLIC_KEY,
+    VAPID_PRIVATE_KEY,
+  );
+  vapidInitialized = true;
+}
 
 function jsonError(message: string, status = 400) {
   return new Response(JSON.stringify({ error: message }), {
@@ -193,6 +202,8 @@ Deno.serve(async (req) => {
     if (subscriptions.length === 0) return jsonResponse({ sent: 0, failed: 0, reason: "no_subscriptions" });
 
     const payload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
+
+    ensureVapid();
 
     let sent = 0;
     let failed = 0;
