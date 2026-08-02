@@ -168,7 +168,7 @@ async function main() {
     for (const [first, last] of f.kids) {
       childCounter++;
       const childId = `a3000000-0000-4000-8000-${String(childCounter).padStart(12,"0")}`;
-      const photoUrl = `https://api.dicebear.com/7.x/things/svg?seed=${encodeURIComponent(first)}&backgroundColor=ffd5dc,ffdfbf,c0aede,b6e3f4,d1f4d6`;
+      const photoUrl = `https://api.dicebear.com/9.x/fun-emoji/svg?seed=${encodeURIComponent(first)}&backgroundColor=ffd5dc,ffdfbf,c0aede,b6e3f4,d1f4d6`;
       childInserts.push(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by, photo_url) VALUES ('${childId}', '${GROUP_ID}', 'a2000000-0000-4000-8000-${String(fi+1).padStart(12,"0")}', '${first}', '${last}', '${f.userId}', '${photoUrl}') ON CONFLICT (id) DO UPDATE SET photo_url = EXCLUDED.photo_url;`);
     }
   }
