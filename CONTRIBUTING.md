@@ -60,9 +60,9 @@ Test against staging Supabase. Use the demo accounts panel or `?testAuth=email|p
 ### 2. Run tests before pushing
 
 ```bash
-npm test                 # 118 foundation + scheduling + sites tests (no live DB)
-npm run test:integration # 21 tests against live staging Supabase (needs service key in macOS keychain)
-npm run test:runtime     # 37 Playwright (8 runtime + 20 E2E + 5 journeys + 4 exploratory)
+npm test                 # 120 foundation + scheduling + sites tests (no live DB)
+npm run test:integration # 22 tests against live staging Supabase (needs service key in macOS keychain)
+npm run test:runtime     # 38 Playwright (8 runtime + 21 E2E + 5 journeys + 4 exploratory)
 npx tsc --noEmit
 npm run check:runtime    # mobile runtime integrity (28 protected files)
 npm run build            # full production build

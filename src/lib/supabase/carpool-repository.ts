@@ -60,6 +60,7 @@ export type ScheduleVersionWithRosters = {
   version: Tables<"schedule_versions">;
   trips: Tables<"trips">[];
   rostersByTrip: Map<string, ScheduleRosterEntry[]>;
+  uncoveredRidersByTrip: Map<string, Tables<"children">[]>;
 };
 
 export type GenerateScheduleResult = {
@@ -1590,7 +1591,8 @@ async getLatestScheduleVersion(
     );
     if (!version) return null;
 
-    const [driverAssignments, riderAssignments] = await Promise.all([
+    const tripIds = trips.map((t) => t.id);
+    const [driverAssignments, riderAssignments, rideRequestsData] = await Promise.all([
       unwrapRequired(
         await this.client
           .from("driver_assignments")
@@ -1606,6 +1608,15 @@ async getLatestScheduleVersion(
           .eq("schedule_version_id", version.id)
           .eq("group_id", groupId),
       ),
+      tripIds.length
+        ? unwrapRequired(
+            await this.client
+              .from("ride_requests")
+              .select("*")
+              .eq("group_id", groupId)
+              .in("trip_id", tripIds),
+          )
+        : [],
     ]);
 
     const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
@@ -1635,6 +1646,32 @@ async getLatestScheduleVersion(
       rostersByTrip.set(assignment.trip_id, existing);
     }
 
-    return { version, trips, rostersByTrip };
+    // Compute uncovered riders per trip: children who need a ride but are not
+    // assigned to any active (tentative/confirmed) driver assignment.
+    const activeDriverAssignmentIds = new Set(
+      driverAssignments
+        .filter((da) => da.status === "tentative" || da.status === "confirmed")
+        .map((da) => da.id),
+    );
+    const coveredChildIdsByTrip = new Map<string, Set<string>>();
+    for (const ra of riderAssignments) {
+      if (!activeDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
+      const existing = coveredChildIdsByTrip.get(ra.trip_id) ?? new Set<string>();
+      existing.add(ra.child_id);
+      coveredChildIdsByTrip.set(ra.trip_id, existing);
+    }
+    const uncoveredRidersByTrip = new Map<string, Tables<"children">[]>();
+    for (const rr of rideRequestsData ?? []) {
+      if (!rr.needs_ride) continue;
+      const covered = coveredChildIdsByTrip.get(rr.trip_id) ?? new Set<string>();
+      if (covered.has(rr.child_id)) continue;
+      const child = childById.get(rr.child_id);
+      if (!child) continue;
+      const existing = uncoveredRidersByTrip.get(rr.trip_id) ?? [];
+      existing.push(child);
+      uncoveredRidersByTrip.set(rr.trip_id, existing);
+    }
+
+    return { version, trips, rostersByTrip, uncoveredRidersByTrip };
   }
 }

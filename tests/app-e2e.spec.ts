@@ -723,4 +723,57 @@ test.describe("App E2E", () => {
 
     cleanupE2EData();
   });
+
+  test("week tab shows uncovered riders when capacity is insufficient", async ({ page }) => {
+    const coord = setupHousehold(270, "UncovCoord", true);
+    const driver = setupHousehold(271, "UncovDriver");
+    const rider1ChildId = UID(270);
+    const rider2ChildId = UID(271);
+    const rider3ChildId = UID(272);
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${rider1ChildId}', '${GROUP_ID}', '${driver.householdId}', 'Assigned', 'Kid', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${rider2ChildId}', '${GROUP_ID}', '${driver.householdId}', 'AlsoAssigned', 'Kid', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${rider3ChildId}', '${GROUP_ID}', '${driver.householdId}', 'Uncovered', 'Kid', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(370)}', '${GROUP_ID}', '${driver.householdId}', 'Uncov Car', 2, '${driver.userId}') ON CONFLICT DO NOTHING;
+    `);
+    const { weekId, tripIds } = setupWeekWithTrips();
+    const checkinId = UID(520);
+    runSql(`
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinId}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      ${tripIds.map(tId => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${rider1ChildId}', true, '${driver.userId}') ON CONFLICT DO NOTHING;`).join('\n')}
+      ${tripIds.map(tId => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${rider2ChildId}', true, '${driver.userId}') ON CONFLICT DO NOTHING;`).join('\n')}
+      ${tripIds.map(tId => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${rider3ChildId}', true, '${driver.userId}') ON CONFLICT DO NOTHING;`).join('\n')}
+      ${tripIds.map(tId => `INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${driver.userId}', '${UID(370)}', 'prefer') ON CONFLICT DO NOTHING;`).join('\n')}
+    `);
+
+    // Generate the schedule via Edge Function
+    const fnResult = generateScheduleViaEdgeFunction(coord.email, weekId);
+    assert.ok(fnResult.success, "Schedule generation should succeed");
+
+    // Verify in DB that the third child is uncovered (capacity 2, 3 own children)
+    const riderAssignments = JSON.parse(execSync(
+      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/rider_assignments?schedule_version_id=eq.${fnResult.version.id}&select=child_id,trip_id"`,
+      { encoding: "utf8" },
+    ));
+    const assignedChildIds = new Set(riderAssignments.map((ra: { child_id: string }) => ra.child_id));
+    assert.ok(assignedChildIds.has(rider1ChildId), "First child should be assigned");
+    assert.ok(assignedChildIds.has(rider2ChildId), "Second child should be assigned");
+    assert.ok(!assignedChildIds.has(rider3ChildId), "Third child should be uncovered (capacity 2, 3 children)");
+
+    await signInWithTestAuth(page, coord.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+
+    // Navigate to Week tab — the current week's published schedule has uncovered riders
+    // from the seed data, so the uncovered section should be visible immediately.
+    await page.getByTestId("nav-week").click();
+    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
+
+    // The uncovered riders section should be visible on the current week
+    const uncoveredSection = page.locator('[data-testid^="uncovered-riders-"]').first();
+    await expect(uncoveredSection).toBeVisible({ timeout: 10000 });
+    // Verify it contains child names (amber chips)
+    await expect(page.locator(".uncovered-rider-chip").first()).toBeVisible({ timeout: 5000 });
+
+    cleanupE2EData();
+  });
 });
