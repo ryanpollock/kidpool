@@ -12,6 +12,8 @@ I've been building an app to help coordinate carpooling between Midtown Terrace 
 
 **What it does:** Each week, you check in which days your child needs a ride and which days you can drive. The app builds a schedule, assigns drivers and riders to cars, and sends confirmations. You see who's driving, who's in the car, and the pickup times — all in one place. No more group-text chains or last-minute scrambling.
 
+**Typical drive times:** Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickup is 5:15 PM from Presidio.
+
 **Watch a 2-minute demo:** https://www.loom.com/share/c96116a81d114510b16edf4982e2c00a
 
 **Getting started (about 5 minutes):**
