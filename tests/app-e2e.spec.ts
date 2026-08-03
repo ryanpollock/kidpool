@@ -271,6 +271,31 @@ function setupWeekWithTrips() {
   return { weekId, tripIds, dates };
 }
 
+function setupCurrentWeekWithTrips() {
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  const weekId = UID(913);
+  const tripIds: string[] = [];
+  const dates: string[] = [];
+  for (let d = 0; d < 5; d++) {
+    const date = new Date(today);
+    date.setDate(today.getDate() + d);
+    dates.push(date.toISOString().slice(0, 10));
+  }
+  let sql = `DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${todayStr}';\n`;
+  sql += `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${todayStr}', 'open', '${todayStr}T15:00:00-08:00', '${todayStr}T15:00:00-08:00');\n`;
+  for (let d = 0; d < 5; d++) {
+    for (const dir of ["morning", "afternoon"]) {
+      const tId = UID(413 + d * 2 + (dir === "morning" ? 0 : 1));
+      tripIds.push(tId);
+      const time = dir === "morning" ? "08:40" : "17:15";
+      sql += `INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${tId}', '${GROUP_ID}', '${weekId}', '${dates[d]}', '${dir}', '${time}', '${time}', 'Midtown', 'Presidio');\n`;
+    }
+  }
+  runSql(sql);
+  return { weekId, tripIds, dates };
+}
+
 function generateScheduleViaEdgeFunction(coordEmail: string, weekId: string) {
   const tokenBody = JSON.stringify({ email: coordEmail, password: TEST_PASSWORD });
   const tokenResult = execSync(
@@ -682,7 +707,7 @@ test.describe("App E2E", () => {
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by, photo_url) VALUES ('${childId}', '${GROUP_ID}', '${driver.householdId}', 'Detail', 'Kid', '${driver.userId}', '${photoUrl}') ON CONFLICT DO NOTHING;
       INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(360)}', '${GROUP_ID}', '${driver.householdId}', 'Detail Car', 4, '${driver.userId}') ON CONFLICT DO NOTHING;
     `);
-    const { weekId, tripIds } = setupWeekWithTrips();
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
     const checkinId = UID(510);
     runSql(`
       INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinId}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
@@ -697,20 +722,9 @@ test.describe("App E2E", () => {
     await signInWithTestAuth(page, coord.email);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    // Navigate to Week tab
+    // Navigate to Week tab — the current week is the test week, so the schedule is visible immediately
     await page.getByTestId("nav-week").click();
     await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
-
-    // Select the test week (2028-01-03)
-    const weekSelect = page.locator("select").first();
-    if (await weekSelect.isVisible({ timeout: 3000 })) {
-      const options = await weekSelect.locator("option").allTextContents();
-      const testWeekIdx = options.findIndex((opt) => opt.includes("2028-01-03") || opt.includes("Jan 3"));
-      if (testWeekIdx >= 0) {
-        await weekSelect.selectOption({ index: testWeekIdx });
-        await page.waitForTimeout(3000);
-      }
-    }
 
     // Find a drive card and click it
     const driveCard = page.locator('[data-testid^="drive-card-"]').first();
@@ -736,7 +750,7 @@ test.describe("App E2E", () => {
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${rider3ChildId}', '${GROUP_ID}', '${driver.householdId}', 'Uncovered', 'Kid', '${driver.userId}') ON CONFLICT DO NOTHING;
       INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(370)}', '${GROUP_ID}', '${driver.householdId}', 'Uncov Car', 2, '${driver.userId}') ON CONFLICT DO NOTHING;
     `);
-    const { weekId, tripIds } = setupWeekWithTrips();
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
     const checkinId = UID(520);
     runSql(`
       INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinId}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
@@ -763,12 +777,11 @@ test.describe("App E2E", () => {
     await signInWithTestAuth(page, coord.email);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    // Navigate to Week tab — the current week's published schedule has uncovered riders
-    // from the seed data, so the uncovered section should be visible immediately.
+    // Navigate to Week tab — the current week is the test week, so uncovered riders are visible immediately
     await page.getByTestId("nav-week").click();
     await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
 
-    // The uncovered riders section should be visible on the current week
+    // The uncovered riders section should be visible on the current week (test data, not seed data)
     const uncoveredSection = page.locator('[data-testid^="uncovered-riders-"]').first();
     await expect(uncoveredSection).toBeVisible({ timeout: 10000 });
     // Verify it contains child names (amber chips)
@@ -840,45 +853,7 @@ test.describe("App E2E", () => {
     const driver = setupHousehold(291, "CalDriver");
     if (!driver) { test.skip(); return; }
 
-    // Create a week starting today (so it's the "current week" the home screen loads)
-    // Use the existing seed week if it exists; otherwise create one.
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
-    const dates: string[] = [];
-    for (let d = 0; d < 5; d++) {
-      const date = new Date(today);
-      date.setDate(today.getDate() + d);
-      dates.push(date.toISOString().slice(0, 10));
-    }
-
-    // Find or create the week for today
-    const existingWeek = JSON.parse(execSync(
-      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/weeks?group_id=eq.${GROUP_ID}&starts_on=eq.${todayStr}&select=id"`,
-      { encoding: "utf8" },
-    ));
-    let weekId: string;
-    let tripIds: string[] = [];
-    if (existingWeek.length > 0) {
-      weekId = existingWeek[0].id;
-      // Get existing trips for this week
-      const existingTrips = JSON.parse(execSync(
-        `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/trips?week_id=eq.${weekId}&order=service_date.asc,direction.asc&select=id"`,
-        { encoding: "utf8" },
-      ));
-      tripIds = existingTrips.map((t: { id: string }) => t.id);
-    } else {
-      weekId = UID(912);
-      let weekSql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${todayStr}', 'open', '${todayStr}T15:00:00-08:00', '${todayStr}T15:00:00-08:00');\n`;
-      for (let d = 0; d < 5; d++) {
-        for (const dir of ["morning", "afternoon"]) {
-          const tId = UID(412 + d * 2 + (dir === "morning" ? 0 : 1));
-          tripIds.push(tId);
-          const time = dir === "morning" ? "08:40" : "17:15";
-          weekSql += `INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${tId}', '${GROUP_ID}', '${weekId}', '${dates[d]}', '${dir}', '${time}', '${time}', 'Midtown', 'Presidio');\n`;
-        }
-      }
-      runSql(weekSql);
-    }
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
     const morningTripId = tripIds[0];
 
     runSql(`
