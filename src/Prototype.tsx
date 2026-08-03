@@ -22,7 +22,13 @@ import {
   Share2Icon,
   SunIcon,
 } from "@radix-ui/react-icons";
-import { KeyboardInput, MobileScroll } from "./mobile";
+import { KeyboardInput, MobileScroll, BottomSheet } from "./mobile";
+import {
+  buildGoogleCalendarUrl,
+  buildIcsCalendar,
+  buildOutlookUrl,
+  downloadIcs,
+} from "./lib/calendar";
 import {
   CarpoolRepository,
   getSupabaseClient,
@@ -1031,6 +1037,7 @@ function HomeScreen({
   pushSubscribing,
   showIOSInstallBanner,
   onDismissIOSInstall,
+  timezone,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -1059,6 +1066,7 @@ function HomeScreen({
   pushSubscribing: boolean;
   showIOSInstallBanner: boolean;
   onDismissIOSInstall: () => void;
+  timezone: string;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
@@ -1130,11 +1138,14 @@ function HomeScreen({
               <>{tentative.length} assignment{tentative.length !== 1 ? "s" : ""} <span aria-hidden="true">·</span> <strong>Confirm by {deadlineLabel}</strong></>
             )}
           </p>
-          <p className="hero-support">
+<p className="hero-support">
             {allConfirmed
-              ? "We’ll remind you the evening before each drive."
+              ? "We'll remind you the evening before each drive."
               : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
           </p>
+          {allConfirmed ? (
+            <AddToCalendarButton assignments={confirmed} timezone={timezone} label="Add all to calendar" />
+          ) : null}
         </section>
       )}
 
@@ -1291,12 +1302,14 @@ function ReviewScreen({
   onResponded,
   onBack,
   onDeclined,
+  timezone,
 }: {
   myAssignments: MyDriverAssignment[];
   repository: CarpoolRepository;
   onResponded: () => void;
   onBack: () => void;
   onDeclined: (assignmentId: string) => void;
+  timezone: string;
 }) {
   const [working, setWorking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1384,6 +1397,7 @@ function ReviewScreen({
             ) : status === "confirmed" ? (
               <>
                 <div className="success-notice"><CheckCircledIcon /><span><strong>Confirmed</strong><small>{dateInfo.full} · {period}</small></span></div>
+                <AddToCalendarButton assignments={[entry]} timezone={timezone} />
                 {isDeclining ? (
                   <div className="decline-form" data-testid="decline-form">
                     <label className="auth-field">
@@ -3430,6 +3444,79 @@ function FaqScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
+function AddToCalendarButton({
+  assignments,
+  timezone,
+  label = "Add to calendar",
+}: {
+  assignments: MyDriverAssignment[];
+  timezone: string;
+  label?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const isBulk = assignments.length > 1;
+
+  const handleGoogle = () => {
+    if (assignments.length === 0) return;
+    window.open(buildGoogleCalendarUrl(assignments[0], timezone), "_blank", "noopener");
+    setOpen(false);
+  };
+
+  const handleOutlook = () => {
+    if (assignments.length === 0) return;
+    window.open(buildOutlookUrl(assignments[0], timezone), "_blank", "noopener");
+    setOpen(false);
+  };
+
+  const handleApple = () => {
+    const ics = buildIcsCalendar(assignments, timezone);
+    const filename = isBulk ? "carpool-crew-drives.ics" : "carpool-crew-drive.ics";
+    downloadIcs(filename, ics);
+    setOpen(false);
+  };
+
+  return (
+    <>
+      <button
+        className="secondary-button calendar-button"
+        data-testid="add-to-calendar"
+        onClick={() => setOpen(true)}
+      >
+        <CalendarIcon width="16" height="16" /> {label}
+      </button>
+      <BottomSheet open={open} onOpenChange={setOpen} title="Add to calendar">
+        <div className="calendar-sheet" data-testid="calendar-sheet">
+          {!isBulk ? (
+            <>
+              <button className="calendar-sheet-option" data-testid="calendar-google" onClick={handleGoogle}>
+                <span className="calendar-sheet-icon">G</span>
+                <span className="calendar-sheet-label">Google Calendar</span>
+                <ChevronRightIcon />
+              </button>
+              <button className="calendar-sheet-option" data-testid="calendar-outlook" onClick={handleOutlook}>
+                <span className="calendar-sheet-icon">O</span>
+                <span className="calendar-sheet-label">Outlook</span>
+                <ChevronRightIcon />
+              </button>
+            </>
+          ) : (
+            <p className="calendar-sheet-note">
+              Adding {assignments.length} drives at once. Google Calendar and Outlook support one event at a time — use Apple Calendar (.ics) to import all drives together.
+            </p>
+          )}
+          <button className="calendar-sheet-option" data-testid="calendar-apple" onClick={handleApple}>
+            <span className="calendar-sheet-icon"><CalendarIcon width="18" height="18" /></span>
+            <span className="calendar-sheet-label">
+              {isBulk ? "Apple Calendar (.ics — all drives)" : "Apple Calendar (.ics)"}
+            </span>
+            <ChevronRightIcon />
+          </button>
+        </div>
+      </BottomSheet>
+    </>
+  );
+}
+
 function DriveDetailScreen({
   entry,
   trip,
@@ -4102,6 +4189,7 @@ export default function Prototype() {
           onResponded={() => void loadMyAssignments()}
           onBack={() => setReviewOpen(false)}
           onDeclined={(assignmentId) => void repository.sendPushNotification(assignmentId, null, "declined")}
+          timezone={identity.group.timezone}
         />
       );
     }
@@ -4246,6 +4334,7 @@ export default function Prototype() {
         pushSubscribing={pushSubscribing}
         showIOSInstallBanner={shouldShowIOSInstallBanner}
         onDismissIOSInstall={() => { setIOSInstallDismissed(true); localStorage.setItem("ios_install_dismissed", "true"); }}
+        timezone={identity.group.timezone}
       />
     );
   };

@@ -832,4 +832,101 @@ test.describe("App E2E", () => {
 
     cleanupE2EData();
   });
+
+  test("add to calendar sheet appears after confirming a drive", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(290, "CalCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(291, "CalDriver");
+    if (!driver) { test.skip(); return; }
+
+    // Create a week starting today (so it's the "current week" the home screen loads)
+    // Use the existing seed week if it exists; otherwise create one.
+    const today = new Date();
+    const todayStr = today.toISOString().slice(0, 10);
+    const dates: string[] = [];
+    for (let d = 0; d < 5; d++) {
+      const date = new Date(today);
+      date.setDate(today.getDate() + d);
+      dates.push(date.toISOString().slice(0, 10));
+    }
+
+    // Find or create the week for today
+    const existingWeek = JSON.parse(execSync(
+      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/weeks?group_id=eq.${GROUP_ID}&starts_on=eq.${todayStr}&select=id"`,
+      { encoding: "utf8" },
+    ));
+    let weekId: string;
+    let tripIds: string[] = [];
+    if (existingWeek.length > 0) {
+      weekId = existingWeek[0].id;
+      // Get existing trips for this week
+      const existingTrips = JSON.parse(execSync(
+        `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/trips?week_id=eq.${weekId}&order=service_date.asc,direction.asc&select=id"`,
+        { encoding: "utf8" },
+      ));
+      tripIds = existingTrips.map((t: { id: string }) => t.id);
+    } else {
+      weekId = UID(912);
+      let weekSql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${todayStr}', 'open', '${todayStr}T15:00:00-08:00', '${todayStr}T15:00:00-08:00');\n`;
+      for (let d = 0; d < 5; d++) {
+        for (const dir of ["morning", "afternoon"]) {
+          const tId = UID(412 + d * 2 + (dir === "morning" ? 0 : 1));
+          tripIds.push(tId);
+          const time = dir === "morning" ? "08:40" : "17:15";
+          weekSql += `INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${tId}', '${GROUP_ID}', '${weekId}', '${dates[d]}', '${dir}', '${time}', '${time}', 'Midtown', 'Presidio');\n`;
+        }
+      }
+      runSql(weekSql);
+    }
+    const morningTripId = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(290)}', '${GROUP_ID}', '${driver.householdId}', 'Cal', 'Kid', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(390)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(590)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(590)}', '${morningTripId}', '${UID(290)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(590)}', '${morningTripId}', '${driver.userId}', '${UID(390)}', 'prefer') ON CONFLICT DO NOTHING;
+    `);
+
+    // Generate the schedule via Edge Function
+    const fnResult = generateScheduleViaEdgeFunction(coord.email, weekId);
+    assert.ok(fnResult.success, "Schedule generation should succeed");
+
+    // Verify the driver has an assignment in the DB
+    const driverAssignments = JSON.parse(execSync(
+      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/driver_assignments?schedule_version_id=eq.${fnResult.version.id}&driver_profile_id=eq.${driver.userId}&select=id,status"`,
+      { encoding: "utf8" },
+    ));
+    assert.ok(driverAssignments.length > 0, "Driver should have at least one assignment");
+    const assignmentId = driverAssignments[0].id;
+
+    // Confirm the drive via RPC (using driver's JWT)
+    const driverTokenBody = JSON.stringify({ email: driver.email, password: TEST_PASSWORD });
+    const driverTokenResult = execSync(
+      `curl -s -X POST -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '${driverTokenBody}' "${SUPABASE_URL}/auth/v1/token?grant_type=password"`,
+      { encoding: "utf8" },
+    );
+    const driverJwt = JSON.parse(driverTokenResult).access_token;
+    assert.ok(driverJwt, "Driver should be able to sign in for RPC");
+    execSync(
+      `curl -s -X POST -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${driverJwt}" -H "Content-Type: application/json" -d '{"target_assignment_id":"${assignmentId}","driver_response":"confirmed","decline_reason":null}' "${SUPABASE_URL}/rest/v1/rpc/respond_to_driver_assignment"`,
+      { encoding: "utf8" },
+    );
+
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    // The "Add all to calendar" button should appear in the confirmed hero
+    await expect(page.getByTestId("add-to-calendar").first()).toBeVisible({ timeout: 15000 });
+
+    // Tap it — the BottomSheet should open with calendar options
+    await page.getByTestId("add-to-calendar").first().click();
+    await expect(page.getByTestId("calendar-sheet")).toBeVisible({ timeout: 5000 });
+    // Bulk mode: only the Apple Calendar (.ics) option is available
+    await expect(page.getByTestId("calendar-apple")).toBeVisible({ timeout: 5000 });
+
+    cleanupE2EData();
+  });
 });
