@@ -298,3 +298,48 @@ test("Plan screen heading is dynamic based on week vs today", async () => {
   assert.match(source, /Plan an earlier week/);
   assert.match(source, /planHeading/);
 });
+
+test("Calendar utility exports ICS, Google Calendar, and Outlook builders", async () => {
+  const calendarUrl = new URL("../src/lib/calendar.ts", import.meta.url);
+  const source = await readFile(calendarUrl, "utf8");
+
+  assert.match(source, /export function buildIcsCalendar/);
+  assert.match(source, /export function buildIcsEvent/);
+  assert.match(source, /export function buildGoogleCalendarUrl/);
+  assert.match(source, /export function buildOutlookUrl/);
+  assert.match(source, /export function downloadIcs/);
+  assert.match(source, /BEGIN:VCALENDAR/);
+  assert.match(source, /BEGIN:VEVENT/);
+  assert.match(source, /END:VEVENT/);
+  assert.match(source, /END:VCALENDAR/);
+  assert.match(source, /DTSTART;TZID=/);
+  assert.match(source, /SUMMARY:\$\{summary\}/);
+  assert.match(source, /Carpool Crew: \$\{dir\} drive to/);
+});
+
+test("Calendar utility generates Google Calendar and Outlook URLs", async () => {
+  const calendarUrl = new URL("../src/lib/calendar.ts", import.meta.url);
+  const source = await readFile(calendarUrl, "utf8");
+
+  assert.match(source, /calendar\.google\.com\/calendar\/render/);
+  assert.match(source, /action: "TEMPLATE"/);
+  assert.match(source, /outlook\.live\.com\/calendar\/0\/deeplink\/compose/);
+  assert.match(source, /startdt/);
+  assert.match(source, /enddt/);
+});
+
+test("Add to calendar button renders in Prototype with BottomSheet options", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+
+  assert.match(source, /function AddToCalendarButton/);
+  assert.match(source, /data-testid="add-to-calendar"/);
+  assert.match(source, /data-testid="calendar-sheet"/);
+  assert.match(source, /data-testid="calendar-google"/);
+  assert.match(source, /data-testid="calendar-apple"/);
+  assert.match(source, /data-testid="calendar-outlook"/);
+  assert.match(source, /Add all to calendar/);
+  assert.match(source, /buildIcsCalendar/);
+  assert.match(source, /buildGoogleCalendarUrl/);
+  assert.match(source, /buildOutlookUrl/);
+  assert.match(source, /downloadIcs/);
+});
