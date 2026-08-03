@@ -108,6 +108,10 @@ function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
   return result.data;
 }
 
+function tripSortKey(trip: { service_date: string; direction: string }): string {
+  return `${trip.service_date}|${trip.direction === "morning" ? "0" : "1"}`;
+}
+
 function unwrapRequired<T>(
   result: { data: T | null; error: { message: string } | null },
   message = "The database returned no data.",
@@ -1324,6 +1328,7 @@ export class CarpoolRepository {
         volunteerVehicleCapacity,
       });
     }
+    alerts.sort((a, b) => tripSortKey(a.trip).localeCompare(tripSortKey(b.trip)));
     return alerts;
   }
 
@@ -1571,6 +1576,7 @@ export class CarpoolRepository {
         alerts.push({ trip, children: [child] });
       }
     }
+    alerts.sort((a, b) => tripSortKey(a.trip).localeCompare(tripSortKey(b.trip)));
     return alerts;
   }
 
