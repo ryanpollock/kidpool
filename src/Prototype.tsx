@@ -3243,10 +3243,6 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     title: "Getting started",
     items: [
       {
-        q: "Why do I need a Google account?",
-        a: "The carpool uses Google sign-in for secure authentication. Your Google email links to your family's profile. We don't access your Google contacts, calendar, or any other Google data — we only use it to verify who you are.",
-      },
-      {
         q: "How do I create a household?",
         a: "When you first sign in, the app walks you through onboarding: enter your name and phone, create a household, add your children, add a vehicle (if you'll drive), and set your standard week defaults. The whole process takes about five minutes.",
       },
