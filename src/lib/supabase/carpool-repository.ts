@@ -1235,6 +1235,7 @@ export class CarpoolRepository {
     scheduleVersionId: string,
     profileId: string,
     groupId: string,
+    weekId: string,
   ): Promise<DeclinedDriveAlert[]> {
     const [driverAssignments, riderAssignments, children, trips, vehicles, memberships] = await Promise.all([
       unwrapRequired(
@@ -1263,7 +1264,8 @@ export class CarpoolRepository {
         await this.client
           .from("trips")
           .select("*")
-          .eq("group_id", groupId),
+          .eq("group_id", groupId)
+          .eq("week_id", weekId),
       ),
       unwrapRequired(
         await this.client
@@ -1515,10 +1517,11 @@ export class CarpoolRepository {
     scheduleVersionId: string,
     profileId: string,
     groupId: string,
+    weekId: string,
   ): Promise<UncoveredChildAlert[]> {
     const [trips, rideRequests, children, driverAssignments, riderAssignments, memberships] = await Promise.all([
       unwrapRequired(
-        await this.client.from("trips").select("*").eq("group_id", groupId),
+        await this.client.from("trips").select("*").eq("group_id", groupId).eq("week_id", weekId),
       ),
       unwrapRequired(
         await this.client.from("ride_requests").select("*").eq("group_id", groupId),

@@ -4018,11 +4018,13 @@ export default function Prototype() {
           schedule.version.id,
           identity.profile.id,
           identity.group.id,
+          schedule.version.week_id,
         ),
         repository.getUncoveredChildren(
           schedule.version.id,
           identity.profile.id,
           identity.group.id,
+          schedule.version.week_id,
         ),
       ]);
       setDeclinedAlerts(alerts);
