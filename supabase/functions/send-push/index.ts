@@ -16,7 +16,7 @@ function ensureVapid(): void {
     throw new Error("VAPID keys not configured");
   }
   webpush.setVapidDetails(
-    "mailto:noreply@kidpool-sf.vercel.app",
+    "mailto:noreply@carpoolcrew.co",
     VAPID_PUBLIC_KEY,
     VAPID_PRIVATE_KEY,
   );

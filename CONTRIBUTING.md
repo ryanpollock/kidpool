@@ -1,4 +1,4 @@
-# Contributing — Midtown Carpool (kidpool)
+# Contributing — Carpool Crew (kidpool)
 
 Phone-first carpool coordination app for Clarendon Presidio families. Built with React 19, TypeScript, Vite, Supabase, and a mobile device runtime prototype kit.
 
@@ -23,7 +23,7 @@ Open the app in your browser. On staging, the sign-in screen shows a "Demo accou
 | | Production | Staging |
 |---|---|---|
 | **Supabase** | `ujcrnrcgbvzyqosykkjy` | `jfyjgmhqnlbdcafoarrg` |
-| **Frontend** | `kidpool-sf.vercel.app` | `kidpool-staging.vercel.app` |
+| **Frontend** | `carpoolcrew.co` (also `kidpool-sf.vercel.app`) | `kidpool-staging.vercel.app` |
 | **Data** | Real pilot families | 10 demo families (`@seed.kidpool`) |
 | **Auth** | Google OAuth only | Google OAuth + `?testAuth=` bypass + demo panel |
 
@@ -98,7 +98,7 @@ git checkout main && git merge staging && git push origin main
 ```
 
 Auto-deploys:
-- **Vercel** → `kidpool-sf.vercel.app` (production)
+- **Vercel** → `carpoolcrew.co` (also `kidpool-sf.vercel.app`, production)
 - **GitHub Action** → Edge Functions to production Supabase
 
 No demo panel, no `?testAuth=` bypass — real Google OAuth only.
@@ -110,7 +110,7 @@ No demo panel, no `?testAuth=` bypass — real Google OAuth only.
 | Push to | Frontend (Vercel) | Edge Functions (GitHub Action) |
 |---|---|---|
 | `staging` | `kidpool-staging.vercel.app` | staging Supabase |
-| `main` | `kidpool-sf.vercel.app` | production Supabase |
+| `main` | `carpoolcrew.co` (also `kidpool-sf.vercel.app`) | production Supabase |
 
 The GitHub Action lives at `.github/workflows/deploy-edge-functions.yml` and uses the `SUPABASE_ACCESS_TOKEN` GitHub secret. It deploys `generate-schedule` and `send-push` with `--no-verify-jwt` (each function does its own JWT/auth check internally).
 

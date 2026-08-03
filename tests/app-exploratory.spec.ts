@@ -201,7 +201,7 @@ test.describe("Exploratory Checks", () => {
 
       const brandLockup = page.locator(".brand-lockup");
       await expect(brandLockup).toBeVisible({ timeout: 5000 });
-      await expect(brandLockup.locator("text=Midtown Carpool")).toBeVisible();
+      await expect(brandLockup.locator("text=Carpool Crew")).toBeVisible();
 
       const avatarButton = page.locator(".avatar-button");
       await expect(avatarButton).toBeVisible({ timeout: 3000 });

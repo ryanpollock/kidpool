@@ -1,4 +1,4 @@
-// Midtown Carpool — Service Worker for PWA push notifications
+// Carpool Crew — Service Worker for PWA push notifications
 // Handles push events and notification clicks.
 
 self.addEventListener("push", (event) => {
@@ -9,7 +9,7 @@ self.addEventListener("push", (event) => {
     payload = {};
   }
 
-  const title = payload.title ?? "Midtown Carpool";
+  const title = payload.title ?? "Carpool Crew";
   const body = payload.body ?? "";
   const url = payload.url ?? "/";
 
