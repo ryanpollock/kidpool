@@ -88,7 +88,7 @@ npm run test:integration   # 22 tests against live Supabase (needs service key i
 npm run test:runtime       # Playwright: 8 mobile-runtime + 22 E2E + 5 journeys + 4 exploratory = 39 tests
 npx tsc --noEmit           # TypeScript check
 npm run check:runtime      # Mobile runtime integrity (28 protected files)
-npm run build              # Full production build
+npm run build              # Full production build (uploads source maps to Sentry if SENTRY_AUTH_TOKEN is set)
 ```
 
 All 189 tests must pass before pushing to `main`.

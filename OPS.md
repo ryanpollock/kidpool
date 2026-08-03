@@ -157,8 +157,20 @@ Vercel bakes in `VITE_*` env vars at build time. The project has separate Produc
 | `VITE_SUPABASE_URL` | `https://ujcrnrcgbvzyqosykkjy.supabase.co` | `https://jfyjgmhqnlbdcafoarrg.supabase.co` |
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | Production anon key | Staging anon key |
 | `VITE_VAPID_PUBLIC_KEY` | Production VAPID | Staging VAPID |
+| `VITE_SENTRY_DSN` | Sentry DSN (browser-safe) | Same DSN (env tagged via init config) |
+| `SENTRY_AUTH_TOKEN` | Build-time secret for Vite source map upload | Same token |
 
-Never put `SUPABASE_SERVICE_ROLE_KEY` or any secret in a `VITE_*` variable. Browser-side code can only use the publishable anon key; all authorization is enforced by RLS.
+Never put `SUPABASE_SERVICE_ROLE_KEY` or any secret in a `VITE_*` variable. Browser-side code can only use the publishable anon key; all authorization is enforced by RLS. `SENTRY_AUTH_TOKEN` is NOT a `VITE_*` var — it's a build-time secret for the `@sentry/vite-plugin` and is never exposed to the browser.
+
+### Error monitoring (Sentry)
+
+Client-side errors are captured by Sentry (`@sentry/react`). Initialization is in `src/lib/sentry.ts`, called from `src/main.tsx` before the app renders. The `AppErrorBoundary` in `src/Prototype.tsx` reports caught render errors via `componentDidCatch`.
+
+- **Dashboard:** sentry.io → org `ryan-pollock` → project `javascript-react`
+- **Environment tagging:** errors are tagged `development` / `staging` / `production` based on `import.meta.env.DEV` and the Supabase URL.
+- **Source maps:** uploaded automatically by `@sentry/vite-plugin` during the Vercel build when `SENTRY_AUTH_TOKEN` is set. Production stack traces are unmangled.
+- **PII:** `sendDefaultPii: false`. No `setUser()` calls. `beforeSend` scrubs email addresses, phone numbers, and `testAuth` params from error messages and breadcrumbs.
+- **Sampling:** 100% of errors captured (`sampleRate: 1.0`). No performance tracing.
 
 ## 7. Emergency fallback procedure
 
