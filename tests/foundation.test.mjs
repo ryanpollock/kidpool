@@ -277,3 +277,24 @@ test("Home screen links to the FAQ", async () => {
   assert.match(source, /onFaq/);
   assert.match(source, /QuestionMarkCircledIcon/);
 });
+
+test("Plan screen supports week navigation with Earlier/Later/Current reset", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+
+  assert.match(source, /allWeeks: Tables<"weeks">\[\]/);
+  assert.match(source, /selectedWeekId: string \| null/);
+  assert.match(source, /onSelectWeek: \(weekId: string \| null\) => void/);
+  assert.match(source, /data-testid="plan-week-nav"/);
+  assert.match(source, /data-testid="plan-week-reset"/);
+  assert.match(source, /week-nav-btn--reset/);
+  assert.match(source, /onSelectWeek\(null\)/);
+});
+
+test("Plan screen heading is dynamic based on week vs today", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+
+  assert.match(source, /Plan this week/);
+  assert.match(source, /Plan next week/);
+  assert.match(source, /Plan an earlier week/);
+  assert.match(source, /planHeading/);
+});
