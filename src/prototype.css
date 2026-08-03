@@ -1196,7 +1196,8 @@ button {
 }
 
 .directory-screen,
-.drive-detail-screen {
+.drive-detail-screen,
+.faq-screen {
   padding-bottom: 40px;
 }
 
@@ -1270,6 +1271,52 @@ a.directory-contact-item:hover {
 .directory-contact-hidden {
   color: var(--muted);
   font-style: italic;
+}
+
+.faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  margin-top: 12px;
+}
+
+.faq-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.faq-section-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--teal);
+}
+
+.faq-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.faq-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.faq-question {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 0;
+}
+
+.faq-answer {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  margin: 0;
 }
 
 .drive-detail-meta {

@@ -261,3 +261,19 @@ test("WeekScreen renders uncovered riders section per trip", async () => {
   assert.match(source, /uncovered-rider-chip/);
   assert.match(source, /uncoveredRidersByTrip/);
 });
+
+test("FAQ screen renders with subpage header and content", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+  assert.match(source, /data-testid="faq-screen"/);
+  assert.match(source, /function FaqScreen/);
+  assert.match(source, /FAQ_SECTIONS/);
+  assert.match(source, /faq-question/);
+  assert.match(source, /faq-answer/);
+});
+
+test("Home screen links to the FAQ", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+  assert.match(source, /data-testid="faq-link"/);
+  assert.match(source, /onFaq/);
+  assert.match(source, /QuestionMarkCircledIcon/);
+});
