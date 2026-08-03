@@ -1642,6 +1642,14 @@ a.directory-contact-item:hover {
   color: var(--red);
 }
 
+.leg--no-school {
+  color: var(--ink-soft);
+}
+
+.week-day--no-school .week-date {
+  opacity: 0.6;
+}
+
 .mini-status--alert {
   background: var(--red-pale);
   color: var(--red);
