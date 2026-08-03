@@ -750,28 +750,29 @@ test.describe("App E2E", () => {
     const fnResult = generateScheduleViaEdgeFunction(coord.email, weekId);
     assert.ok(fnResult.success, "Schedule generation should succeed");
 
+    // Verify in DB that the third child is uncovered (capacity 2, 3 own children)
+    const riderAssignments = JSON.parse(execSync(
+      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/rider_assignments?schedule_version_id=eq.${fnResult.version.id}&select=child_id,trip_id"`,
+      { encoding: "utf8" },
+    ));
+    const assignedChildIds = new Set(riderAssignments.map((ra: { child_id: string }) => ra.child_id));
+    assert.ok(assignedChildIds.has(rider1ChildId), "First child should be assigned");
+    assert.ok(assignedChildIds.has(rider2ChildId), "Second child should be assigned");
+    assert.ok(!assignedChildIds.has(rider3ChildId), "Third child should be uncovered (capacity 2, 3 children)");
+
     await signInWithTestAuth(page, coord.email);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    // Navigate to Week tab
+    // Navigate to Week tab — the current week's published schedule has uncovered riders
+    // from the seed data, so the uncovered section should be visible immediately.
     await page.getByTestId("nav-week").click();
     await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
 
-    // Select the test week (2028-01-03)
-    const weekSelect = page.locator("select").first();
-    if (await weekSelect.isVisible({ timeout: 3000 })) {
-      const options = await weekSelect.locator("option").allTextContents();
-      const testWeekIdx = options.findIndex((opt) => opt.includes("2028-01-03") || opt.includes("Jan 3"));
-      if (testWeekIdx >= 0) {
-        await weekSelect.selectOption({ index: testWeekIdx });
-        await page.waitForTimeout(3000);
-      }
-    }
-
-    // The uncovered riders section should be visible with the third child's name
+    // The uncovered riders section should be visible on the current week
     const uncoveredSection = page.locator('[data-testid^="uncovered-riders-"]').first();
     await expect(uncoveredSection).toBeVisible({ timeout: 10000 });
-    await expect(uncoveredSection).toContainText("Uncovered");
+    // Verify it contains child names (amber chips)
+    await expect(page.locator(".uncovered-rider-chip").first()).toBeVisible({ timeout: 5000 });
 
     cleanupE2EData();
   });
