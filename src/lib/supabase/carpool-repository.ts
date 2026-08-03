@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { isNoSchoolDay } from "../school-calendar";
 import type {
   ConfirmationResponse,
   Database,
@@ -868,6 +869,8 @@ export class CarpoolRepository {
       const date = new Date(startDate);
       date.setDate(date.getDate() + offset);
       const serviceDate = date.toISOString().slice(0, 10);
+
+      if (isNoSchoolDay(serviceDate)) continue;
 
       tripInserts.push({
         group_id: groupId,
