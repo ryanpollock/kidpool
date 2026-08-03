@@ -1046,7 +1046,7 @@ export class CarpoolRepository {
       return;
     }
 
-    unwrapRequired(
+    unwrap(
       await this.client.from("ride_requests").insert({
         group_id: groupId,
         checkin_id: checkinId,
@@ -1091,7 +1091,7 @@ export class CarpoolRepository {
       return;
     }
 
-    unwrapRequired(
+    unwrap(
       await this.client.from("driver_availability").insert({
         group_id: groupId,
         checkin_id: checkinId,
