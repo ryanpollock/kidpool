@@ -17,6 +17,7 @@ import {
   HomeIcon,
   MoonIcon,
   PersonIcon,
+  QuestionMarkCircledIcon,
   ReloadIcon,
   Share2Icon,
   SunIcon,
@@ -1013,6 +1014,7 @@ function HomeScreen({
   onCoverage,
   onDirectory,
   onAccount,
+  onFaq,
   onRetryAssignments,
   onVolunteer,
   working,
@@ -1040,6 +1042,7 @@ function HomeScreen({
   onCoverage: () => void;
   onDirectory: () => void;
   onAccount: () => void;
+  onFaq: () => void;
   onRetryAssignments: () => void;
   onVolunteer: (assignmentId: string) => void;
   working: boolean;
@@ -1270,6 +1273,12 @@ function HomeScreen({
       <button className="coverage-alert" onClick={onDirectory} data-testid="directory-link">
         <span><AvatarIcon width="20" height="20" /></span>
         <span><strong>Parent directory</strong><small>Phone and email for everyone in your carpool</small></span>
+        <ChevronRightIcon />
+      </button>
+
+      <button className="coverage-alert" onClick={onFaq} data-testid="faq-link">
+        <span><QuestionMarkCircledIcon width="20" height="20" /></span>
+        <span><strong>FAQ</strong><small>How the carpool works</small></span>
         <ChevronRightIcon />
       </button>
     </div>
@@ -3167,6 +3176,219 @@ function DirectoryScreen({
   );
 }
 
+const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
+  {
+    title: "Getting started",
+    items: [
+      {
+        q: "Why do I need a Google account?",
+        a: "The carpool uses Google sign-in for secure authentication. Your Google email links to your family's profile. We don't access your Google contacts, calendar, or any other Google data — we only use it to verify who you are.",
+      },
+      {
+        q: "How do I create a household?",
+        a: "When you first sign in, the app walks you through onboarding: enter your name and phone, create a household, add your children, add a vehicle (if you'll drive), and set your standard week defaults. The whole process takes about five minutes.",
+      },
+      {
+        q: "How do I join an existing household?",
+        a: "If your co-parent already created a household, ask them for the 10-character join code on their Account screen. On the sign-in screen, choose \"Join a household\" and enter the code. Each parent uses their own Google account.",
+      },
+      {
+        q: "How do I invite a co-parent?",
+        a: "Open your Account screen and look for the join code. Share that code with your co-parent. They sign in with their own Google account and enter the code to join your household.",
+      },
+    ],
+  },
+  {
+    title: "Your household profile",
+    items: [
+      {
+        q: "How do I add or edit my children?",
+        a: "Open the Account screen (tap your avatar in the top-right). You can add children, edit their names, upload a photo, and remove a child if they leave the carpool.",
+      },
+      {
+        q: "What is a riding buddy?",
+        a: "A riding buddy is a child from another family who your child prefers to ride with. When the scheduler assigns your child to a car, it tries to place them in the same car as their buddy. For best results, set the buddy preference in both directions — your child picks their buddy, and the buddy's parent picks your child back.",
+      },
+      {
+        q: "How do I add a vehicle?",
+        a: "On the Account screen, add a vehicle with a label (e.g., \"Honda Odyssey\") and the number of child passenger seats (1–12). A vehicle is required if you want to be considered as a driver.",
+      },
+      {
+        q: "What are standard week defaults?",
+        a: "During onboarding (and editable on the Account screen), you set which days your child typically needs rides and which days you're typically available to drive. When a new week is created, these defaults pre-fill your check-in so you don't start from scratch.",
+      },
+    ],
+  },
+  {
+    title: "Weekly check-in",
+    items: [
+      {
+        q: "When should I check in?",
+        a: "Check in each week by Saturday. The coordinator generates the schedule on Sunday, so your check-in needs to be submitted before then. You'll see a reminder on the Plan tab if you haven't checked in yet.",
+      },
+      {
+        q: "How do I request rides for my child?",
+        a: "On the Plan tab, tap each AM or PM slot for each day your child needs a ride. The highlighted slots show which trips you're requesting. Tap again to toggle off.",
+      },
+      {
+        q: "What does Prefer, Can, and Can't mean for driving?",
+        a: "Prefer means you'd like to drive that trip. Can means you're available if needed. Can't means you cannot drive that trip. The scheduler prioritizes Prefer drivers first, then Can drivers if needed. You must have a vehicle on file to mark Prefer or Can.",
+      },
+      {
+        q: "What is max drives per week?",
+        a: "This caps how many trips you'll be assigned to drive in a single week. Set it based on your availability. If you set it to 0, you won't drive at all — your child can still ride.",
+      },
+      {
+        q: "Can I change my check-in after submitting?",
+        a: "Yes. Tap \"Reopen\" on the Plan tab to un-submit your check-in, make changes, and submit again. The coordinator sees your latest submission when they generate the schedule.",
+      },
+    ],
+  },
+  {
+    title: "The schedule",
+    items: [
+      {
+        q: "How does the scheduling algorithm work?",
+        a: "The scheduler (greedy-v1) assigns children to available drivers for each trip. For each car, it places the driver's own children first, then fills remaining seats with other children — prioritizing riding buddies and then alphabetical order. Drivers are selected based on: own children riding, preference (Prefer over Can), fewest drives so far this week, and then a deterministic tiebreak.",
+      },
+      {
+        q: "What's the difference between a draft and a published schedule?",
+        a: "A draft is a working version the coordinator can review and regenerate. Publishing locks the schedule for all families — everyone sees the final rosters and drivers get confirmation requests. Once published, the coordinator can regenerate if needed, which replaces the published version immediately.",
+      },
+      {
+        q: "Who can generate and publish schedules?",
+        a: "Only coordinators. The coordinator creates the week, generates the draft schedule, reviews it, and publishes it. If you're not a coordinator, you'll see the schedule on the Week tab but can't generate or publish.",
+      },
+    ],
+  },
+  {
+    title: "Driver confirmation",
+    items: [
+      {
+        q: "What does tentative mean?",
+        a: "A tentative assignment means the scheduler has proposed you as the driver for that trip, but you haven't confirmed yet. You need to confirm or decline by the deadline (typically 3:00 PM Sunday).",
+      },
+      {
+        q: "How do I confirm my drives?",
+        a: "On the Home tab, tap \"Confirm all drives\" to confirm every tentative assignment at once, or tap \"Review\" to confirm or decline each trip individually. You'll see a confirmation dialog listing all trips before you commit.",
+      },
+      {
+        q: "What happens if I decline a drive?",
+        a: "If you decline, the children who were assigned to your car become uncovered. Their parents get a notification and can volunteer to cover the drive. The coordinator can also regenerate the schedule to reassign.",
+      },
+      {
+        q: "What is the confirmation deadline?",
+        a: "The deadline is shown on the Home screen (typically 3:00 PM Sunday). If you don't confirm or decline by the deadline, your assignment expires and the children become uncovered.",
+      },
+    ],
+  },
+  {
+    title: "Coverage problems",
+    items: [
+      {
+        q: "What happens when my child's driver cancels?",
+        a: "You'll see a decline alert on the Home screen showing which trip is affected. If you can drive, tap \"I can drive\" to volunteer. If you can't, contact the coordinator or wait for the schedule to be regenerated.",
+      },
+      {
+        q: "What are uncovered riders?",
+        a: "Uncovered riders are children who need a ride for a trip but don't have a driver assigned. They're shown on the Week tab with amber chips listing each child's name. The coordinator should review these before publishing.",
+      },
+      {
+        q: "How do I volunteer to cover a drive?",
+        a: "When a drive is declined, affected families see an \"I can drive\" button on the Home screen. Tap it to volunteer — the app checks that your vehicle has enough seats for the assigned children.",
+      },
+    ],
+  },
+  {
+    title: "Week tab",
+    items: [
+      {
+        q: "How do I view different weeks?",
+        a: "On the Week tab, use the Earlier and Later buttons to navigate between weeks. The current week is shown by default.",
+      },
+      {
+        q: "What do the coverage indicators mean?",
+        a: "The status strip at the top shows: covered trips, children who need rides (amber), and declined drives. Each trip shows the number of cars and, if there are uncovered children, their names in amber chips.",
+      },
+      {
+        q: "Can I see who's in each car?",
+        a: "Yes. On the Week tab, tap any drive card to see the driver, vehicle, route, and all children assigned to that car. Child photos appear if they've been uploaded.",
+      },
+    ],
+  },
+  {
+    title: "Notifications",
+    items: [
+      {
+        q: "What do push notifications alert me about?",
+        a: "You'll be notified when: a new schedule is published, your child's driver declines a drive, your child is uncovered (no driver assigned), or a drive you declined needs coverage.",
+      },
+      {
+        q: "How do I enable push notifications?",
+        a: "Tap \"Allow\" on the banner at the top of the Home screen. You'll be asked to grant notification permission. On iOS, you also need to add the app to your home screen for push to work.",
+      },
+      {
+        q: "Why does iOS need Add to Home Screen?",
+        a: "iOS Safari doesn't support web push notifications directly. You need to add the app to your home screen (Share → Add to Home Screen) and launch it from there to receive push notifications.",
+      },
+    ],
+  },
+  {
+    title: "Parent directory",
+    items: [
+      {
+        q: "Who appears in the parent directory?",
+        a: "All active parents in your carpool group, grouped by household. Coordinators are marked with an Admin badge.",
+      },
+      {
+        q: "Why is someone's phone or email hidden?",
+        a: "Each parent controls whether their phone and email are visible to other families. If they've turned off sharing in their Account settings, you'll see \"Phone hidden\" or \"Email hidden\" instead of their contact info.",
+      },
+      {
+        q: "How do I show my contact info to other families?",
+        a: "Open the Account screen and toggle the sharing switches next to your phone number and email. Sharing is on by default — you can turn it off if you prefer not to share.",
+      },
+    ],
+  },
+  {
+    title: "Account",
+    items: [
+      {
+        q: "How do I sign out?",
+        a: "Tap your avatar in the top-right, then scroll to the bottom of the Account screen and tap \"Sign out.\" This returns you to the sign-in screen.",
+      },
+      {
+        q: "Do both parents need separate accounts?",
+        a: "Yes. Each parent signs in with their own Google account and joins the same household using the join code. This way each parent has their own profile, can check in independently, and receives their own notifications.",
+      },
+    ],
+  },
+];
+
+function FaqScreen({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="screen-content faq-screen" data-testid="faq-screen">
+      <header className="subpage-header">
+        <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
+        <div><span className="eyebrow">Carpool</span><h1>FAQ</h1></div>
+      </header>
+      <div className="faq-list">
+        {FAQ_SECTIONS.map((section) => (
+          <section className="faq-section" key={section.title}>
+            <h2 className="faq-section-title">{section.title}</h2>
+            {section.items.map((item, idx) => (
+              <div className="faq-item" key={idx}>
+                <p className="faq-question">{item.q}</p>
+                <p className="faq-answer">{item.a}</p>
+              </div>
+            ))}
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DriveDetailScreen({
   entry,
   trip,
@@ -3292,6 +3514,7 @@ export default function Prototype() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [driveDetailId, setDriveDetailId] = useState<string | null>(null);
+  const [faqOpen, setFaqOpen] = useState(false);
   const [pushPermissionShown, setPushPermissionShown] = useState(false);
 
   // Register service worker for PWA push notifications
@@ -3763,6 +3986,7 @@ export default function Prototype() {
     setReviewOpen(false);
     setDirectoryOpen(false);
     setDriveDetailId(null);
+    setFaqOpen(false);
     setActiveTab("home");
     setAuthWorking(false);
   };
@@ -3779,6 +4003,7 @@ export default function Prototype() {
     setAccountOpen(false);
     setDirectoryOpen(false);
     setDriveDetailId(null);
+    setFaqOpen(false);
     setActiveTab(tab);
   };
 
@@ -3837,6 +4062,10 @@ export default function Prototype() {
           />
         );
       }
+    }
+
+    if (faqOpen && identity) {
+      return <FaqScreen onBack={() => setFaqOpen(false)} />;
     }
 
     if (activeTab === "plan") {
@@ -3931,6 +4160,7 @@ export default function Prototype() {
         onCoverage={() => navigate("week")}
         onDirectory={() => setDirectoryOpen(true)}
         onAccount={() => setAccountOpen(true)}
+        onFaq={() => setFaqOpen(true)}
         onRetryAssignments={() => void loadMyAssignments()}
         onVolunteer={(assignmentId) => void volunteerForDrive(assignmentId)}
         working={confirmWorking}
@@ -4031,7 +4261,7 @@ export default function Prototype() {
           </main>
         </MobileScroll>
       </AppErrorBoundary>
-      {!reviewOpen && !accountOpen && !directoryOpen && !driveDetailId ? (
+      {!reviewOpen && !accountOpen && !directoryOpen && !driveDetailId && !faqOpen ? (
         <nav className="bottom-nav" aria-label="Primary navigation">
           {navItems.map(({ id, label, icon: Icon }) => (
             <button
