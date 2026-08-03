@@ -1,8 +1,8 @@
-# Midtown Carpool
+# Carpool Crew
 
 Phone-first web app that helps Clarendon families coordinate shared rides between Midtown Terrace and Presidio Middle School.
 
-**Live app:** [kidpool-sf.vercel.app](https://kidpool-sf.vercel.app)
+**Live app:** [carpoolcrew.co](https://carpoolcrew.co) (also at [kidpool-sf.vercel.app](https://kidpool-sf.vercel.app))
 
 ## What it does
 
