@@ -2404,6 +2404,13 @@ a.directory-contact-item:hover {
   cursor: default;
 }
 
+.week-nav-btn--reset {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+
 .household-row-actions {
   display: flex;
   align-items: center;

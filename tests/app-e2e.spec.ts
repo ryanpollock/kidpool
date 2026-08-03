@@ -776,4 +776,60 @@ test.describe("App E2E", () => {
 
     cleanupE2EData();
   });
+
+  test("plan tab week navigation shows Earlier/Later and Current reset", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const user = setupHousehold(280, "E2ePlanNav", false);
+    if (!user) { test.skip(); return; }
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(280)}', '${GROUP_ID}', '${user.householdId}', 'NavKid', 'Plan', '${user.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    // Create two future weeks with trips (2028-01-03 and 2028-01-10)
+    const week1Id = UID(910);
+    const week2Id = UID(920);
+    const week1Dates = ["2028-01-03", "2028-01-04", "2028-01-05", "2028-01-06", "2028-01-07"];
+    const week2Dates = ["2028-01-10", "2028-01-11", "2028-01-12", "2028-01-13", "2028-01-14"];
+    let sql = "";
+    sql += `INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${week1Id}', '${GROUP_ID}', '2028-01-03', 'open') ON CONFLICT DO NOTHING;\n`;
+    sql += `INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${week2Id}', '${GROUP_ID}', '2028-01-10', 'open') ON CONFLICT DO NOTHING;\n`;
+    for (let d = 0; d < 5; d++) {
+      for (const dir of ["morning", "afternoon"]) {
+        const t1Id = UID(410 + d * 2 + (dir === "morning" ? 0 : 1));
+        const t2Id = UID(420 + d * 2 + (dir === "morning" ? 0 : 1));
+        const time = dir === "morning" ? "08:40" : "15:15";
+        sql += `INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${t1Id}', '${GROUP_ID}', '${week1Id}', '${week1Dates[d]}', '${dir}', '${time}', '${time}', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;\n`;
+        sql += `INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${t2Id}', '${GROUP_ID}', '${week2Id}', '${week2Dates[d]}', '${dir}', '${time}', '${time}', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;\n`;
+      }
+    }
+    runSql(sql);
+
+    await signInWithTestAuth(page, user.email);
+    await page.getByTestId("nav-plan").click();
+    await expect(page.getByTestId("plan-screen")).toBeVisible({ timeout: 10000 });
+
+    // Week navigation should be visible (2+ weeks exist)
+    await expect(page.getByTestId("plan-week-nav")).toBeVisible({ timeout: 5000 });
+
+    // Record the initial week label
+    const labelLocator = page.locator('[data-testid="plan-screen"] .page-title p');
+    const initialLabel = await labelLocator.textContent();
+
+    // Click "Later" to navigate to a newer week
+    await page.getByTestId("plan-week-nav").getByText("Later").click();
+
+    // Verify the week label changed (navigation worked)
+    await expect(labelLocator).not.toHaveText(initialLabel ?? "", { timeout: 10000 });
+
+    // "Current" reset button should now be visible
+    await expect(page.getByTestId("plan-week-reset")).toBeVisible({ timeout: 5000 });
+
+    // Click "Current" to reset back to the default week
+    await page.getByTestId("plan-week-reset").click();
+
+    // Verify we're back on the default week
+    await expect(labelLocator).toHaveText(initialLabel ?? "", { timeout: 10000 });
+
+    cleanupE2EData();
+  });
 });

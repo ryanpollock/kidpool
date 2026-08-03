@@ -1439,6 +1439,9 @@ function PlanScreen({
   onCreateWeek,
   avatarUrl,
   onAccount,
+  allWeeks,
+  selectedWeekId,
+  onSelectWeek,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -1457,6 +1460,9 @@ function PlanScreen({
   onCreateWeek: () => void;
   avatarUrl: string | null;
   onAccount: () => void;
+  allWeeks: Tables<"weeks">[];
+  selectedWeekId: string | null;
+  onSelectWeek: (weekId: string | null) => void;
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1467,6 +1473,25 @@ function PlanScreen({
   const submitted = checkin?.status === "submitted";
   const children = setup?.children ?? [];
   const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
+
+  const planHeading = (() => {
+    if (!week) return "Plan next week";
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const startsOn = week.week.starts_on;
+    const weekStart = new Date(startsOn + "T00:00:00");
+    const friday = new Date(weekStart);
+    friday.setDate(weekStart.getDate() + 4);
+    const fridayStr = friday.toISOString().slice(0, 10);
+    if (todayStr >= startsOn && todayStr <= fridayStr) return "Plan this week";
+    if (startsOn > todayStr) return "Plan next week";
+    return "Plan an earlier week";
+  })();
+
+  const currentIdx = allWeeks.findIndex((w) => w.id === (selectedWeekId ?? week?.week.id));
+  const hasPrev = currentIdx >= 0 && currentIdx < allWeeks.length - 1;
+  const hasNext = currentIdx > 0;
+  const showNav = allWeeks.length > 1;
+  const showReset = selectedWeekId !== null;
 
   useEffect(() => {
     if (checkin) setMaxDrives(String(checkin.max_drives || 2));
@@ -1508,7 +1533,7 @@ function PlanScreen({
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
-          <h1>Plan next week</h1>
+          <h1>{planHeading}</h1>
         </header>
         <p className="helper-copy">Loading the upcoming week…</p>
       </div>
@@ -1521,7 +1546,7 @@ function PlanScreen({
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
-          <h1>Plan next week</h1>
+          <h1>{planHeading}</h1>
         </header>
         <div className="auth-error" role="alert">{weekError}</div>
         <button className="primary-button" data-testid="retry-load-week" onClick={onReloadWeek}>Try again</button>
@@ -1535,7 +1560,7 @@ function PlanScreen({
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
-          <h1>Plan next week</h1>
+          <h1>{planHeading}</h1>
         </header>
         <div className="empty-state">
           <p>No upcoming week has been created yet.</p>
@@ -1557,7 +1582,7 @@ function PlanScreen({
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
-          <h1>Plan next week</h1>
+          <h1>{planHeading}</h1>
           <p>{weekLabel(week.week.starts_on)}</p>
         </header>
         <div className="auth-error" role="alert">Couldn't load your check-in: {checkinError}</div>
@@ -1572,7 +1597,7 @@ function PlanScreen({
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
           <span className="eyebrow">Check-in</span>
-          <h1>Plan next week</h1>
+          <h1>{planHeading}</h1>
           <p>{weekLabel(week.week.starts_on)}</p>
         </header>
         <div className="empty-state">
@@ -1671,9 +1696,25 @@ function PlanScreen({
       <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
       <header className="page-title">
         <span className="eyebrow">Check-in</span>
-        <h1>Plan next week</h1>
+        <h1>{planHeading}</h1>
         <p>{weekLabel(week.week.starts_on)}</p>
       </header>
+
+      {showNav ? (
+        <div className="week-nav" data-testid="plan-week-nav">
+          <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
+            <ChevronLeftIcon /> Earlier
+          </button>
+          {showReset ? (
+            <button className="week-nav-btn week-nav-btn--reset" data-testid="plan-week-reset" onClick={() => onSelectWeek(null)}>
+              Current
+            </button>
+          ) : null}
+          <button className="week-nav-btn" disabled={!hasNext} onClick={() => { if (hasNext) onSelectWeek(allWeeks[currentIdx - 1].id); }}>
+            Later <ChevronRightIcon />
+          </button>
+        </div>
+      ) : null}
 
       {coParentUpdate ? (
         <div className="coparent-toast" data-testid="coparent-update">{coParentUpdate}</div>
@@ -3478,6 +3519,9 @@ export default function Prototype() {
   const [allWeeks, setAllWeeks] = useState<Tables<"weeks">[]>([]);
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
   const [viewWeekData, setViewWeekData] = useState<WeekWithTrips | null>(null);
+  const [selectedPlanWeekId, setSelectedPlanWeekId] = useState<string | null>(null);
+  const [planViewWeekData, setPlanViewWeekData] = useState<WeekWithTrips | null>(null);
+  const [planViewWeekLoading, setPlanViewWeekLoading] = useState(false);
   const [checkin, setCheckin] = useState<Tables<"weekly_checkins"> | null>(null);
   const [checkinDetails, setCheckinDetails] = useState<CheckinDetails | null>(null);
   const [checkinLoading, setCheckinLoading] = useState(false);
@@ -3595,13 +3639,31 @@ export default function Prototype() {
     }
   }, [identity?.group, repository]);
 
+  const loadPlanViewWeek = useCallback(async () => {
+    if (!selectedPlanWeekId) { setPlanViewWeekData(null); return; }
+    setPlanViewWeekLoading(true);
+    try {
+      const data = await repository.getWeekById(selectedPlanWeekId);
+      setPlanViewWeekData(data);
+    } catch {
+      setPlanViewWeekData(null);
+    } finally {
+      setPlanViewWeekLoading(false);
+    }
+  }, [selectedPlanWeekId, repository]);
+
+  const activePlanWeek = useMemo(
+    () => (selectedPlanWeekId ? planViewWeekData : planWeekData),
+    [selectedPlanWeekId, planViewWeekData, planWeekData],
+  );
+
   const loadCheckin = useCallback(async () => {
-    if (!identity?.membership || !planWeekData) return;
+    if (!identity?.membership || !activePlanWeek) return;
     setCheckinLoading(true);
     setCheckinError(null);
     try {
       const checkinRow = await repository.getOrCreateCheckin(
-        planWeekData.week.id, identity.membership.household_id, identity.group.id,
+        activePlanWeek.week.id, identity.membership.household_id, identity.group.id,
       );
       setCheckin(checkinRow);
       let details = await repository.getCheckinDetails(checkinRow.id);
@@ -3610,7 +3672,7 @@ export default function Prototype() {
       if (details.rideRequests.length === 0 && (householdSetup?.children.length ?? 0) > 0) {
         await repository.applyDefaultRideNeeds(
           checkinRow.id, identity.membership.household_id,
-          planWeekData.trips, householdSetup!.children,
+          activePlanWeek.trips, householdSetup!.children,
           identity.group.id, identity.profile.id,
         );
         needsReload = true;
@@ -3622,7 +3684,7 @@ export default function Prototype() {
       if (myDriveAvail.length === 0) {
         const activeVehicle = householdSetup?.vehicles.find((v) => v.active) ?? null;
         await repository.applyDefaultDrivePreferences(
-          checkinRow.id, identity.profile.id, planWeekData.trips,
+          checkinRow.id, identity.profile.id, activePlanWeek.trips,
           activeVehicle?.id ?? null, identity.group.id,
         );
         needsReload = true;
@@ -3640,7 +3702,7 @@ export default function Prototype() {
     } finally {
       setCheckinLoading(false);
     }
-  }, [identity?.membership, identity?.group, identity?.profile, planWeekData, householdSetup, repository]);
+  }, [identity?.membership, identity?.group, identity?.profile, activePlanWeek, householdSetup, repository]);
 
   const loadOverview = useCallback(async () => {
     if (!identity?.group || !weekData) return;
@@ -3662,8 +3724,12 @@ export default function Prototype() {
   }, [identity?.membership, loadWeek]);
 
   useEffect(() => {
-    if (planWeekData) void loadCheckin();
-  }, [planWeekData, loadCheckin]);
+    void loadPlanViewWeek();
+  }, [loadPlanViewWeek]);
+
+  useEffect(() => {
+    if (activePlanWeek) void loadCheckin();
+  }, [activePlanWeek, loadCheckin]);
 
   useEffect(() => {
     if (activeTab === "coordinate" && weekData) void loadOverview();
@@ -4071,9 +4137,9 @@ export default function Prototype() {
     if (activeTab === "plan") {
       return (
         <PlanScreen
-          week={planWeekData}
-          weekLoading={planWeekLoading}
-          weekError={planWeekError}
+          week={activePlanWeek}
+          weekLoading={selectedPlanWeekId ? planViewWeekLoading : planWeekLoading}
+          weekError={selectedPlanWeekId ? null : planWeekError}
           checkin={checkin}
           checkinDetails={checkinDetails}
           checkinLoading={checkinLoading}
@@ -4088,6 +4154,9 @@ export default function Prototype() {
           onCreateWeek={() => void createWeek()}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
+          allWeeks={allWeeks}
+          selectedWeekId={selectedPlanWeekId}
+          onSelectWeek={setSelectedPlanWeekId}
         />
       );
     }
