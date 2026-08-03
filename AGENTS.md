@@ -139,6 +139,18 @@ npm run seed-demo       # seed 10 families into staging
 npm run delete-seed     # delete all @seed.kidpool data from staging
 ```
 
+### Priority child scheduling
+
+The `children.is_priority` column (boolean, default `false`) marks a child for guaranteed seat allocation. When the scheduling algorithm has a seat available on a trip, a priority child wins that seat before any non-priority rider — including over another child's buddy-in-car advantage. Priority is the first tiebreaker in the `while`-loop seat selection in `greedy-v1.ts`, ahead of buddy-in-car and name sort.
+
+Hard constraints still apply: if a trip has zero eligible drivers (no availability, all at `max_drives`, all declined/expired), a priority child is uncovered like anyone else. The guarantee is: **if any seat is available, the priority child gets it before any non-priority rider.**
+
+Sara Pollock (`first_name='Sara'`, `last_name='Pollock'`) is marked priority in both staging and production via `202608030006_set_priority_sara.sql`. If Sara is deleted and re-added via the app, re-run that migration to re-apply the flag (the app's `createChild` insert defaults `is_priority` to `false`). The match is by name, not ID, so it's idempotent and survives row recreation.
+
+Sara's own `preferred_buddy_child_id` continues to work for co-placement: once she's assigned to a car, her buddy gets buddy-in-car priority for that car. Set buddy preferences bidirectionally (Sara → buddy AND buddy → Sara) for best results.
+
+No UI toggle exists yet; `is_priority` is managed via SQL. A coordinator-screen switch is future scope.
+
 ### Staging sign-in
 
 The staging site (`kidpool-staging.vercel.app`) supports both Google OAuth and email/password via the `?testAuth=email|password` bypass. The bypass is enabled when `VITE_SUPABASE_URL` contains the staging project ref (baked at build time). The sign-in screen shows a "Demo accounts" panel with clickable chips for each demo family. Production builds never show the bypass or the panel.

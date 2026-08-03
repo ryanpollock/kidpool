@@ -89,6 +89,7 @@ export type ChildRow = Timestamps & {
   created_by: string;
   preferred_buddy_child_id: string | null;
   photo_url: string | null;
+  is_priority: boolean;
 };
 
 export type VehicleRow = Timestamps & {

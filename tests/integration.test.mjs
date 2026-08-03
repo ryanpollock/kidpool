@@ -861,3 +861,62 @@ test("Child photo: updateChild can set photo_url via REST", { skip: !SERVICE_KEY
   cleanupAllTestData();
   deleteTestUser(a.userId);
 });
+
+test("Priority: Edge Function honors is_priority from DB rows", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(64, "PrioCoord", "member", true);
+  const driver = setupHousehold(65, "PrioDriver", "member", false);
+  const other = setupHousehold(66, "PrioOther", "member", false);
+
+  const { weekId, tripIds } = setupWeekAndTrips(coord.userId, coord.householdId);
+  const tripId = tripIds[0];
+
+  const driverChildId = UID(264);
+  const otherChildId = UID(265);
+  const priorityChildId = UID(266);
+
+  // Setup: driver has 1 own child + capacity 2.
+  // Three riders total: own child + 2 others. Only 1 "other" seat available.
+  // otherChild (Aaron) sorts before priorityChild (Sara) alphabetically.
+  // priorityChild has is_priority=true set via SQL.
+  // The Edge Function should read is_priority from the DB and the algorithm
+  // should assign priorityChild over otherChild.
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(364)}', '${GROUP_ID}', '${driver.householdId}', 'PrioCar', 2, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${driverChildId}', '${GROUP_ID}', '${driver.householdId}', 'Zoe', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${otherChildId}', '${GROUP_ID}', '${other.householdId}', 'Aaron', 'Other', '${other.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${priorityChildId}', '${GROUP_ID}', '${other.householdId}', 'Sara', 'Pollock', '${other.userId}') ON CONFLICT DO NOTHING;
+    UPDATE public.children SET is_priority = true WHERE id = '${priorityChildId}';
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(564)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(565)}', '${GROUP_ID}', '${weekId}', '${other.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(564)}', '${tripId}', '${driverChildId}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(565)}', '${tripId}', '${otherChildId}', true, '${other.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(565)}', '${tripId}', '${priorityChildId}', true, '${other.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(564)}', '${tripId}', '${driver.userId}', '${UID(364)}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  // Generate schedule as coordinator
+  const coordToken = signInUser("priocoord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Schedule generation should succeed");
+
+  // Find rider assignments for the trip
+  const riderAssignments = restGet("rider_assignments", { group_id: GROUP_ID });
+  assert.ok(riderAssignments.length > 0, "Should have rider assignments");
+
+  // Priority child (Sara) should be assigned
+  const priorityChildAssigned = riderAssignments.some((ra) => ra.child_id === priorityChildId);
+  assert.ok(priorityChildAssigned, "Priority child Sara should be assigned over Aaron despite name sort");
+
+  // Non-priority child (Aaron) should be uncovered (capacity reached)
+  const otherChildAssigned = riderAssignments.some((ra) => ra.child_id === otherChildId);
+  assert.ok(!otherChildAssigned, "Non-priority child Aaron should be uncovered (priority won the seat)");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+  deleteTestUser(other.userId);
+});
