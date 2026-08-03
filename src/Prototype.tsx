@@ -2130,7 +2130,7 @@ function WeekScreen({
           const dateTrips = tripsByDate.get(serviceDate) ?? [];
           const dateInfo = formatTripDate(serviceDate);
           const noSchoolReason = getNoSchoolReason(serviceDate);
-          if (dateTrips.length === 0 && noSchoolReason) {
+          if (noSchoolReason) {
             return (
               <article className="week-day week-day--no-school" key={serviceDate} data-testid={`no-school-${serviceDate}`}>
                 <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
