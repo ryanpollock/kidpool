@@ -84,3 +84,34 @@ test("Exchange 7 CSS styles the error boundary and coverage-error block", async 
   assert.match(css, /\.error-boundary-mark\b/);
   assert.match(css, /\.coverage-summary--error\b/);
 });
+
+test("frameless production MobileRuntime provides ScreenPortalContext for BottomSheet", async () => {
+  // Regression: BottomSheet calls useScreenPortal() unconditionally. In dev,
+  // PhoneFrame provides the context. In production (frameless MobileRuntime),
+  // the context was missing, throwing "useScreenPortal must be used inside
+  // PhoneFrame" and crashing the Home screen for any user reaching a
+  // BottomSheet (e.g. AddToCalendarButton with confirmed drives).
+  const runtimeUrl = new URL("../src/mobile/MobileRuntime.tsx", import.meta.url);
+  const phoneFrameUrl = new URL("../src/mobile/PhoneFrame.tsx", import.meta.url);
+  const bottomSheetUrl = new URL("../src/mobile/BottomSheet.tsx", import.meta.url);
+
+  const runtime = await readFile(runtimeUrl, "utf8");
+  const phoneFrame = await readFile(phoneFrameUrl, "utf8");
+  const bottomSheet = await readFile(bottomSheetUrl, "utf8");
+
+  // PhoneFrame must export the context so MobileRuntime can provide it.
+  assert.match(phoneFrame, /export const ScreenPortalContext/);
+
+  // BottomSheet must consume useScreenPortal (the call that crashed).
+  assert.match(bottomSheet, /useScreenPortal\(\)/);
+
+  // MobileRuntime must import and provide ScreenPortalContext in the PROD branch.
+  assert.match(runtime, /import \{[^}]*ScreenPortalContext[^}]*\} from "\.\/PhoneFrame"/);
+  const prodBranch = runtime.match(/import\.meta\.env\.PROD[\s\S]*?return \([\s\S]*?\);\s*\}/);
+  assert.ok(prodBranch, "import.meta.env.PROD branch not found in MobileRuntime");
+  assert.match(prodBranch[0], /ScreenPortalContext\.Provider/);
+
+  // The provider must carry a ref so the sheet portals into the app container.
+  assert.match(prodBranch[0], /ref=\{framelessScreenRef\}/);
+  assert.match(runtime, /useRef<HTMLDivElement \| null>\(null\)/);
+});

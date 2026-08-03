@@ -29,3 +29,5 @@ Use `KeyboardInput`, `KeyboardTextarea`, or `MobileTextField` for all text entry
 ## BottomSheet
 
 `BottomSheet` dismisses the keyboard before opening and animates both in and out by default. Keep its `open` state controlled through `onOpenChange`; no consumer exit-animation wrapper is needed.
+
+`BottomSheet` uses `useScreenPortal()` to portal into the device screen. In dev, `PhoneFrame` provides this context. In production (frameless `MobileRuntime`), `ScreenPortalContext` is provided with a ref on the `mobile-runtime-frameless` container, so `BottomSheet` works in both runtimes.
