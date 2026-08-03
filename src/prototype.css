@@ -2208,6 +2208,37 @@ a.directory-contact-item:hover {
   font-style: italic;
 }
 
+.uncovered-riders {
+  grid-column: 1 / -1;
+  margin-top: 6px;
+  padding-left: 30px;
+}
+
+.uncovered-riders-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.uncovered-riders-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.uncovered-rider-chip {
+  padding: 3px 9px;
+  border-radius: 100px;
+  background: var(--amber-pale);
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .coordinator-generate {
   margin-top: 16px;
   display: grid;

@@ -771,11 +771,13 @@ function countDeclinedRosters(schedule: ScheduleVersionWithRosters): number {
 
 function countUncoveredTrips(schedule: ScheduleVersionWithRosters): number {
   let count = 0;
-  for (const rosters of schedule.rostersByTrip.values()) {
+  for (const trip of schedule.trips) {
+    const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
     const active = rosters.filter(
       (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released",
     );
-    if (active.length === 0) count++;
+    const uncovered = schedule.uncoveredRidersByTrip.get(trip.id) ?? [];
+    if (active.length === 0 || uncovered.length > 0) count++;
   }
   return count;
 }
@@ -1998,6 +2000,10 @@ function WeekScreen({
 
   const isPublished = schedule.version.status === "published";
 
+  const uncoveredRiderTotal = schedule.trips.reduce((count, trip) => {
+    return count + (schedule.uncoveredRidersByTrip.get(trip.id) ?? []).length;
+  }, 0);
+
   return (
     <div className="screen-content week-screen" data-testid="week-screen">
       <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
@@ -2027,7 +2033,7 @@ function WeekScreen({
 
       <div className="week-status-strip">
         <span><CheckCircledIcon /> {coveredCount} covered</span>
-        {uncoveredCount > 0 ? <span><ExclamationTriangleIcon /> {uncoveredCount} needs assignment</span> : null}
+        {uncoveredRiderTotal > 0 ? <span><ExclamationTriangleIcon /> {uncoveredRiderTotal} need{uncoveredRiderTotal !== 1 ? "" : "s"} ride{uncoveredRiderTotal !== 1 ? "s" : ""}</span> : null}
         {declinedCount > 0 ? <span className="week-status-declined"><ExclamationTriangleIcon /> {declinedCount} declined</span> : null}
       </div>
 
@@ -2100,6 +2106,25 @@ function WeekScreen({
                         ))}
                       </div>
                     ) : null}
+                    {(() => {
+                      const uncovered = schedule.uncoveredRidersByTrip.get(trip.id) ?? [];
+                      if (uncovered.length === 0) return null;
+                      return (
+                        <div className="uncovered-riders" data-testid={`uncovered-riders-${trip.id}`}>
+                          <small className="uncovered-riders-label">
+                            <ExclamationTriangleIcon width="12" height="12" />
+                            {uncovered.length} need{uncovered.length !== 1 ? "" : "s"} a ride
+                          </small>
+                          <div className="uncovered-riders-list">
+                            {uncovered.map((child) => (
+                              <span key={child.id} className="uncovered-rider-chip">
+                                {child.first_name} {child.last_name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}

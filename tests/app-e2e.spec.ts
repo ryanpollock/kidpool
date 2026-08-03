@@ -723,4 +723,56 @@ test.describe("App E2E", () => {
 
     cleanupE2EData();
   });
+
+  test("week tab shows uncovered riders when capacity is insufficient", async ({ page }) => {
+    const coord = setupHousehold(270, "UncovCoord", true);
+    const driver = setupHousehold(271, "UncovDriver");
+    const rider1ChildId = UID(270);
+    const rider2ChildId = UID(271);
+    const rider3ChildId = UID(272);
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${rider1ChildId}', '${GROUP_ID}', '${driver.householdId}', 'Assigned', 'Kid', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${rider2ChildId}', '${GROUP_ID}', '${driver.householdId}', 'AlsoAssigned', 'Kid', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${rider3ChildId}', '${GROUP_ID}', '${driver.householdId}', 'Uncovered', 'Kid', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, created_by) VALUES ('${UID(370)}', '${GROUP_ID}', '${driver.householdId}', 'Uncov Car', 2, '${driver.userId}') ON CONFLICT DO NOTHING;
+    `);
+    const { weekId, tripIds } = setupWeekWithTrips();
+    const checkinId = UID(520);
+    runSql(`
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinId}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      ${tripIds.map(tId => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${rider1ChildId}', true, '${driver.userId}') ON CONFLICT DO NOTHING;`).join('\n')}
+      ${tripIds.map(tId => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${rider2ChildId}', true, '${driver.userId}') ON CONFLICT DO NOTHING;`).join('\n')}
+      ${tripIds.map(tId => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${rider3ChildId}', true, '${driver.userId}') ON CONFLICT DO NOTHING;`).join('\n')}
+      ${tripIds.map(tId => `INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${checkinId}', '${tId}', '${driver.userId}', '${UID(370)}', 'prefer') ON CONFLICT DO NOTHING;`).join('\n')}
+    `);
+
+    // Generate the schedule via Edge Function
+    const fnResult = generateScheduleViaEdgeFunction(coord.email, weekId);
+    assert.ok(fnResult.success, "Schedule generation should succeed");
+
+    await signInWithTestAuth(page, coord.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+
+    // Navigate to Week tab
+    await page.getByTestId("nav-week").click();
+    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
+
+    // Select the test week (2028-01-03)
+    const weekSelect = page.locator("select").first();
+    if (await weekSelect.isVisible({ timeout: 3000 })) {
+      const options = await weekSelect.locator("option").allTextContents();
+      const testWeekIdx = options.findIndex((opt) => opt.includes("2028-01-03") || opt.includes("Jan 3"));
+      if (testWeekIdx >= 0) {
+        await weekSelect.selectOption({ index: testWeekIdx });
+        await page.waitForTimeout(3000);
+      }
+    }
+
+    // The uncovered riders section should be visible with the third child's name
+    const uncoveredSection = page.locator('[data-testid^="uncovered-riders-"]').first();
+    await expect(uncoveredSection).toBeVisible({ timeout: 10000 });
+    await expect(uncoveredSection).toContainText("Uncovered");
+
+    cleanupE2EData();
+  });
 });

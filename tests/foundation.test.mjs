@@ -245,3 +245,19 @@ test("drive detail screen renders child photos from the Week tab", async () => {
   assert.match(source, /child-photo-card/);
   assert.match(source, /onOpenDrive/);
 });
+
+test("ScheduleVersionWithRosters type includes uncoveredRidersByTrip", async () => {
+  const repoSource = await readFile(
+    new URL("../src/lib/supabase/carpool-repository.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(repoSource, /uncoveredRidersByTrip\s*:\s*Map<string, Tables<"children">\[\]>/);
+  assert.match(repoSource, /uncoveredRidersByTrip\.get/);
+});
+
+test("WeekScreen renders uncovered riders section per trip", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+  assert.match(source, /uncovered-riders-\$\{trip\.id\}/);
+  assert.match(source, /uncovered-rider-chip/);
+  assert.match(source, /uncoveredRidersByTrip/);
+});
