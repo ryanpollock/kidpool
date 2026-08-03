@@ -557,7 +557,7 @@ export class CarpoolRepository {
     return unwrapRequired(
       await this.client
         .from("children")
-        .select("id, group_id, household_id, first_name, last_name, active, created_by, created_at, updated_at, preferred_buddy_child_id, photo_url")
+        .select("id, group_id, household_id, first_name, last_name, active, created_by, created_at, updated_at, preferred_buddy_child_id, photo_url, is_priority")
         .eq("group_id", groupId)
         .eq("active", true)
         .order("first_name")

@@ -22,7 +22,8 @@ function tripSortKey(trip: SchedulingTrip): string {
 }
 
 function childSortKey(child: SchedulingChild): string {
-  return `${child.household_id}|${child.first_name}|${child.last_name}|${child.id}`;
+  const priorityPrefix = child.is_priority ? "0" : "1";
+  return `${priorityPrefix}|${child.household_id}|${child.first_name}|${child.last_name}|${child.id}`;
 }
 
 function driverPreferenceRank(pref: string): number {
@@ -147,6 +148,12 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
         for (let i = 1; i < otherPool.length; i++) {
           const candidate = otherPool[i];
           const best = otherPool[bestIdx];
+          const candPriority = candidate.is_priority ?? false;
+          const bestPriority = best.is_priority ?? false;
+          if (candPriority !== bestPriority) {
+            if (candPriority) bestIdx = i;
+            continue;
+          }
           const candBuddyInCar = candidate.preferred_buddy_child_id != null &&
             assignedSet.has(candidate.preferred_buddy_child_id);
           const bestBuddyInCar = best.preferred_buddy_child_id != null &&

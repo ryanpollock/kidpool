@@ -15,6 +15,7 @@ export type SchedulingChild = {
   first_name: string;
   last_name: string;
   preferred_buddy_child_id: string | null;
+  is_priority?: boolean;
 };
 
 export type SchedulingVehicle = {
