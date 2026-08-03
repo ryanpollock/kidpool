@@ -32,12 +32,40 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
       - name: Deploy generate-schedule
-        run: supabase functions deploy generate-schedule --no-verify-jwt
+        run: |
+          for attempt in 1 2 3; do
+            echo "Deploy attempt $attempt of 3"
+            if supabase functions deploy generate-schedule --no-verify-jwt; then
+              echo "Deploy succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "Deploy failed on attempt $attempt" >&2
+            if [[ $attempt -lt 3 ]]; then
+              echo "Waiting 10s before retry…"
+              sleep 10
+            fi
+          done
+          echo "All 3 deploy attempts failed" >&2
+          exit 1
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
       - name: Deploy send-push
-        run: supabase functions deploy send-push --no-verify-jwt
+        run: |
+          for attempt in 1 2 3; do
+            echo "Deploy attempt $attempt of 3"
+            if supabase functions deploy send-push --no-verify-jwt; then
+              echo "Deploy succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "Deploy failed on attempt $attempt" >&2
+            if [[ $attempt -lt 3 ]]; then
+              echo "Waiting 10s before retry…"
+              sleep 10
+            fi
+          done
+          echo "All 3 deploy attempts failed" >&2
+          exit 1
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
