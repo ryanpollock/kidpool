@@ -3340,11 +3340,11 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     items: [
       {
         q: "When should I check in?",
-        a: "Check in each week by Saturday. The coordinator generates the schedule on Sunday, so your check-in needs to be submitted before then. You'll see a reminder on the Plan tab if you haven't checked in yet.",
+        a: "Check in each week by Saturday. The coordinator generates the schedule on Sunday, so your check-in needs to be submitted before then. You'll see a reminder on the Check-in tab if you haven't checked in yet.",
       },
       {
         q: "How do I request rides for my child?",
-        a: "On the Plan tab, tap each AM or PM slot for each day your child needs a ride. The highlighted slots show which trips you're requesting. Tap again to toggle off.",
+        a: "On the Check-in tab, tap each AM or PM slot for each day your child needs a ride. The highlighted slots show which trips you're requesting. Tap again to toggle off.",
       },
       {
         q: "What does Prefer, Can, and Can't mean for driving?",
@@ -3356,7 +3356,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "Can I change my check-in after submitting?",
-        a: "Yes. Tap \"Reopen\" on the Plan tab to un-submit your check-in, make changes, and submit again. The coordinator sees your latest submission when they generate the schedule.",
+        a: "Yes. Tap \"Reopen\" on the Check-in tab to un-submit your check-in, make changes, and submit again. The coordinator sees your latest submission when they generate the schedule.",
       },
     ],
   },
