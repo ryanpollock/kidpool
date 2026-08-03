@@ -4476,7 +4476,18 @@ export default function Prototype() {
   return (
     <div className="prototype-shell">
       <AppErrorBoundary>
-        <MobileScroll className="app-screen" key={activeTab}>
+        <MobileScroll
+          className="app-screen"
+          key={activeTab}
+          onRefresh={async () => {
+            switch (activeTab) {
+              case "home": await loadMyAssignments(); break;
+              case "plan": await loadCheckin(); break;
+              case "week": await loadSchedule(); break;
+              case "coordinate": await loadOverview(); break;
+            }
+          }}
+        >
           <main className="app-main" aria-label="Carpool Crew app">
             {renderContent()}
           </main>
