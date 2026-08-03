@@ -1077,11 +1077,12 @@ function HomeScreen({
   timezone: string;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
-  const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
-  const confirmed = myAssignments.filter((a) => a.assignment.status === "confirmed");
+  const activeAssignments = myAssignments.filter((a) => a.assignment.status !== "declined");
+  const tentative = activeAssignments.filter((a) => a.assignment.status === "tentative");
+  const confirmed = activeAssignments.filter((a) => a.assignment.status === "confirmed");
   const declined = myAssignments.filter((a) => a.assignment.status === "declined");
   const allConfirmed = tentative.length === 0 && confirmed.length > 0 && declined.length === 0;
-  const noAssignments = myAssignments.length === 0;
+  const noAssignments = activeAssignments.length === 0;
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
     ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })
@@ -1236,7 +1237,7 @@ function HomeScreen({
             <h2 id="assignment-heading">{allConfirmed ? "Your confirmed drives" : "Your tentative drives"}</h2>
           </div>
           <div className="assignment-list">
-            {myAssignments.map((entry) => (
+            {activeAssignments.map((entry) => (
               <AssignmentRow
                 key={entry.assignment.id}
                 trip={entry.trip}
@@ -1310,13 +1311,15 @@ function ReviewScreen({
   onResponded,
   onBack,
   onDeclined,
+  onAssignmentStatusChange,
   timezone,
 }: {
   myAssignments: MyDriverAssignment[];
   repository: CarpoolRepository;
-  onResponded: () => void;
+  onResponded: () => Promise<void>;
   onBack: () => void;
   onDeclined: (assignmentId: string) => void;
+  onAssignmentStatusChange: (assignmentId: string, status: AssignmentStatus) => void;
   timezone: string;
 }) {
   const [working, setWorking] = useState<string | null>(null);
@@ -1329,9 +1332,10 @@ function ReviewScreen({
     setError(null);
     try {
       await repository.respondToDriverAssignment(assignmentId, response, reason);
+      onAssignmentStatusChange(assignmentId, response === "confirmed" ? "confirmed" : "declined");
       setDecliningId(null);
       setDeclineReason("");
-      onResponded();
+      await onResponded();
       if (response === "declined") onDeclined(assignmentId);
     } catch (nextError) {
       setError(readableError(nextError));
@@ -4039,6 +4043,14 @@ export default function Prototype() {
     }
   }, [identity?.group, identity?.profile, schedule, repository]);
 
+  const updateAssignmentStatus = useCallback((assignmentId: string, status: AssignmentStatus) => {
+    setMyAssignments((prev) => prev.map((a) =>
+      a.assignment.id === assignmentId
+        ? { ...a, assignment: { ...a.assignment, status } }
+        : a
+    ));
+  }, []);
+
   useEffect(() => {
     if (schedule) void loadMyAssignments();
   }, [schedule, loadMyAssignments]);
@@ -4249,9 +4261,10 @@ export default function Prototype() {
         <ReviewScreen
           myAssignments={myAssignments}
           repository={repository}
-          onResponded={() => void loadMyAssignments()}
+          onResponded={async () => { await loadMyAssignments(); }}
           onBack={() => setReviewOpen(false)}
           onDeclined={(assignmentId) => void repository.sendPushNotification(assignmentId, null, "declined")}
+          onAssignmentStatusChange={updateAssignmentStatus}
           timezone={identity.group.timezone}
         />
       );
