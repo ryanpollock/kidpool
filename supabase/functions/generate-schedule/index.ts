@@ -325,18 +325,18 @@ Deno.serve(async (req: Request) => {
         .update({ status: "published" })
         .eq("id", newVersion.id);
       if (publishError) {
-        console.warn("Failed to auto-publish new version:", publishError.message);
+        return jsonError(`Failed to auto-publish new version: ${publishError.message}`, 500);
       }
     }
 
-    // Supersede prior version only after all writes succeeded
+    // Supersede prior version only after the new version reached its intended state.
     if (latestVersion && latestVersion.id) {
       const { error: supersedeError } = await supabase
         .from("schedule_versions")
         .update({ status: "superseded" })
         .eq("id", latestVersion.id);
       if (supersedeError) {
-        console.warn("Failed to supersede prior version:", supersedeError.message);
+        return jsonError(`Failed to supersede prior version: ${supersedeError.message}`, 500);
       }
     }
 

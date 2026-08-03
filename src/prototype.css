@@ -1128,6 +1128,16 @@ button {
   font-size: 10px;
 }
 
+.coverage-alert--muted {
+  border-color: #cbd9dd;
+  background: white;
+  color: var(--ink);
+}
+
+.coverage-alert--muted small {
+  color: var(--ink-soft);
+}
+
 .bottom-nav {
   position: absolute;
   z-index: 20;
@@ -1640,6 +1650,23 @@ a.directory-contact-item:hover {
 
 .leg--alert {
   color: var(--red);
+}
+
+.leg--no-school {
+  color: var(--ink-soft);
+}
+
+.week-day--no-school .week-date {
+  opacity: 0.6;
+}
+
+.leg--pending {
+  color: var(--ink-soft);
+  opacity: 0.7;
+}
+
+.week-day--pending .week-date {
+  opacity: 0.6;
 }
 
 .mini-status--alert {

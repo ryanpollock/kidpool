@@ -45,6 +45,7 @@ import {
   type WeekWithTrips,
 } from "./lib/supabase";
 import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference } from "./lib/supabase/database.types";
+import { getNoSchoolReason } from "./lib/school-calendar";
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
 
@@ -1288,13 +1289,13 @@ function HomeScreen({
         <ChevronRightIcon />
       </button>
 
-      <button className="coverage-alert" onClick={onDirectory} data-testid="directory-link">
+      <button className="coverage-alert coverage-alert--muted" onClick={onDirectory} data-testid="directory-link">
         <span><AvatarIcon width="20" height="20" /></span>
         <span><strong>Parent directory</strong><small>Phone and email for everyone in your carpool</small></span>
         <ChevronRightIcon />
       </button>
 
-      <button className="coverage-alert" onClick={onFaq} data-testid="faq-link">
+      <button className="coverage-alert coverage-alert--muted" onClick={onFaq} data-testid="faq-link">
         <span><QuestionMarkCircledIcon width="20" height="20" /></span>
         <span><strong>FAQ</strong><small>How the carpool works</small></span>
         <ChevronRightIcon />
@@ -1987,6 +1988,16 @@ function WeekScreen({
   const lastTripDate = week.trips[week.trips.length - 1]?.service_date ?? week.week.starts_on;
   const endDate = formatTripDate(lastTripDate);
 
+  // Build the full Mon–Fri list for this week so no-school days (which have no
+  // trips) still render as calendar rows, even before a schedule is generated.
+  const weekStart = new Date(week.week.starts_on + "T00:00:00");
+  const weekdays: string[] = [];
+  for (let offset = 0; offset < 5; offset++) {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + offset);
+    weekdays.push(d.toISOString().slice(0, 10));
+  }
+
   if (scheduleLoading) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
@@ -2022,6 +2033,38 @@ function WeekScreen({
           <span className="eyebrow">Family schedule</span>
           <h1>{startDate.short} – {endDate.short}</h1>
         </header>
+        <div className="week-list">
+          {weekdays.map((serviceDate) => {
+            const dateInfo = formatTripDate(serviceDate);
+            const noSchoolReason = getNoSchoolReason(serviceDate);
+            if (noSchoolReason) {
+              return (
+                <article className="week-day week-day--no-school" key={serviceDate} data-testid={`no-school-${serviceDate}`}>
+                  <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
+                  <div className="leg leg--no-school">
+                    <CalendarIcon />
+                    <span>
+                      <small>No school</small>
+                      <strong>{noSchoolReason}</strong>
+                    </span>
+                  </div>
+                </article>
+              );
+            }
+            return (
+              <article className="week-day week-day--pending" key={serviceDate}>
+                <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
+                <div className="leg leg--pending">
+                  <ClockIcon />
+                  <span>
+                    <small>Awaiting schedule</small>
+                    <strong>No trips yet</strong>
+                  </span>
+                </div>
+              </article>
+            );
+          })}
+        </div>
         <div className="empty-state">
           <p>No draft schedule yet.</p>
           {isCoordinator ? (
@@ -2115,9 +2158,24 @@ function WeekScreen({
       ) : null}
 
       <div className="week-list">
-        {sortedDates.map((serviceDate) => {
+        {weekdays.map((serviceDate) => {
           const dateTrips = tripsByDate.get(serviceDate) ?? [];
           const dateInfo = formatTripDate(serviceDate);
+          const noSchoolReason = getNoSchoolReason(serviceDate);
+          if (noSchoolReason) {
+            return (
+              <article className="week-day week-day--no-school" key={serviceDate} data-testid={`no-school-${serviceDate}`}>
+                <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
+                <div className="leg leg--no-school">
+                  <CalendarIcon />
+                  <span>
+                    <small>No school</small>
+                    <strong>{noSchoolReason}</strong>
+                  </span>
+                </div>
+              </article>
+            );
+          }
           return (
             <article className="week-day" key={serviceDate}>
               <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
