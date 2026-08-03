@@ -1,5 +1,6 @@
 import { Component, useCallback, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
+import * as Sentry from "@sentry/react";
 import {
   AvatarIcon,
   BackpackIcon,
@@ -122,6 +123,12 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
 
   static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
     return { error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: { componentStack?: string | null }): void {
+    Sentry.captureException(error, {
+      extra: { componentStack: errorInfo.componentStack ?? undefined },
+    });
   }
 
   render() {
