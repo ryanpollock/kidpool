@@ -1128,6 +1128,16 @@ button {
   font-size: 10px;
 }
 
+.coverage-alert--muted {
+  border-color: #cbd9dd;
+  background: white;
+  color: var(--ink);
+}
+
+.coverage-alert--muted small {
+  color: var(--ink-soft);
+}
+
 .bottom-nav {
   position: absolute;
   z-index: 20;
