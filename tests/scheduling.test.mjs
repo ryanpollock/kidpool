@@ -560,3 +560,115 @@ test("buddy: stale buddy ID not in children list — graceful, no effect", async
   );
   assert.equal(t1?.uncovered_rider_count, 0, "all riders covered");
 });
+
+test("priority: priority child wins tight seat over name-sorted peer", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // 1 driver from h1, capacity 2. Own child c1 + two others need rides.
+  // "Ben Adams" sorts before "Sara Pollock" alphabetically, but Sara is
+  // priority. With capacity 2 (own + 1 other), Sara should win the seat.
+  const inputs = {
+    trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
+    children: [
+      { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams", preferred_buddy_child_id: null },
+      { id: "c2", household_id: "h2", first_name: "Ben", last_name: "Adams", preferred_buddy_child_id: null, is_priority: false },
+      { id: "c3", household_id: "h3", first_name: "Sara", last_name: "Pollock", preferred_buddy_child_id: null, is_priority: true },
+    ],
+    vehicles: [{ id: "v1", household_id: "h1", label: "Adams car", child_passenger_capacity: 2 }],
+    profiles: [{ id: "p1", full_name: "Adams Parent", household_id: "h1" }],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t1", child_id: "c2", needs_ride: true },
+      { trip_id: "t1", child_id: "c3", needs_ride: true },
+    ],
+    availability: [{ trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" }],
+    maxDrivesByDriver: new Map([["p1", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  const p1Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  assert.deepEqual(p1Assignment?.assigned_child_ids, ["c1", "c3"], "priority child Sara should win the seat over Ben despite name sort");
+  assert.equal(t1?.uncovered_rider_count, 1, "Ben should be uncovered (capacity reached)");
+});
+
+test("priority: priority child wins over another child's buddy-in-car advantage", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // 1 driver from h1, capacity 2. Own child c1. Two others:
+  //   c2 has buddy=c1 (will be in car as own child) — would normally win via buddy-in-car
+  //   c3 is priority, no buddy
+  // Priority is the first tiebreaker, so c3 wins over c2's buddy advantage.
+  const inputs = {
+    trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
+    children: [
+      { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams", preferred_buddy_child_id: null },
+      { id: "c2", household_id: "h2", first_name: "Ben", last_name: "Bennett", preferred_buddy_child_id: "c1" },
+      { id: "c3", household_id: "h3", first_name: "Sara", last_name: "Pollock", preferred_buddy_child_id: null, is_priority: true },
+    ],
+    vehicles: [{ id: "v1", household_id: "h1", label: "Adams car", child_passenger_capacity: 2 }],
+    profiles: [{ id: "p1", full_name: "Adams Parent", household_id: "h1" }],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t1", child_id: "c2", needs_ride: true },
+      { trip_id: "t1", child_id: "c3", needs_ride: true },
+    ],
+    availability: [{ trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" }],
+    maxDrivesByDriver: new Map([["p1", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  const p1Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  assert.deepEqual(p1Assignment?.assigned_child_ids, ["c1", "c3"], "priority child c3 should win over c2's buddy-in-car advantage");
+  assert.equal(t1?.uncovered_rider_count, 1, "c2 should be uncovered (priority beat buddy)");
+});
+
+test("priority: multiple seats available — priority child covered, no regression", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // 1 driver, capacity 4. 4 riders including 1 priority. All should be covered.
+  const inputs = {
+    trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
+    children: [
+      { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams", preferred_buddy_child_id: null },
+      { id: "c2", household_id: "h2", first_name: "Ben", last_name: "Bennett", preferred_buddy_child_id: null },
+      { id: "c3", household_id: "h3", first_name: "Cleo", last_name: "Chen", preferred_buddy_child_id: null },
+      { id: "c4", household_id: "h4", first_name: "Sara", last_name: "Pollock", preferred_buddy_child_id: null, is_priority: true },
+    ],
+    vehicles: [{ id: "v1", household_id: "h1", label: "Adams car", child_passenger_capacity: 4 }],
+    profiles: [{ id: "p1", full_name: "Adams Parent", household_id: "h1" }],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t1", child_id: "c2", needs_ride: true },
+      { trip_id: "t1", child_id: "c3", needs_ride: true },
+      { trip_id: "t1", child_id: "c4", needs_ride: true },
+    ],
+    availability: [{ trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" }],
+    maxDrivesByDriver: new Map([["p1", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  const p1Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  assert.equal(p1Assignment?.assigned_child_ids.length, 4, "all 4 riders should be assigned");
+  assert.ok(p1Assignment?.assigned_child_ids.includes("c4"), "priority child should be assigned");
+  assert.equal(t1?.uncovered_rider_count, 0, "no uncovered riders");
+});
+
+test("priority: is_priority omitted = identical to today (backward compat)", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // buildInputs() does not set is_priority on any child. Behavior should be
+  // identical to pre-priority-feature: all children treated as non-priority.
+  const inputs = buildInputs();
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  // The existing "covers all riders when capacity is sufficient" test asserts
+  // all 5 riders on t1 are covered. Verify the same holds.
+  assert.equal(t1?.rider_count, 5, "should see all 5 riders");
+  assert.equal(t1?.uncovered_rider_count, 0, "all riders covered (no priority field set)");
+  assert.equal(t1?.assigned_rider_count, 5, "all assigned");
+});
