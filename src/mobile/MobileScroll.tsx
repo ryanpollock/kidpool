@@ -10,6 +10,7 @@ import { useKeyboardInsets } from "./Keyboard";
 
 type MobileScrollProps = PropsWithChildren<{
   className?: string;
+  onRefresh?: () => Promise<void>;
 }>;
 
 const scrollPhysics = {
@@ -23,6 +24,8 @@ const scrollPhysics = {
   maxOverdrag: 96,
   velocitySampleWindow: 100,
   tapSlop: 8,
+  refreshThreshold: 60,
+  refreshHoldPosition: 50,
 } as const;
 
 function shouldIgnoreScrollDrag(target: EventTarget | null) {
@@ -46,7 +49,7 @@ type DragSession = {
   hasDragged: boolean;
 };
 
-export function MobileScroll({ className, children }: MobileScrollProps) {
+export function MobileScroll({ className, children, onRefresh }: MobileScrollProps) {
   const { isKeyboardVisible, keyboardHeight, keyboardDragging } = useKeyboardInsets();
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const hideTimerRef = useRef<number | null>(null);
@@ -67,6 +70,10 @@ export function MobileScroll({ className, children }: MobileScrollProps) {
   });
   const [isDragging, setIsDragging] = useState(false);
   const [overscrollY, setOverscrollY] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshingRef = useRef(false);
+  const onRefreshRef = useRef(onRefresh);
+  onRefreshRef.current = onRefresh;
   const [thumb, setThumb] = useState({
     visible: false,
     top: 0,
@@ -342,6 +349,22 @@ export function MobileScroll({ className, children }: MobileScrollProps) {
     setIsDragging(false);
     isDraggingRef.current = false;
 
+    if (
+      onRefreshRef.current &&
+      !refreshingRef.current &&
+      overscrollRef.current > scrollPhysics.refreshThreshold
+    ) {
+      refreshingRef.current = true;
+      setRefreshing(true);
+      setRubberBand(scrollPhysics.refreshHoldPosition);
+      void onRefreshRef.current().finally(() => {
+        refreshingRef.current = false;
+        setRefreshing(false);
+        springBack(0);
+      });
+      return;
+    }
+
     if (Math.abs(overscrollRef.current) > 0.1) {
       springBack(velocity * scrollPhysics.overdragScale);
       return;
@@ -439,6 +462,17 @@ export function MobileScroll({ className, children }: MobileScrollProps) {
         onPointerCancel={endDrag}
         onClickCapture={suppressClickAfterDrag}
       >
+        {onRefresh ? (
+          <div
+            className="mobile-refresh-indicator"
+            data-refreshing={refreshing ? "true" : "false"}
+            style={{
+              opacity: refreshing ? 1 : Math.min(1, Math.max(0, overscrollY / scrollPhysics.refreshThreshold)),
+            }}
+          >
+            <span className="mobile-refresh-spinner" />
+          </div>
+        ) : null}
         <div
           className="mobile-scroll-content"
           data-testid="mobile-scroll-content"

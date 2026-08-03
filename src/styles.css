@@ -500,6 +500,36 @@ button {
   will-change: transform;
 }
 
+.mobile-refresh-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  padding-top: 14px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.mobile-refresh-spinner {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2.5px solid #e5e3de;
+  border-top-color: #0c2b52;
+  animation: mobile-refresh-spin 0.7s linear infinite;
+  animation-play-state: paused;
+}
+
+.mobile-refresh-indicator[data-refreshing="true"] .mobile-refresh-spinner {
+  animation-play-state: running;
+}
+
+@keyframes mobile-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
 .app-screen {
   background: #ffffff;
 }
