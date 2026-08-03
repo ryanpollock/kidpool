@@ -1,17 +1,25 @@
-import { useEffect, type PropsWithChildren } from "react";
+import { useEffect, useMemo, useRef, type PropsWithChildren } from "react";
 import { browserDevice, MobileDeviceProvider, useMobileDevice } from "./Device";
 import { KeyboardDock, KeyboardProvider, useKeyboard } from "./Keyboard";
-import { PhoneFrame } from "./PhoneFrame";
+import { PhoneFrame, ScreenPortalContext } from "./PhoneFrame";
 import { HomeIndicator, StatusBar } from "./components";
 
 export function MobileRuntime({ children }: PropsWithChildren) {
+  const framelessScreenRef = useRef<HTMLDivElement | null>(null);
+  const framelessPortalValue = useMemo(
+    () => ({ screenRef: framelessScreenRef }),
+    [],
+  );
+
   if (import.meta.env.PROD) {
     return (
       <MobileDeviceProvider device={browserDevice}>
         <KeyboardProvider>
-          <div className="mobile-runtime-frameless">
-            <MobileAppViewport>{children}</MobileAppViewport>
-          </div>
+          <ScreenPortalContext.Provider value={framelessPortalValue}>
+            <div className="mobile-runtime-frameless" ref={framelessScreenRef}>
+              <MobileAppViewport>{children}</MobileAppViewport>
+            </div>
+          </ScreenPortalContext.Provider>
         </KeyboardProvider>
       </MobileDeviceProvider>
     );
