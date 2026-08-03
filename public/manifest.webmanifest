@@ -1,6 +1,6 @@
 {
-  "name": "Midtown Carpool",
-  "short_name": "Carpool",
+  "name": "Carpool Crew",
+  "short_name": "Carpool Crew",
   "description": "Coordinate shared rides to Presidio Middle School",
   "start_url": "/",
   "display": "standalone",

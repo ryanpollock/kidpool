@@ -74,7 +74,7 @@ function AppHeader({ avatarUrl, onAccount }: { avatarUrl: string | null; onAccou
       <div className="brand-lockup">
         <span className="brand-mark"><CarIcon width="18" height="18" /></span>
         <span>
-          <strong>Midtown Carpool</strong>
+          <strong>Carpool Crew</strong>
           <small>Presidio Middle School</small>
         </span>
       </div>
@@ -143,7 +143,7 @@ function AuthLoadingScreen() {
     <div className="auth-screen auth-loading-screen" data-testid="auth-loading">
       <span className="auth-mark"><PersonIcon width="25" height="25" /></span>
       <ReloadIcon className="auth-spinner" width="22" height="22" />
-      <strong>Opening Midtown Carpool…</strong>
+      <strong>Opening Carpool Crew…</strong>
       <small>Checking your secure session</small>
     </div>
   );
@@ -163,7 +163,7 @@ function SignInScreen({
       <div className="auth-brand">
 <span className="auth-mark"><CarIcon width="22" height="22" /></span>
         <span>
-          <strong>Midtown Carpool</strong>
+          <strong>Carpool Crew</strong>
           <small>Clarendon families · Presidio Middle School</small>
         </span>
       </div>
@@ -3166,7 +3166,7 @@ function DirectoryScreen({
     <div className="screen-content directory-screen" data-testid="directory-screen">
       <header className="subpage-header">
         <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
-        <div><span className="eyebrow">Carpool</span><h1>Parent directory</h1></div>
+        <div><span className="eyebrow">Carpool Crew</span><h1>Parent directory</h1></div>
       </header>
 
       {loading ? (
@@ -3411,7 +3411,7 @@ function FaqScreen({ onBack }: { onBack: () => void }) {
     <div className="screen-content faq-screen" data-testid="faq-screen">
       <header className="subpage-header">
         <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
-        <div><span className="eyebrow">Carpool</span><h1>FAQ</h1></div>
+        <div><span className="eyebrow">Carpool Crew</span><h1>FAQ</h1></div>
       </header>
       <div className="faq-list">
         {FAQ_SECTIONS.map((section) => (
@@ -3580,7 +3580,7 @@ export default function Prototype() {
       ]);
       const group = groups[0];
       if (!profile) throw new Error("Your parent profile is still being prepared. Try again.");
-      if (!group) throw new Error("The Midtown carpool group has not been configured.");
+      if (!group) throw new Error("The Carpool Crew group has not been configured.");
       const membership = await repository.getCurrentMembership(group.id);
       setIdentity({ profile, group, membership });
     } catch (error) {
@@ -4254,7 +4254,7 @@ export default function Prototype() {
     return (
       <div className="prototype-shell">
         <MobileScroll className="app-screen">
-          <main className="app-main" aria-label="Midtown Carpool app">
+          <main className="app-main" aria-label="Carpool Crew app">
             <AuthLoadingScreen />
           </main>
         </MobileScroll>
@@ -4266,7 +4266,7 @@ export default function Prototype() {
     return (
       <div className="prototype-shell">
         <MobileScroll className="app-screen">
-          <main className="app-main" aria-label="Midtown Carpool sign in">
+          <main className="app-main" aria-label="Carpool Crew sign in">
             <SignInScreen error={authError} working={authWorking} onSignIn={() => void signIn()} />
           </main>
         </MobileScroll>
@@ -4278,7 +4278,7 @@ export default function Prototype() {
     return (
       <div className="prototype-shell">
         <MobileScroll className="app-screen">
-          <main className="app-main" aria-label="Midtown Carpool connection error">
+          <main className="app-main" aria-label="Carpool Crew connection error">
             <div className="auth-screen auth-recovery-screen">
               <span className="auth-mark"><ExclamationTriangleIcon width="24" height="24" /></span>
               <h1>We couldn’t finish signing you in.</h1>
@@ -4296,7 +4296,7 @@ export default function Prototype() {
     return (
       <div className="prototype-shell">
         <MobileScroll className="app-screen">
-          <main className="app-main" aria-label="Midtown Carpool onboarding">
+          <main className="app-main" aria-label="Carpool Crew onboarding">
             <OnboardingScreen
               identity={identity}
               repository={repository}
@@ -4313,7 +4313,7 @@ export default function Prototype() {
     return (
       <div className="prototype-shell">
         <MobileScroll className="app-screen">
-          <main className="app-main" aria-label="Midtown Carpool app">
+          <main className="app-main" aria-label="Carpool Crew app">
             <AuthLoadingScreen />
           </main>
         </MobileScroll>
@@ -4325,7 +4325,7 @@ export default function Prototype() {
     <div className="prototype-shell">
       <AppErrorBoundary>
         <MobileScroll className="app-screen" key={activeTab}>
-          <main className="app-main" aria-label="Midtown Carpool app">
+          <main className="app-main" aria-label="Carpool Crew app">
             {renderContent()}
           </main>
         </MobileScroll>

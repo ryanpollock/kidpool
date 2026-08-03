@@ -168,7 +168,7 @@ Deletes profile, auth user, household, children, vehicles, checkins, assignments
 
 - **GitHub repo:** `ryanpollock/kidpool` (public)
 - **Vercel project:** `kidpool` — connected to GitHub, auto-deploys both `main` and `staging` branches
-- **Production URL:** `https://kidpool-sf.vercel.app` (auto-deploys on push to `main`)
+- **Production URL:** `https://carpoolcrew.co` (also `https://kidpool-sf.vercel.app`; auto-deploys on push to `main`)
 - **Staging URL:** `https://kidpool-staging.vercel.app` (auto-deploys on push to `staging`)
 - **Production Supabase:** `ujcrnrcgbvzyqosykkjy` — auth `site_url` set to `https://kidpool-sf.vercel.app`
 - **Staging Supabase:** `jfyjgmhqnlbdcafoarrg` — auth `site_url` set to `https://kidpool-staging.vercel.app`
@@ -188,7 +188,7 @@ Deletes profile, auth user, household, children, vehicles, checkins, assignments
    → GitHub Action deploys Edge Functions to staging Supabase
    → Test on staging site
 6. Merge staging to main
-   → Vercel auto-deploys to kidpool-sf.vercel.app (production)
+   → Vercel auto-deploys to carpoolcrew.co (also kidpool-sf.vercel.app, production)
    → GitHub Action deploys Edge Functions to production Supabase
 ```
 

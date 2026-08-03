@@ -1,4 +1,4 @@
-# Operations Guide — Midtown Carpool
+# Operations Guide — Carpool Crew
 
 Production operations runbook for the Clarendon Presidio carpool pilot.
 
@@ -9,7 +9,7 @@ Production operations runbook for the Clarendon Presidio carpool pilot.
 | Production Supabase | `ujcrnrcgbvzyqosykkjy` (https://ujcrnrcgbvzyqosykkjy.supabase.co) |
 | Staging Supabase | `jfyjgmhqnlbdcafoarrg` (https://jfyjgmhqnlbdcafoarrg.supabase.co) |
 | Supabase region | U.S. |
-| Frontend hosting | Vercel (project `kidpool`, URL `https://kidpool-sf.vercel.app`) |
+| Frontend hosting | Vercel (project `kidpool`, URL `https://carpoolcrew.co`, also `https://kidpool-sf.vercel.app`) |
 | Staging URL | `https://kidpool-staging.vercel.app` (Vercel preview, staging Supabase) |
 | Auth provider | Google OAuth (Supabase Auth) |
 | Edge Functions | `generate-schedule`, `send-push` (Supabase Functions, Deno) |
@@ -36,7 +36,7 @@ Staging: demo families (`npm run seed-demo`), integration tests, E2E tests. Publ
    → Vercel auto-deploys to kidpool-staging.vercel.app
    → GitHub Action deploys Edge Functions to staging Supabase
 6. Test on staging site, merge staging to main
-   → Vercel auto-deploys to kidpool-sf.vercel.app (production)
+   → Vercel auto-deploys to carpoolcrew.co (also kidpool-sf.vercel.app, production)
    → GitHub Action deploys Edge Functions to production Supabase
 ```
 
@@ -136,7 +136,7 @@ The `generate-schedule` function authenticates via the caller's JWT. The `send-p
 ## 6. Frontend deployment (Vercel)
 
 Vercel is connected to the GitHub repo and **auto-deploys** both branches:
-- `main` → production (`https://kidpool-sf.vercel.app`) using Production env vars
+- `main` → production (`https://carpoolcrew.co`, also `https://kidpool-sf.vercel.app`) using Production env vars
 - `staging` → staging (`https://kidpool-staging.vercel.app`) using Preview env vars
 - Any other branch → ephemeral preview URL using Preview (staging) env vars
 
