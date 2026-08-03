@@ -1289,13 +1289,13 @@ function HomeScreen({
         <ChevronRightIcon />
       </button>
 
-      <button className="coverage-alert" onClick={onDirectory} data-testid="directory-link">
+      <button className="coverage-alert coverage-alert--muted" onClick={onDirectory} data-testid="directory-link">
         <span><AvatarIcon width="20" height="20" /></span>
         <span><strong>Parent directory</strong><small>Phone and email for everyone in your carpool</small></span>
         <ChevronRightIcon />
       </button>
 
-      <button className="coverage-alert" onClick={onFaq} data-testid="faq-link">
+      <button className="coverage-alert coverage-alert--muted" onClick={onFaq} data-testid="faq-link">
         <span><QuestionMarkCircledIcon width="20" height="20" /></span>
         <span><strong>FAQ</strong><small>How the carpool works</small></span>
         <ChevronRightIcon />
