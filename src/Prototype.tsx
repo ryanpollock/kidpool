@@ -1521,7 +1521,6 @@ function PlanScreen({
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [maxDrives, setMaxDrives] = useState("2");
   const [pendingDrive, setPendingDrive] = useState<Record<string, DrivePreference>>({});
   const [coParentUpdate, setCoParentUpdate] = useState<string | null>(null);
 
@@ -1547,10 +1546,6 @@ function PlanScreen({
   const hasNext = currentIdx > 0;
   const showNav = allWeeks.length > 1;
   const showReset = selectedWeekId !== null;
-
-  useEffect(() => {
-    if (checkin) setMaxDrives(String(checkin.max_drives || 2));
-  }, [checkin?.id]);
 
   // Realtime: subscribe to checkin changes so co-parents see each other's edits
   useEffect(() => {
@@ -1723,7 +1718,7 @@ function PlanScreen({
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await repository.submitCheckin(checkin.id, Number(maxDrives) || 0);
+      await repository.submitCheckin(checkin.id);
       onReloadCheckin();
     } catch (error) {
       setSubmitError(readableError(error));
@@ -1885,22 +1880,6 @@ function PlanScreen({
           </section>
         );
       })}
-
-      {!submitted ? (
-        <section className="checkin-max-drives">
-          <label className="auth-field">
-            <span>Max drives for your household</span>
-            <KeyboardInput
-              value={maxDrives}
-              onChange={(event) => setMaxDrives(event.target.value.replace(/[^0-9]/g, ""))}
-              inputMode="numeric"
-              placeholder="2"
-              autoComplete="off"
-            />
-            <small>Applies to all drivers in your household this week.</small>
-          </label>
-        </section>
-      ) : null}
 
       <div className="vehicle-summary">
         <span><DashboardIcon /></span>

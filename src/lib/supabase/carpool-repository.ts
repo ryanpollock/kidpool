@@ -936,7 +936,7 @@ export class CarpoolRepository {
           week_id: weekId,
           household_id: householdId,
           status: "draft",
-          max_drives: 0,
+          max_drives: 10,
         })
         .select("*")
         .single(),
@@ -971,7 +971,7 @@ export class CarpoolRepository {
     return { checkin, rideRequests, driverAvailability };
   }
 
-  async submitCheckin(checkinId: string, maxDrives: number) {
+  async submitCheckin(checkinId: string) {
     const userResult = await this.client.auth.getUser();
     if (userResult.error) throw new Error(userResult.error.message);
     if (!userResult.data.user) throw new Error("Sign in again to continue.");
@@ -981,7 +981,6 @@ export class CarpoolRepository {
         .from("weekly_checkins")
         .update({
           status: "submitted",
-          max_drives: maxDrives,
           submitted_by: userResult.data.user.id,
           submitted_at: new Date().toISOString(),
         })
@@ -994,7 +993,7 @@ export class CarpoolRepository {
       "checkin_submitted",
       "weekly_checkin",
       checkinId,
-      { max_drives: maxDrives },
+      {},
     );
   }
 
@@ -1030,35 +1029,18 @@ export class CarpoolRepository {
     if (userResult.error) throw new Error(userResult.error.message);
     if (!userResult.data.user) throw new Error("Sign in again to continue.");
 
-    const existing = unwrap(
-      await this.client
-        .from("ride_requests")
-        .select("*")
-        .eq("checkin_id", checkinId)
-        .eq("trip_id", tripId)
-        .eq("child_id", childId)
-        .maybeSingle(),
-    );
-
-    if (existing) {
-      unwrap(
-        await this.client
-          .from("ride_requests")
-          .update({ needs_ride: needsRide })
-          .eq("id", existing.id),
-      );
-      return;
-    }
-
     unwrap(
-      await this.client.from("ride_requests").insert({
-        group_id: groupId,
-        checkin_id: checkinId,
-        trip_id: tripId,
-        child_id: childId,
-        needs_ride: needsRide,
-        created_by: userResult.data.user.id,
-      }),
+      await this.client.from("ride_requests").upsert(
+        {
+          group_id: groupId,
+          checkin_id: checkinId,
+          trip_id: tripId,
+          child_id: childId,
+          needs_ride: needsRide,
+          created_by: userResult.data.user.id,
+        },
+        { onConflict: "trip_id,child_id" },
+      ),
     );
   }
 
