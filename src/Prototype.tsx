@@ -1080,8 +1080,7 @@ function HomeScreen({
   const activeAssignments = myAssignments.filter((a) => a.assignment.status !== "declined");
   const tentative = activeAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = activeAssignments.filter((a) => a.assignment.status === "confirmed");
-  const declined = myAssignments.filter((a) => a.assignment.status === "declined");
-  const allConfirmed = tentative.length === 0 && confirmed.length > 0 && declined.length === 0;
+  const allConfirmed = tentative.length === 0 && confirmed.length > 0;
   const noAssignments = activeAssignments.length === 0;
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
@@ -1272,9 +1271,6 @@ function HomeScreen({
                     <button className="text-button" disabled={working} onClick={() => setConfirmAllOpen(false)}>Cancel</button>
                   </div>
                 </div>
-              ) : null}
-              {declined.length > 0 && tentative.length === 0 ? (
-                <p className="helper-copy">All drives resolved. Use "Review individually" to change a response.</p>
               ) : null}
               <button className="text-button" onClick={onReview}>Review individually</button>
             </>
