@@ -4123,7 +4123,10 @@ export default function Prototype() {
 
     void supabase.auth.getSession().then(async ({ data, error }) => {
       if (!mounted) return;
-      if (error) setAuthError(readableError(error));
+      if (error) {
+        console.warn("[auth] getSession error:", error.message);
+        await supabase.auth.signOut({ scope: "local" });
+      }
       setAuthInitialized(true);
 
       // Dev/staging test auth bypass: auto sign in with ?testAuth=email|password
