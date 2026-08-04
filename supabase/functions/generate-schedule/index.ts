@@ -86,7 +86,7 @@ Deno.serve(async (req: Request) => {
     // ── Load data (phase 1: trips first, then trip-dependent queries) ──
     const [tripsRes, checkinsRes, vehiclesRes, childrenRes, membershipsRes] = await Promise.all([
       supabase.from("trips").select("id, service_date, direction, week_id, group_id").eq("week_id", weekId as string).eq("group_id", groupId).order("service_date").order("direction"),
-      supabase.from("weekly_checkins").select("id, household_id, max_drives").eq("week_id", weekId as string).eq("group_id", groupId),
+      supabase.from("weekly_checkins").select("id, household_id, max_drives, status").eq("week_id", weekId as string).eq("group_id", groupId),
       supabase.from("vehicles").select("id, household_id, label, child_passenger_capacity, active, group_id").eq("group_id", groupId).eq("active", true),
       supabase.from("children").select("id, household_id, first_name, last_name, active, group_id, preferred_buddy_child_id, is_priority").eq("group_id", groupId).eq("active", true),
       supabase.from("memberships").select("profile_id, household_id, status, group_id").eq("group_id", groupId).eq("status", "active"),
@@ -99,10 +99,20 @@ Deno.serve(async (req: Request) => {
     if (childrenRes.error) return jsonError("Failed to load children.", 500);
     if (membershipsRes.error) return jsonError("Failed to load memberships.", 500);
 
+    // Only count ride requests and driver availability from submitted check-ins.
+    // Draft check-ins may contain auto-populated defaults that households haven't confirmed.
+    const submittedCheckinIds = (checkinsRes.data ?? [])
+      .filter((c: { status: string }) => c.status === "submitted")
+      .map((c: { id: string }) => c.id);
+
     const tripIds = tripsRes.data.map((t: { id: string }) => t.id);
     const [rideRequestsRes, availabilityRes] = await Promise.all([
-      supabase.from("ride_requests").select("trip_id, child_id, needs_ride, group_id").in("trip_id", tripIds),
-      supabase.from("driver_availability").select("trip_id, driver_profile_id, vehicle_id, preference, group_id").in("trip_id", tripIds),
+      submittedCheckinIds.length
+        ? supabase.from("ride_requests").select("trip_id, child_id, needs_ride, group_id").in("trip_id", tripIds).in("checkin_id", submittedCheckinIds)
+        : { data: [], error: null },
+      submittedCheckinIds.length
+        ? supabase.from("driver_availability").select("trip_id, driver_profile_id, vehicle_id, preference, group_id").in("trip_id", tripIds).in("checkin_id", submittedCheckinIds)
+        : { data: [], error: null },
     ]);
 
     if (rideRequestsRes.error) return jsonError("Failed to load ride requests.", 500);
@@ -163,7 +173,8 @@ Deno.serve(async (req: Request) => {
     }));
 
     const maxDrivesByDriver = new Map<string, number>();
-    for (const c of (checkinsRes.data ?? []) as Array<{ household_id: string; max_drives: number }>) {
+    for (const c of (checkinsRes.data ?? []) as Array<{ household_id: string; max_drives: number; status: string }>) {
+      if (c.status !== "submitted") continue;
       for (const [profileId, householdId] of profileHouseholdMap) {
         if (householdId === c.household_id) {
           maxDrivesByDriver.set(profileId, c.max_drives);
