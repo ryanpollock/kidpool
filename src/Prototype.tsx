@@ -1959,7 +1959,7 @@ function WeekScreen({
   weekStartsOn: string | null;
   allWeeks: Tables<"weeks">[];
   selectedWeekId: string | null;
-  onSelectWeek: (weekId: string) => void;
+  onSelectWeek: (weekId: string | null) => void;
   avatarUrl: string | null;
   onAccount: () => void;
   onOpenDrive: (assignmentId: string) => void;
@@ -1968,6 +1968,7 @@ function WeekScreen({
   const currentIdx = allWeeks.findIndex((w) => w.id === (selectedWeekId ?? week?.week.id));
   const hasPrev = currentIdx < allWeeks.length - 1;
   const hasNext = currentIdx > 0;
+  const showReset = selectedWeekId !== null;
   if (weekLoading) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
@@ -2166,10 +2167,15 @@ function WeekScreen({
       </header>
 
       {allWeeks.length > 1 ? (
-        <div className="week-nav">
+        <div className="week-nav" data-testid="schedule-week-nav">
           <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
             <ChevronLeftIcon /> Earlier
           </button>
+          {showReset ? (
+            <button className="week-nav-btn week-nav-btn--reset" data-testid="schedule-week-reset" onClick={() => onSelectWeek(null)}>
+              Current
+            </button>
+          ) : null}
           <button className="week-nav-btn" disabled={!hasNext} onClick={() => { if (hasNext) onSelectWeek(allWeeks[currentIdx - 1].id); }}>
             Later <ChevronRightIcon />
           </button>
@@ -2450,7 +2456,7 @@ function CoordinatorScreen({
             <h2>{uncoveredCount} trip{uncoveredCount !== 1 ? "s" : ""} with uncovered children</h2>
           </div>
           <p className="decline-alert-body">
-            Some children don't have a driver assigned. Check the Week tab for details before publishing.
+            Some children don't have a driver assigned. Check the Schedule tab for details before publishing.
           </p>
         </div>
       ) : null}
@@ -2474,7 +2480,7 @@ function CoordinatorScreen({
               </button>
               <small className="helper-copy">
                 {uncoveredCount > 0
-                  ? "Cannot publish — some children don't have a driver. Check the Week tab."
+                  ? "Cannot publish — some children don't have a driver. Check the Schedule tab."
                   : "Publishing locks this schedule for all families."}
               </small>
             </>
@@ -3406,7 +3412,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "Who can generate and publish schedules?",
-        a: "Only coordinators. The coordinator creates the week, generates the draft schedule, reviews it, and publishes it. If you're not a coordinator, you'll see the schedule on the Week tab but can't generate or publish.",
+        a: "Only coordinators. The coordinator creates the week, generates the draft schedule, reviews it, and publishes it. If you're not a coordinator, you'll see the schedule on the Schedule tab but can't generate or publish.",
       },
     ],
   },
@@ -3440,7 +3446,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "What are uncovered riders?",
-        a: "Uncovered riders are children who need a ride for a trip but don't have a driver assigned. They're shown on the Week tab with amber chips listing each child's name. The coordinator should review these before publishing.",
+        a: "Uncovered riders are children who need a ride for a trip but don't have a driver assigned. They're shown on the Schedule tab with amber chips listing each child's name. The coordinator should review these before publishing.",
       },
       {
         q: "How do I volunteer to cover a drive?",
@@ -3449,11 +3455,11 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     ],
   },
   {
-    title: "Week tab",
+    title: "Schedule tab",
     items: [
       {
         q: "How do I view different weeks?",
-        a: "On the Week tab, use the Earlier and Later buttons to navigate between weeks. The current week is shown by default.",
+        a: "On the Schedule tab, use the Earlier, Current, and Later buttons to navigate between weeks. The current week is shown by default.",
       },
       {
         q: "What do the coverage indicators mean?",
@@ -3461,7 +3467,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "Can I see who's in each car?",
-        a: "Yes. On the Week tab, tap any drive card to see the driver, vehicle, route, and all children assigned to that car. Child photos appear if they've been uploaded.",
+        a: "Yes. On the Schedule tab, tap any drive card to see the driver, vehicle, route, and all children assigned to that car. Child photos appear if they've been uploaded.",
       },
     ],
   },
@@ -4266,7 +4272,7 @@ export default function Prototype() {
   const navItems = useMemo(() => [
     { id: "home" as const, label: "Home", icon: HomeIcon },
     { id: "plan" as const, label: "Check-in", icon: BackpackIcon },
-    { id: "week" as const, label: "Week", icon: CalendarIcon },
+    { id: "week" as const, label: "Schedule", icon: CalendarIcon },
     { id: "coordinate" as const, label: "Status", icon: GroupIcon },
   ], []);
 
