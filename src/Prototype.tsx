@@ -2067,6 +2067,21 @@ function WeekScreen({
           <span className="eyebrow">Family schedule</span>
           <h1>{startDate.short} – {endDate.short}</h1>
         </header>
+        {allWeeks.length > 1 ? (
+          <div className="week-nav" data-testid="schedule-week-nav">
+            <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
+              <ChevronLeftIcon /> Earlier
+            </button>
+            {showReset ? (
+              <button className="week-nav-btn week-nav-btn--reset" data-testid="schedule-week-reset" onClick={() => onSelectWeek(null)}>
+                Current
+              </button>
+            ) : null}
+            <button className="week-nav-btn" disabled={!hasNext} onClick={() => { if (hasNext) onSelectWeek(allWeeks[currentIdx - 1].id); }}>
+              Later <ChevronRightIcon />
+            </button>
+          </div>
+        ) : null}
         <div className="week-list">
           {weekdays.map((serviceDate) => {
             const dateInfo = formatTripDate(serviceDate);
