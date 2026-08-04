@@ -1031,6 +1031,7 @@ function HomeScreen({
   onFaq,
   onRetryAssignments,
   onVolunteer,
+  onCancelDrive,
   working,
   volunteerWorking,
   volunteerError,
@@ -1060,6 +1061,7 @@ function HomeScreen({
   onFaq: () => void;
   onRetryAssignments: () => void;
   onVolunteer: (assignmentId: string) => void;
+  onCancelDrive: (assignmentId: string) => void;
   working: boolean;
   volunteerWorking: boolean;
   volunteerError: string | null;
@@ -1077,6 +1079,7 @@ function HomeScreen({
   timezone: string;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
+  const [cancelingId, setCancelingId] = useState<string | null>(null);
   const activeAssignments = myAssignments.filter((a) => a.assignment.status !== "declined");
   const tentative = activeAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = activeAssignments.filter((a) => a.assignment.status === "confirmed");
@@ -1238,13 +1241,43 @@ function HomeScreen({
           </div>
           <div className="assignment-list">
             {activeAssignments.map((entry) => (
-              <AssignmentRow
-                key={entry.assignment.id}
-                trip={entry.trip}
-                vehicle={entry.vehicle}
-                riderCount={entry.children.length}
-                status={entry.assignment.status}
-              />
+              <div className="assignment-row-wrapper" key={entry.assignment.id}>
+                <AssignmentRow
+                  trip={entry.trip}
+                  vehicle={entry.vehicle}
+                  riderCount={entry.children.length}
+                  status={entry.assignment.status}
+                />
+                {entry.assignment.status === "confirmed" ? (
+                  cancelingId === entry.assignment.id ? (
+                    <div className="cancel-confirm" data-testid={`cancel-confirm-${entry.assignment.id}`}>
+                      <p className="cancel-confirm-warning">Cancel this drive? Affected families will be notified immediately.</p>
+                      <div className="confirm-code-actions">
+                        <button
+                          className="decline-button"
+                          data-testid={`confirm-cancel-${entry.assignment.id}`}
+                          disabled={working}
+                          onClick={() => {
+                            void onCancelDrive(entry.assignment.id);
+                            setCancelingId(null);
+                          }}
+                        >
+                          {working ? "Canceling…" : "Yes, cancel drive"}
+                        </button>
+                        <button className="text-button" disabled={working} onClick={() => setCancelingId(null)}>Keep drive</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      className="cancel-drive-link"
+                      data-testid={`cancel-drive-${entry.assignment.id}`}
+                      onClick={() => setCancelingId(entry.assignment.id)}
+                    >
+                      Can't make this drive
+                    </button>
+                  )
+                ) : null}
+              </div>
             ))}
           </div>
           {!allConfirmed ? (
@@ -4051,6 +4084,18 @@ export default function Prototype() {
     ));
   }, []);
 
+  const cancelDrive = useCallback(async (assignmentId: string) => {
+    setConfirmError(null);
+    try {
+      await repository.respondToDriverAssignment(assignmentId, "declined");
+      updateAssignmentStatus(assignmentId, "declined");
+      void repository.sendPushNotification(assignmentId, null, "declined");
+      await loadMyAssignments();
+    } catch (error) {
+      setConfirmError(readableError(error));
+    }
+  }, [repository, updateAssignmentStatus, loadMyAssignments]);
+
   useEffect(() => {
     if (schedule) void loadMyAssignments();
   }, [schedule, loadMyAssignments]);
@@ -4396,6 +4441,7 @@ export default function Prototype() {
         onFaq={() => setFaqOpen(true)}
         onRetryAssignments={() => void loadMyAssignments()}
         onVolunteer={(assignmentId) => void volunteerForDrive(assignmentId)}
+        onCancelDrive={(assignmentId) => void cancelDrive(assignmentId)}
         working={confirmWorking}
         volunteerWorking={volunteerWorking}
         volunteerError={volunteerError}

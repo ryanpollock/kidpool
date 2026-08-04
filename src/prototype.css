@@ -923,6 +923,53 @@ button {
   border-bottom: 1px solid var(--line);
 }
 
+.assignment-row-wrapper {
+  padding: 16px 0;
+}
+
+.assignment-row-wrapper + .assignment-row-wrapper {
+  border-top: 1px solid var(--line);
+}
+
+.assignment-row-wrapper > .assignment-row {
+  padding: 0;
+}
+
+.assignment-row-wrapper > .assignment-row + .assignment-row {
+  border-top: 0;
+}
+
+.cancel-drive-link {
+  margin-top: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cancel-drive-link:active {
+  opacity: 0.6;
+}
+
+.cancel-confirm {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--amber);
+  border-radius: 12px;
+  background: var(--amber-pale);
+}
+
+.cancel-confirm-warning {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #785b2a;
+  margin: 0 0 10px;
+}
+
 .assignment-row {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr) auto;
