@@ -4292,7 +4292,7 @@ export default function Prototype() {
           repository={repository}
           householdId={identity.membership?.household_id ?? ""}
           groupId={identity.group.id}
-          onReloadHousehold={() => void loadHousehold()}
+          onReloadHousehold={() => { void loadHousehold(); void loadIdentity(); }}
           onBack={() => setAccountOpen(false)}
           onSignOut={() => void signOut()}
           working={authWorking}
