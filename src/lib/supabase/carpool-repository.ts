@@ -1390,7 +1390,8 @@ export class CarpoolRepository {
           children: ridersByAssignment.get(assignment.id) ?? [],
         };
       })
-      .filter((entry): entry is MyDriverAssignment => entry !== null);
+      .filter((entry): entry is MyDriverAssignment => entry !== null)
+      .sort((a, b) => tripSortKey(a.trip).localeCompare(tripSortKey(b.trip)));
   }
 
   async publishSchedule(scheduleVersionId: string): Promise<void> {
