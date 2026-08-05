@@ -1055,6 +1055,7 @@ function HomeScreen({
   avatarUrl,
   weekStartsOn,
   confirmationDeadline,
+  checkinDeadline,
   declinedAlerts,
   uncoveredAlerts,
   showPushBanner,
@@ -1090,6 +1091,7 @@ function HomeScreen({
   avatarUrl: string | null;
   weekStartsOn: string | null;
   confirmationDeadline: string | null;
+  checkinDeadline: string | null;
   declinedAlerts: DeclinedDriveAlert[];
   uncoveredAlerts: UncoveredChildAlert[];
   showPushBanner: boolean;
@@ -1113,6 +1115,9 @@ function HomeScreen({
   const deadlineLabel = confirmationDeadline
     ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
     : "Sun 8:00 PM";
+  const checkinDeadlineLabel = checkinDeadline
+    ? new Date(checkinDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
+    : "Sat 3:00 PM";
 
   return (
     <div className="screen-content home-screen" data-testid="home-screen">
@@ -1180,7 +1185,7 @@ function HomeScreen({
           ) : (
             <>
               <h1>No schedule yet</h1>
-              <p className="hero-support">Check in for next week so the coordinator can build the schedule.</p>
+              <p className="hero-support">Check in for next week so the coordinator can build the schedule. Submit by <strong>{checkinDeadlineLabel}</strong>.</p>
               <button className="primary-button" onClick={onCheckIn}>Go to Next Week</button>
             </>
           )}
@@ -1982,9 +1987,20 @@ function PlanScreen({
           {submitting ? "Reopening…" : "Reopen my check-in"}
         </button>
       ) : (
-        <button className="primary-button" data-testid="submit-plan" disabled={submitting || checkinLoading} onClick={() => void submit()}>
-          {submitting ? "Submitting…" : "Submit my week"}
-        </button>
+        (() => {
+          const hasRideRequests = (checkinDetails?.rideRequests ?? []).length > 0;
+          const needsRideSelection = children.length > 0 && !hasRideRequests;
+          return (
+            <button
+              className="primary-button"
+              data-testid="submit-plan"
+              disabled={submitting || checkinLoading || needsRideSelection}
+              onClick={() => void submit()}
+            >
+              {submitting ? "Submitting…" : needsRideSelection ? "Select ride needs first" : "Submit my week"}
+            </button>
+          );
+        })()
       )}
     </div>
   );
@@ -4651,6 +4667,7 @@ const navItems = useMemo(() => {
         avatarUrl={identity.profile.avatar_url}
         weekStartsOn={weekData?.week.starts_on ?? null}
         confirmationDeadline={weekData?.week.confirmation_deadline ?? null}
+        checkinDeadline={weekData?.week.checkin_deadline ?? null}
         declinedAlerts={declinedAlerts}
         uncoveredAlerts={uncoveredAlerts}
         showPushBanner={shouldShowPushBanner}
