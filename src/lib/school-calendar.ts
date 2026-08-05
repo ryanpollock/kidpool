@@ -37,3 +37,16 @@ export function getNoSchoolReason(dateStr: string): string | null {
 export function isNoSchoolDay(dateStr: string): boolean {
   return NO_SCHOOL_DATES.has(dateStr);
 }
+
+const PILOT_TIMEZONE = "America/Los_Angeles";
+
+export function todayInTimezone(timezone: string = PILOT_TIMEZONE): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+export { PILOT_TIMEZONE };

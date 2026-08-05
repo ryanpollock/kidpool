@@ -326,30 +326,47 @@ Deno.serve(async (req: Request) => {
       return jsonError(writeErrorMessage, 500);
     }
 
-    // ── Auto-publish + supersede only if safe ───────────────────
-    // Only auto-publish if the prior was published AND no uncovered trips.
-    // If there are uncovered trips, keep as draft so the coordinator can
-    // review before publishing — preventing a regression from going live.
-    if (wasPublished && !hasUncovered) {
-      const { error: publishError } = await supabase
-        .from("schedule_versions")
-        .update({ status: "published" })
-        .eq("id", newVersion.id);
-      if (publishError) {
-        return jsonError(`Failed to auto-publish new version: ${publishError.message}`, 500);
-      }
+    // ── Auto-publish + supersede ────────────────────────────────
+// Auto-publish only if the prior was published AND no uncovered trips.
+// If there are uncovered trips, keep as draft so the coordinator can
+// review before publishing — preventing a regression from going live.
+//
+// Critical: only supersede the prior version when the new version
+// replaces it (auto-publish) or the prior was itself a draft.
+// Never supersede a published version when the new version stays
+// as draft — the published schedule must remain live for families.
+const newVersionPublished = wasPublished && !hasUncovered;
+if (newVersionPublished) {
+  // Supersede the prior published version FIRST to avoid violating
+  // the one-published-schedule-per-week unique index.
+  if (latestVersion && latestVersion.id) {
+    const { error: supersedeError } = await supabase
+      .from("schedule_versions")
+      .update({ status: "superseded" })
+      .eq("id", latestVersion.id);
+    if (supersedeError) {
+      return jsonError(`Failed to supersede prior version: ${supersedeError.message}`, 500);
     }
-
-    // Supersede prior version only after the new version reached its intended state.
-    if (latestVersion && latestVersion.id) {
-      const { error: supersedeError } = await supabase
-        .from("schedule_versions")
-        .update({ status: "superseded" })
-        .eq("id", latestVersion.id);
-      if (supersedeError) {
-        return jsonError(`Failed to supersede prior version: ${supersedeError.message}`, 500);
-      }
-    }
+  }
+  // Then publish the new version.
+  const { error: publishError } = await supabase
+    .from("schedule_versions")
+    .update({ status: "published" })
+    .eq("id", newVersion.id);
+  if (publishError) {
+    return jsonError(`Failed to auto-publish new version: ${publishError.message}`, 500);
+  }
+} else if (latestVersion && latestVersion.id && latestVersion.status === "draft") {
+  // New version is a draft; only supersede if the prior was also a draft
+  // (never supersede a published version when the new one stays as draft).
+  const { error: supersedeError } = await supabase
+    .from("schedule_versions")
+    .update({ status: "superseded" })
+    .eq("id", latestVersion.id);
+  if (supersedeError) {
+    return jsonError(`Failed to supersede prior version: ${supersedeError.message}`, 500);
+  }
+}
 
     // ── Audit event (best-effort) ───────────────────────────────
     try {

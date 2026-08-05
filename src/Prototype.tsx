@@ -46,7 +46,7 @@ import {
   type WeekWithTrips,
 } from "./lib/supabase";
 import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference } from "./lib/supabase/database.types";
-import { getNoSchoolReason } from "./lib/school-calendar";
+import { getNoSchoolReason, todayInTimezone } from "./lib/school-calendar";
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
 
@@ -785,6 +785,14 @@ function countDeclinedRosters(schedule: ScheduleVersionWithRosters): number {
   return count;
 }
 
+function countTentativeAssignments(schedule: ScheduleVersionWithRosters): number {
+  let count = 0;
+  for (const rosters of schedule.rostersByTrip.values()) {
+    count += rosters.filter((r) => r.driverAssignment.status === "tentative").length;
+  }
+  return count;
+}
+
 function countUncoveredTrips(schedule: ScheduleVersionWithRosters): number {
   let count = 0;
   for (const trip of schedule.trips) {
@@ -820,7 +828,8 @@ function preferenceLabel(pref: DrivePreference): string {
 }
 
 function nextMonday(): string {
-  const today = new Date();
+  const todayStr = todayInTimezone();
+  const today = new Date(todayStr + "T00:00:00");
   const day = today.getDay();
   const daysUntilMonday = day === 0 ? 1 : 8 - day;
   const monday = new Date(today);
@@ -1096,8 +1105,8 @@ function HomeScreen({
   const noAssignments = activeAssignments.length === 0;
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
-    ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })
-    : "3:00 PM";
+    ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
+    : "Sun 8:00 PM";
 
   return (
     <div className="screen-content home-screen" data-testid="home-screen">
@@ -1566,7 +1575,7 @@ function PlanScreen({
 
   const planHeading = (() => {
     if (!week) return "Plan ahead";
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = todayInTimezone();
     const startsOn = week.week.starts_on;
     if (startsOn > todayStr) return "Plan ahead";
     return "Reviewing check-in";
@@ -2222,7 +2231,7 @@ function WeekScreen({
                       <div className="trip-rosters">
                         {activeRosters.map((entry) => (
                           <button
-                            className="trip-roster"
+                            className={`trip-roster ${entry.driverAssignment.status === "tentative" ? "trip-roster--tentative" : ""}`}
                             key={entry.driverAssignment.id}
                             data-testid={`drive-card-${entry.driverAssignment.id}`}
                             onClick={() => onOpenDrive(entry.driverAssignment.id)}
@@ -2236,6 +2245,11 @@ function WeekScreen({
                                 <span key={child.id}>{child.first_name} {child.last_name}</span>
                               )) : <span className="roster-empty">No riders assigned</span>}
                             </div>
+                            {entry.driverAssignment.status === "tentative" ? (
+                              <span className="roster-status roster-status--tentative">Tentative</span>
+                            ) : entry.driverAssignment.status === "confirmed" ? (
+                              <span className="roster-status roster-status--confirmed">Confirmed</span>
+                            ) : null}
                           </button>
                         ))}
                       </div>
@@ -2303,6 +2317,7 @@ function CoordinatorScreen({
   onReloadOverview,
   declinedCount,
   uncoveredCount,
+  tentativeCount,
   uncoveredRidersByTrip,
   generateWarning,
   avatarUrl,
@@ -2328,6 +2343,7 @@ function CoordinatorScreen({
   onReloadOverview: () => void;
   declinedCount: number;
   uncoveredCount: number;
+  tentativeCount: number;
   uncoveredRidersByTrip: Map<string, Tables<"children">[]>;
   generateWarning: string | null;
   avatarUrl: string | null;
@@ -2455,13 +2471,15 @@ function CoordinatorScreen({
               <button className="secondary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
                 {generating ? "Generating…" : "Regenerate draft"}
               </button>
-              <button className="primary-button" data-testid="publish-schedule" disabled={publishing || uncoveredCount > 0} onClick={onPublish}>
-                {publishing ? "Publishing…" : uncoveredCount > 0 ? "Resolve uncovered first" : "Publish schedule"}
+              <button className="primary-button" data-testid="publish-schedule" disabled={publishing || tentativeCount > 0} onClick={onPublish}>
+                {publishing ? "Publishing…" : tentativeCount > 0 ? `${tentativeCount} awaiting confirmation` : "Publish schedule"}
               </button>
               <small className="helper-copy">
-                {uncoveredCount > 0
-                  ? "Cannot publish — some children don't have a driver. Review the trip demand below."
-                  : "Publishing locks this schedule for all families."}
+                {tentativeCount > 0
+                  ? `${tentativeCount} driver${tentativeCount !== 1 ? "s" : ""} haven't confirmed yet. Publish is blocked until they confirm or their assignment expires.`
+                  : uncoveredCount > 0
+                    ? "Publishing will lock this schedule. Uncovered trips will be flagged for families."
+                    : "Publishing locks this schedule for all families."}
               </small>
             </>
             ) : scheduleStatus === "published" ? (
@@ -3657,6 +3675,16 @@ function DriveDetailScreen({
           <span className="drive-detail-label">Vehicle</span>
           <strong>{vehicleLabel} · {seats} seats</strong>
         </div>
+        <div className="drive-detail-row">
+          <span className="drive-detail-label">Status</span>
+          {entry.driverAssignment.status === "tentative" ? (
+            <strong className="roster-status roster-status--tentative">Tentative — awaiting driver confirmation</strong>
+          ) : entry.driverAssignment.status === "confirmed" ? (
+            <strong className="roster-status roster-status--confirmed">Confirmed</strong>
+          ) : (
+            <strong className="roster-status roster-status--declined">{entry.driverAssignment.status}</strong>
+          )}
+        </div>
       </section>
 
       <section className="drive-detail-children">
@@ -3986,7 +4014,7 @@ export default function Prototype() {
   useEffect(() => {
     if (!identity?.group) return;
     void (async () => {
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayStr = todayInTimezone();
       const futureWeeks = allWeeks.filter((w) => w.starts_on >= todayStr);
       const entries: [string, boolean][] = [];
       for (const w of futureWeeks) {
@@ -4413,7 +4441,7 @@ const navItems = useMemo(() => {
     if (activeTab === "plan") {
       const planWeek = activePlanWeek;
       const planWeekStarted = planWeek
-        ? planWeek.week.starts_on <= new Date().toISOString().slice(0, 10)
+        ? planWeek.week.starts_on <= todayInTimezone()
         : false;
       const planWeekPublished = planWeek
         ? planWeekLockedMap[planWeek.week.id] ?? false
@@ -4489,6 +4517,7 @@ const navItems = useMemo(() => {
           onReloadOverview={() => void loadOverview()}
           declinedCount={homeSchedule ? countDeclinedRosters(homeSchedule) : 0}
           uncoveredCount={homeSchedule ? countUncoveredTrips(homeSchedule) : 0}
+          tentativeCount={homeSchedule ? countTentativeAssignments(homeSchedule) : 0}
           uncoveredRidersByTrip={homeSchedule?.uncoveredRidersByTrip ?? new Map()}
           generateWarning={generateWarning}
           avatarUrl={identity.profile.avatar_url}
