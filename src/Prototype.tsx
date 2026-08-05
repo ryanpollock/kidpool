@@ -1498,7 +1498,8 @@ function PlanScreen({
   allWeeks,
   selectedWeekId,
   onSelectWeek,
-  weekLocked,
+  weekPublished,
+  weekStarted,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -1520,7 +1521,8 @@ function PlanScreen({
   allWeeks: Tables<"weeks">[];
   selectedWeekId: string | null;
   onSelectWeek: (weekId: string | null) => void;
-  weekLocked: boolean;
+  weekPublished: boolean;
+  weekStarted: boolean;
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1528,7 +1530,7 @@ function PlanScreen({
   const [coParentUpdate, setCoParentUpdate] = useState<string | null>(null);
 
   const submitted = checkin?.status === "submitted";
-  const locked = submitted || weekLocked;
+  const locked = submitted || weekPublished || weekStarted;
   const children = setup?.children ?? [];
   const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
 
@@ -1769,10 +1771,15 @@ function PlanScreen({
         <div className="coparent-toast" data-testid="coparent-update">{coParentUpdate}</div>
       ) : null}
 
-      {weekLocked ? (
+      {weekPublished ? (
         <div className="success-banner">
           <LockClosedIcon width="24" height="24" />
           <span><strong>Check-in locked</strong><small>This week's schedule has been published.</small></span>
+        </div>
+      ) : weekStarted ? (
+        <div className="success-banner">
+          <LockClosedIcon width="24" height="24" />
+          <span><strong>Check-in locked</strong><small>This week has already started.</small></span>
         </div>
       ) : submitted ? (
         <div className="success-banner">
@@ -1893,7 +1900,7 @@ function PlanScreen({
         </span>
       </div>
 
-      {weekLocked ? null : submitted ? (
+      {weekPublished || weekStarted ? null : submitted ? (
         <button className="secondary-button" disabled={submitting} onClick={() => void reopen()}>
           {submitting ? "Reopening…" : "Reopen my check-in"}
         </button>
@@ -1914,9 +1921,6 @@ function WeekScreen({
   scheduleLoading,
   scheduleError,
   isCoordinator,
-  onGenerate,
-  generating,
-  generateError,
   onReloadWeek,
   onReloadSchedule,
   weekStartsOn,
@@ -1934,9 +1938,6 @@ function WeekScreen({
   scheduleLoading: boolean;
   scheduleError: string | null;
   isCoordinator: boolean;
-  onGenerate: () => void;
-  generating: boolean;
-  generateError: string | null;
   onReloadWeek: () => void;
   onReloadSchedule: () => void;
   weekStartsOn: string | null;
@@ -1990,9 +1991,7 @@ function WeekScreen({
         <div className="empty-state">
           <p>No upcoming week has been created yet.</p>
           {isCoordinator ? (
-            <button className="primary-button" data-testid="generate-schedule-empty" disabled={generating} onClick={onGenerate}>
-              {generating ? "Working…" : "Generate schedule"}
-            </button>
+            <p className="helper-copy">Create a new week from the Status tab.</p>
           ) : (
             <p className="helper-copy">An admin needs to create the week first. Check back soon.</p>
           )}
@@ -2100,12 +2099,7 @@ function WeekScreen({
         <div className="empty-state">
           <p>No schedule published yet.</p>
           {isCoordinator ? (
-            <>
-              {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
-              <button className="primary-button" data-testid="generate-schedule" disabled={generating} onClick={onGenerate}>
-                {generating ? "Generating…" : "Generate draft schedule"}
-              </button>
-            </>
+            <p className="helper-copy">Generate a draft from the Status tab.</p>
           ) : (
             <p className="helper-copy">No schedule has been published yet. Check back soon.</p>
           )}
@@ -2180,19 +2174,11 @@ function WeekScreen({
         </div>
       ) : null}
 
-      {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
-
       <div className="week-status-strip">
         <span><CheckCircledIcon /> {coveredCount} covered</span>
         {uncoveredRiderTotal > 0 ? <span><ExclamationTriangleIcon /> {uncoveredRiderTotal} need{uncoveredRiderTotal !== 1 ? "" : "s"} ride{uncoveredRiderTotal !== 1 ? "s" : ""}</span> : null}
         {declinedCount > 0 ? <span className="week-status-declined"><ExclamationTriangleIcon /> {declinedCount} declined</span> : null}
       </div>
-
-      {isCoordinator && !isPublished ? (
-        <button className="secondary-button" data-testid="regenerate-schedule" disabled={generating} onClick={onGenerate}>
-          {generating ? "Regenerating…" : "Regenerate draft"}
-        </button>
-      ) : null}
 
       <div className="week-list">
         {weekdays.map((serviceDate) => {
@@ -4010,12 +3996,12 @@ export default function Prototype() {
   }, [allWeeks, identity?.group, repository]);
 
   useEffect(() => {
-    if (weekData) void loadSchedule();
-  }, [weekData, selectedWeekId, loadSchedule]);
+    if (weekData && identity?.membership?.role === "coordinator") void loadSchedule();
+  }, [weekData, selectedWeekId, loadSchedule, identity?.membership?.role]);
 
   useEffect(() => {
-    if (activeTab === "week" && weekData) void loadSchedule();
-  }, [activeTab, weekData, loadSchedule]);
+    if (activeTab === "week" && weekData && identity?.membership?.role === "coordinator") void loadSchedule();
+  }, [activeTab, weekData, loadSchedule, identity?.membership?.role]);
 
   const generateSchedule = useCallback(async () => {
     if (!weekData) return;
@@ -4030,6 +4016,8 @@ export default function Prototype() {
         await loadSchedule();
         await loadHomeSchedule();
         await loadOverview();
+        await loadWeek();
+        await loadPublishedSchedule();
         if (result.warning) {
           setGenerateWarning(result.warning);
         }
@@ -4043,7 +4031,7 @@ export default function Prototype() {
     } finally {
       setGenerating(false);
     }
-  }, [weekData, repository, loadSchedule, loadHomeSchedule, loadOverview]);
+  }, [weekData, repository, loadSchedule, loadHomeSchedule, loadOverview, loadWeek, loadPublishedSchedule]);
 
   const subscribeToPush = useCallback(async () => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
@@ -4156,10 +4144,12 @@ export default function Prototype() {
       updateAssignmentStatus(assignmentId, "declined");
       void repository.sendPushNotification(assignmentId, null, "declined");
       await loadMyAssignments();
+      await loadHomeSchedule();
+      await loadPublishedSchedule();
     } catch (error) {
       setConfirmError(readableError(error));
     }
-  }, [repository, updateAssignmentStatus, loadMyAssignments]);
+  }, [repository, updateAssignmentStatus, loadMyAssignments, loadHomeSchedule, loadPublishedSchedule]);
 
   useEffect(() => {
     if (homeSchedule) void loadMyAssignments();
@@ -4190,12 +4180,13 @@ export default function Prototype() {
       await repository.volunteerForDrive(assignmentId);
       await loadHomeSchedule();
       await loadSchedule();
+      await loadPublishedSchedule();
     } catch (error) {
       setVolunteerError(readableError(error));
     } finally {
       setVolunteerWorking(false);
     }
-  }, [repository, loadMyAssignments, loadSchedule]);
+  }, [repository, loadMyAssignments, loadSchedule, loadHomeSchedule, loadPublishedSchedule]);
 
   const publishSchedule = useCallback(async () => {
     if (!schedule) return;
@@ -4401,17 +4392,21 @@ const navItems = useMemo(() => {
       );
     }
 
-    if (driveDetailId && identity && schedule) {
-      const found = findDriveDetail(schedule, driveDetailId);
-      if (found) {
-        return (
-          <DriveDetailScreen
-            entry={found.entry}
-            trip={found.trip}
-            serviceDate={found.serviceDate}
-            onBack={() => setDriveDetailId(null)}
-          />
-        );
+    if (driveDetailId && identity) {
+      const isCoord = identity.membership?.role === "coordinator";
+      const driveSchedule = isCoord ? schedule : publishedSchedule;
+      if (driveSchedule) {
+        const found = findDriveDetail(driveSchedule, driveDetailId);
+        if (found) {
+          return (
+            <DriveDetailScreen
+              entry={found.entry}
+              trip={found.trip}
+              serviceDate={found.serviceDate}
+              onBack={() => setDriveDetailId(null)}
+            />
+          );
+        }
       }
     }
 
@@ -4449,7 +4444,8 @@ const navItems = useMemo(() => {
           allWeeks={allWeeks}
           selectedWeekId={selectedPlanWeekId}
           onSelectWeek={setSelectedPlanWeekId}
-          weekLocked={planWeekStarted || planWeekPublished}
+          weekPublished={planWeekPublished}
+          weekStarted={planWeekStarted}
         />
       );
     }
@@ -4465,9 +4461,6 @@ const navItems = useMemo(() => {
           scheduleLoading={isCoord ? scheduleLoading : publishedLoading}
           scheduleError={isCoord ? scheduleError : null}
           isCoordinator={isCoord}
-          onGenerate={() => void generateSchedule()}
-          generating={generating}
-          generateError={generateError}
           onReloadWeek={() => void loadWeek()}
           onReloadSchedule={() => isCoord ? void loadSchedule() : void loadPublishedSchedule()}
           weekStartsOn={(isCoord ? (viewWeekData ?? weekData) : publishedWeek)?.week.starts_on ?? null}
@@ -4624,11 +4617,12 @@ const navItems = useMemo(() => {
           className="app-screen"
           key={activeTab}
           onRefresh={async () => {
+            await loadWeek();
             switch (activeTab) {
               case "home": await loadHomeSchedule(); break;
               case "plan": await loadCheckin(); break;
               case "week": await loadSchedule(); await loadPublishedSchedule(); break;
-              case "coordinate": await loadOverview(); break;
+              case "coordinate": await loadOverview(); await loadHomeSchedule(); break;
             }
           }}
         >

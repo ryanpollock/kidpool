@@ -11,7 +11,7 @@ Phone-first web app that helps Clarendon families coordinate shared rides betwee
 - **Weekly check-in** — toggle rides per child, set driving preference and max drives
 - **Schedule generation** — coordinator runs a deterministic greedy algorithm that assigns drivers and riders across all trips for the week
 - **Driver confirmation** — assigned drivers confirm or decline (with optional reason); confirm-all on the home screen
-- **Publication** — coordinator publishes the final roster; all parents see it on the Week screen
+- **Publication** — coordinator publishes the final roster; all parents see it on the This Week tab
 - **Coverage alerts** — uncovered trips surface immediately for coordinator recovery
 
 ## Tech stack

@@ -239,7 +239,7 @@ test("home screen links to the parent directory", async () => {
   assert.match(source, /onDirectory/);
 });
 
-test("drive detail screen renders child photos from the Week tab", async () => {
+test("drive detail screen renders child photos from the This Week tab", async () => {
   const source = await readFile(prototypeUrl, "utf8");
   assert.match(source, /data-testid="drive-detail-screen"/);
   assert.match(source, /child-photo-card/);
@@ -290,7 +290,7 @@ test("Plan screen supports week navigation with Earlier/Later/Current reset", as
   assert.match(source, /onSelectWeek\(null\)/);
 });
 
-test("Schedule screen (Week tab) supports week navigation with Earlier/Later/Current reset", async () => {
+test("This Week tab (coordinator) supports week navigation with Earlier/Later/Current reset", async () => {
   const source = await readFile(prototypeUrl, "utf8");
 
   assert.match(source, /data-testid="schedule-week-nav"/);

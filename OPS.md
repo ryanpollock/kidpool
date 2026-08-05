@@ -176,7 +176,7 @@ Client-side errors are captured by Sentry (`@sentry/react`). Initialization is i
 
 If the app is unavailable or scheduling fails:
 
-1. **Coordinator posts the schedule manually.** Use the last published schedule from the Week screen (or the Supabase dashboard → Table editor → `schedule_versions` + `driver_assignments` + `rider_assignments`) and share it via the existing parent group chat or email.
+1. **Coordinator posts the schedule manually.** Use the last published schedule from the This Week tab (or the Supabase dashboard → Table editor → `schedule_versions` + `driver_assignments` + `rider_assignments`) and share it via the existing parent group chat or email.
 
 2. **If Supabase is down:**
    - Check status at https://status.supabase.com.
@@ -236,11 +236,11 @@ Before the pilot, run the full workflow with at least 2 real Google accounts:
 1. **Setup (one-time):** Assign coordinator role via SQL (section 4). Have each parent sign in with Google OAuth and create/join a household.
 2. **Household setup:** Each parent adds their children and a vehicle in Account.
 3. **Week creation:** Coordinator opens Cover tab → "Create next week".
-4. **Household check-in:** Each parent opens Plan tab → toggles rides per child → sets drive preference → submits.
+4. **Household check-in:** Each parent opens Next Week tab → toggles rides per child → sets drive preference → submits.
 5. **Draft generation:** Coordinator opens Cover tab → "Generate draft schedule".
 6. **Driver confirmation:** Each assigned driver opens Home → "Confirm all drives" (or reviews individually with optional decline reason).
 7. **Publication:** Coordinator opens Cover tab → "Publish schedule".
-8. **Verification:** All parents open Week tab → see the published roster with driver, vehicle, and riders per trip.
+8. **Verification:** All parents open This Week tab → see the published roster with driver, vehicle, and riders per trip.
 
 If any step fails, check:
 - Browser console for client-side errors.

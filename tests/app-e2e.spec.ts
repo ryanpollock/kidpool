@@ -722,7 +722,7 @@ test.describe("App E2E", () => {
     await signInWithTestAuth(page, coord.email);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    // Navigate to Week tab — the current week is the test week, so the schedule is visible immediately
+    // Navigate to This Week tab — the current week is the test week, so the schedule is visible immediately
     await page.getByTestId("nav-week").click();
     await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
 
@@ -777,7 +777,7 @@ test.describe("App E2E", () => {
     await signInWithTestAuth(page, coord.email);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    // Navigate to Week tab — the current week is the test week, so uncovered riders are visible immediately
+    // Navigate to This Week tab — the current week is the test week, so uncovered riders are visible immediately
     await page.getByTestId("nav-week").click();
     await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 5000 });
 

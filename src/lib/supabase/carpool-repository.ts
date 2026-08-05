@@ -767,56 +767,6 @@ export class CarpoolRepository {
   }
 
   /**
-   * Returns the next upcoming week (starts_on > today) for the Plan screen.
-   * Unlike getCurrentWeek, this never falls back to a past week — it returns
-   * null when no future week exists, so the UI can show "no upcoming week."
-   */
-  async getPlanWeek(groupId: string): Promise<WeekWithTrips | null> {
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
-
-    // First, check if today falls within an existing week (Mon–Fri).
-    // This handles Monday morning when the week has already started.
-    const currentRows = unwrapRequired(
-      await this.client
-        .from("weeks")
-        .select("*")
-        .eq("group_id", groupId)
-        .lte("starts_on", todayStr)
-        .order("starts_on", { ascending: false })
-        .limit(1),
-    );
-    const mostRecent = currentRows[0];
-    if (mostRecent) {
-      const weekStart = new Date(mostRecent.starts_on + "T00:00:00");
-      const friday = new Date(weekStart);
-      friday.setDate(weekStart.getDate() + 4);
-      const fridayStr = friday.toISOString().slice(0, 10);
-      if (todayStr >= mostRecent.starts_on && todayStr <= fridayStr) {
-        const trips = await this.listTripsForWeek(mostRecent.id);
-        return { week: mostRecent, trips };
-      }
-    }
-
-    // Otherwise, return the next upcoming week (starts_on > today).
-    const futureRows = unwrapRequired(
-      await this.client
-        .from("weeks")
-        .select("*")
-        .eq("group_id", groupId)
-        .gt("starts_on", todayStr)
-        .order("starts_on", { ascending: true })
-        .limit(1),
-    );
-    const upcoming = futureRows[0];
-    if (upcoming) {
-      const trips = await this.listTripsForWeek(upcoming.id);
-      return { week: upcoming, trips };
-    }
-    return null;
-  }
-
-  /**
    * Returns a specific week by id, including trips. Used for week navigation.
    */
   async getWeekById(weekId: string): Promise<WeekWithTrips | null> {
