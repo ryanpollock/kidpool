@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { isNoSchoolDay } from "../school-calendar";
+import { isNoSchoolDay, todayInTimezone, PILOT_TIMEZONE } from "../school-calendar";
 import type {
   ConfirmationResponse,
   Database,
@@ -715,8 +715,7 @@ export class CarpoolRepository {
   }
 
   async getCurrentWeek(groupId: string): Promise<WeekWithTrips | null> {
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
+    const todayStr = todayInTimezone();
 
     // Most recent week that started on or before today.
     const pastRows = unwrapRequired(
@@ -792,17 +791,21 @@ export class CarpoolRepository {
     if (userResult.error) throw new Error(userResult.error.message);
     if (!userResult.data.user) throw new Error("Sign in again to continue.");
 
+    // Deadlines: check-in by Saturday 3 PM Pacific, confirmation by Sunday 8 PM Pacific.
+    // Compute in the pilot timezone to avoid UTC drift for SF families.
     const startDate = new Date(startsOn + "T00:00:00");
     const day = startDate.getDay();
     if (day !== 1) throw new Error("Week must start on a Monday.");
 
-    // Deadlines: check-in by Saturday 3 PM, confirmation by Sunday 3 PM.
-    const checkinDeadline = new Date(startDate);
-    checkinDeadline.setDate(checkinDeadline.getDate() - 2); // Saturday before
-    checkinDeadline.setHours(15, 0, 0, 0); // 3 PM
-    const confirmationDeadline = new Date(startDate);
-    confirmationDeadline.setDate(confirmationDeadline.getDate() - 1); // Sunday before
-    confirmationDeadline.setHours(15, 0, 0, 0); // 3 PM
+    const saturdayStr = new Date(startDate);
+    saturdayStr.setDate(startDate.getDate() - 2);
+    const saturdayDate = saturdayStr.toISOString().slice(0, 10);
+    const sundayStr = new Date(startDate);
+    sundayStr.setDate(startDate.getDate() - 1);
+    const sundayDate = sundayStr.toISOString().slice(0, 10);
+
+    const checkinDeadline = new Date(`${saturdayDate}T15:00:00-07:00`);
+    const confirmationDeadline = new Date(`${sundayDate}T20:00:00-07:00`);
 
     const week = unwrapRequired<Tables<"weeks">>(
       await this.client
@@ -1479,15 +1482,15 @@ export class CarpoolRepository {
     const childById = new Map(children.map((c) => [c.id, c]));
     const tripById = new Map(trips.map((t) => [t.id, t]));
 
-    const activeDriverAssignments = new Set(
+    const confirmedDriverAssignments = new Set(
       driverAssignments
-        .filter((da) => da.status === "tentative" || da.status === "confirmed")
+        .filter((da) => da.status === "confirmed")
         .map((da) => da.id),
     );
 
     const coveredChildrenByTrip = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
-      if (!activeDriverAssignments.has(ra.driver_assignment_id)) continue;
+      if (!confirmedDriverAssignments.has(ra.driver_assignment_id)) continue;
       const existing = coveredChildrenByTrip.get(ra.trip_id) ?? new Set<string>();
       existing.add(ra.child_id);
       coveredChildrenByTrip.set(ra.trip_id, existing);
@@ -1592,15 +1595,16 @@ async getLatestScheduleVersion(
     }
 
     // Compute uncovered riders per trip: children who need a ride but are not
-    // assigned to any active (tentative/confirmed) driver assignment.
-    const activeDriverAssignmentIds = new Set(
+    // assigned to any confirmed driver assignment. Tentative assignments do
+    // not count as covering — the PRD's central safety property.
+    const confirmedDriverAssignmentIds = new Set(
       driverAssignments
-        .filter((da) => da.status === "tentative" || da.status === "confirmed")
+        .filter((da) => da.status === "confirmed")
         .map((da) => da.id),
     );
     const coveredChildIdsByTrip = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
-      if (!activeDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
+      if (!confirmedDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
       const existing = coveredChildIdsByTrip.get(ra.trip_id) ?? new Set<string>();
       existing.add(ra.child_id);
       coveredChildIdsByTrip.set(ra.trip_id, existing);
@@ -1634,7 +1638,7 @@ async getLatestScheduleVersion(
   }
 
   async getActivePublishedWeek(groupId: string): Promise<WeekWithTrips | null> {
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = todayInTimezone();
 
     const versions = unwrapRequired(
       await this.client
@@ -1680,7 +1684,7 @@ async getLatestScheduleVersion(
   }
 
   async getNextPlanWeek(groupId: string): Promise<WeekWithTrips | null> {
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = todayInTimezone();
 
     const futureRows = unwrapRequired(
       await this.client
@@ -1784,14 +1788,14 @@ async getLatestScheduleVersion(
       rostersByTrip.set(assignment.trip_id, existing);
     }
 
-    const activeDriverAssignmentIds = new Set(
+    const confirmedDriverAssignmentIds = new Set(
       driverAssignments
-        .filter((da) => da.status === "tentative" || da.status === "confirmed")
+        .filter((da) => da.status === "confirmed")
         .map((da) => da.id),
     );
     const coveredChildIdsByTrip = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
-      if (!activeDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
+      if (!confirmedDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
       const existing = coveredChildIdsByTrip.get(ra.trip_id) ?? new Set<string>();
       existing.add(ra.child_id);
       coveredChildIdsByTrip.set(ra.trip_id, existing);

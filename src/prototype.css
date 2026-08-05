@@ -2329,6 +2329,37 @@ a.directory-contact-item:hover {
   font-style: italic;
 }
 
+.trip-roster--tentative {
+  border-style: dashed;
+  border-color: var(--amber);
+}
+
+.roster-status {
+  display: inline-block;
+  margin-top: 7px;
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.roster-status--tentative {
+  background: rgba(214, 158, 46, 0.12);
+  color: var(--amber);
+}
+
+.roster-status--confirmed {
+  background: var(--green-pale, #e6f4ea);
+  color: var(--green, #1a7d3a);
+}
+
+.roster-status--declined {
+  background: var(--red-pale, #fce8e8);
+  color: var(--red, #c0392b);
+}
+
 .uncovered-riders {
   grid-column: 1 / -1;
   margin-top: 6px;
