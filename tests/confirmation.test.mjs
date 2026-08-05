@@ -54,7 +54,7 @@ test("Exchange 6 HomeScreen shows real assignments with confirm-all flow", async
   assert.match(source, /myAssignments/);
   assert.match(source, /MyDriverAssignment/);
   assert.match(source, /Confirm all drives/);
-  assert.match(source, /No drives assigned/);
+  assert.match(source, /No schedule yet/);
   assert.match(source, /assignmentsLoading/);
 });
 

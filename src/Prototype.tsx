@@ -996,6 +996,8 @@ function AssignmentRow({
   const dateInfo = formatTripDate(trip.service_date);
   const confirmed = status === "confirmed";
   const declined = status === "declined";
+  const released = status === "released";
+  const expired = status === "expired";
 
   return (
     <article className="assignment-row">
@@ -1010,9 +1012,9 @@ function AssignmentRow({
           <span>{riderCount} rider{riderCount !== 1 ? "s" : ""}</span>
         </div>
       </div>
-      <span className={`status-label ${confirmed ? "status-label--confirmed" : declined ? "status-label--declined" : "status-label--tentative"}`}>
+      <span className={`status-label ${confirmed ? "status-label--confirmed" : declined ? "status-label--declined" : released || expired ? "status-label--declined" : "status-label--tentative"}`}>
         {confirmed ? <CheckIcon width="13" height="13" /> : null}
-        {confirmed ? "Confirmed" : declined ? "Declined" : "Tentative"}
+        {confirmed ? "Confirmed" : declined ? "Declined" : released ? "Reassigned" : expired ? "Expired" : "Tentative"}
       </span>
     </article>
   );
@@ -1024,9 +1026,11 @@ function HomeScreen({
   assignmentsError,
   confirmError,
   schedulePublished,
+  hasHomeSchedule,
   onConfirmAll,
   onReview,
   onCoverage,
+  onCheckIn,
   onDirectory,
   onAccount,
   onFaq,
@@ -1054,9 +1058,11 @@ function HomeScreen({
   assignmentsError: string | null;
   confirmError: string | null;
   schedulePublished: boolean;
+  hasHomeSchedule: boolean;
   onConfirmAll: () => void;
   onReview: () => void;
   onCoverage: () => void;
+  onCheckIn: () => void;
   onDirectory: () => void;
   onAccount: () => void;
   onFaq: () => void;
@@ -1081,7 +1087,9 @@ function HomeScreen({
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const [cancelingId, setCancelingId] = useState<string | null>(null);
-  const activeAssignments = myAssignments.filter((a) => a.assignment.status !== "declined");
+  const activeAssignments = myAssignments.filter(
+    (a) => a.assignment.status !== "declined" && a.assignment.status !== "released" && a.assignment.status !== "expired",
+  );
   const tentative = activeAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = activeAssignments.filter((a) => a.assignment.status === "confirmed");
   const allConfirmed = tentative.length === 0 && confirmed.length > 0;
@@ -1133,16 +1141,32 @@ function HomeScreen({
           <div className="auth-error" role="alert">{assignmentsError}</div>
           <button className="primary-button" data-testid="retry-load-assignments" onClick={onRetryAssignments}>Try again</button>
         </section>
-      ) : noAssignments ? (
+) : noAssignments ? (
         <section className="confirmation-hero confirmation-hero--done">
           <span className="eyebrow">{weekEyebrow}</span>
-          <h1>No drives assigned</h1>
-          <p className="hero-support">You haven’t been assigned to drive this week. Check the full schedule for details.</p>
+          {schedulePublished ? (
+            <>
+              <h1>Your child's rides are scheduled</h1>
+              <p className="hero-support">You're not driving this week. See the full roster on the This Week tab.</p>
+              <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
+            </>
+          ) : hasHomeSchedule ? (
+            <>
+              <h1>Schedule is being prepared</h1>
+              <p className="hero-support">The coordinator is still working on this week's schedule. Check back after it's published.</p>
+            </>
+          ) : (
+            <>
+              <h1>No schedule yet</h1>
+              <p className="hero-support">Check in for next week so the coordinator can build the schedule.</p>
+              <button className="primary-button" onClick={onCheckIn}>Go to Next Week</button>
+            </>
+          )}
         </section>
       ) : (
         <section className={`confirmation-hero ${allConfirmed ? "confirmation-hero--done" : ""}`}>
-          <span className="eyebrow">{allConfirmed ? (schedulePublished ? "Published schedule" : "Schedule ready") : "Action needed"}</span>
-          <h1>{allConfirmed ? "You're all set" : "Confirm your drives"}</h1>
+          <span className="eyebrow">{allConfirmed ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish") : "Action needed"}</span>
+          <h1>{allConfirmed ? (schedulePublished ? "You're all set" : "Drives confirmed") : "Confirm your drives"}</h1>
           <p className="hero-deadline">
             {allConfirmed ? (
               <><CheckCircledIcon width="18" height="18" /> {confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed</>
@@ -1155,7 +1179,7 @@ function HomeScreen({
               ? "We'll remind you the evening before each drive."
               : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
           </p>
-          {allConfirmed ? (
+          {allConfirmed && schedulePublished ? (
             <AddToCalendarButton assignments={confirmed} timezone={timezone} label="Add all to calendar" />
           ) : null}
         </section>
@@ -1314,11 +1338,13 @@ function HomeScreen({
         </section>
       ) : null}
 
-      <button className="coverage-alert" onClick={onCoverage} data-testid="coverage-alert">
-        <span><ExclamationTriangleIcon width="20" height="20" /></span>
-        <span><strong>View full schedule</strong><small>See this week’s coverage</small></span>
-        <ChevronRightIcon />
-      </button>
+      {schedulePublished ? (
+        <button className="coverage-alert" onClick={onCoverage} data-testid="coverage-alert">
+          <span><ExclamationTriangleIcon width="20" height="20" /></span>
+          <span><strong>View this week's schedule</strong><small>See who's driving each day</small></span>
+          <ChevronRightIcon />
+        </button>
+      ) : null}
 
       <button className="coverage-alert coverage-alert--muted" onClick={onDirectory} data-testid="directory-link">
         <span><AvatarIcon width="20" height="20" /></span>
@@ -1462,12 +1488,16 @@ function ReviewScreen({
                   </button>
                 )}
               </>
-            ) : (
+            ) : status === "declined" ? (
               <>
                 <div className="declined-notice"><Cross2Icon /><span><strong>Declined</strong><small>This drive has been released.</small></span></div>
                 <button className="primary-button" disabled={working === entry.assignment.id} onClick={() => void respond(entry.assignment.id, "confirmed")}>
                   <CheckIcon /> Re-accept this drive
                 </button>
+              </>
+            ) : (
+              <>
+                <div className="declined-notice"><Cross2Icon /><span><strong>{status === "released" ? "Reassigned" : "Expired"}</strong><small>{status === "released" ? "Another driver has taken this drive." : "This drive has expired."}</small></span></div>
               </>
             )}
           </div>
@@ -1771,7 +1801,12 @@ function PlanScreen({
         <div className="coparent-toast" data-testid="coparent-update">{coParentUpdate}</div>
       ) : null}
 
-      {weekPublished ? (
+      {weekPublished && !submitted && checkin ? (
+        <div className="success-banner">
+          <LockClosedIcon width="24" height="24" />
+          <span><strong>Check-in missed</strong><small>Your check-in wasn't submitted before the schedule was published. Contact the coordinator if you need changes.</small></span>
+        </div>
+      ) : weekPublished ? (
         <div className="success-banner">
           <LockClosedIcon width="24" height="24" />
           <span><strong>Check-in locked</strong><small>This week's schedule has been published.</small></span>
@@ -2268,6 +2303,7 @@ function CoordinatorScreen({
   onReloadOverview,
   declinedCount,
   uncoveredCount,
+  uncoveredRidersByTrip,
   generateWarning,
   avatarUrl,
   onAccount,
@@ -2292,6 +2328,7 @@ function CoordinatorScreen({
   onReloadOverview: () => void;
   declinedCount: number;
   uncoveredCount: number;
+  uncoveredRidersByTrip: Map<string, Tables<"children">[]>;
   generateWarning: string | null;
   avatarUrl: string | null;
   onAccount: () => void;
@@ -2399,7 +2436,7 @@ function CoordinatorScreen({
             <h2>{uncoveredCount} trip{uncoveredCount !== 1 ? "s" : ""} with uncovered children</h2>
           </div>
           <p className="decline-alert-body">
-            Some children don't have a driver assigned. Check the This Week tab for details before publishing.
+            Some children don't have a driver assigned. Review the trip demand below for details before publishing.
           </p>
         </div>
       ) : null}
@@ -2423,7 +2460,7 @@ function CoordinatorScreen({
               </button>
               <small className="helper-copy">
                 {uncoveredCount > 0
-                  ? "Cannot publish — some children don't have a driver. Check the This Week tab."
+                  ? "Cannot publish — some children don't have a driver. Review the trip demand below."
                   : "Publishing locks this schedule for all families."}
               </small>
             </>
@@ -2492,6 +2529,16 @@ function CoordinatorScreen({
                 <span className={noRiders ? "neutral" : covered ? "positive" : "negative"}>
                   {noRiders ? "No riders" : covered ? "Covered" : "Short"}
                 </span>
+                {!covered && !noRiders ? (
+                  <div className="coverage-uncovered">
+                    {(() => {
+                      const uncovered = uncoveredRidersByTrip.get(tripOverview.trip.id) ?? [];
+                      return uncovered.length > 0
+                        ? `Needs ride: ${uncovered.map((c) => c.first_name).join(", ")}`
+                        : null;
+                    })()}
+                  </div>
+                ) : null}
               </div>
             );
           }) : (
@@ -2540,6 +2587,7 @@ function AccountScreen({
   const [phoneWorking, setPhoneWorking] = useState(false);
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [shareWorking, setShareWorking] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
 
   const [newChildFirst, setNewChildFirst] = useState("");
   const [newChildLast, setNewChildLast] = useState("");
@@ -2608,7 +2656,7 @@ function AccountScreen({
       }
     })();
     return () => { mounted = false; };
-  }, [repository, profile.id, householdId, setup]);
+  }, [repository, profile.id, householdId]);
 
   const saveStandardWeek = async () => {
     setStandardWeekSaving(true);
@@ -2663,11 +2711,12 @@ function AccountScreen({
 
   const toggleSharePhone = async () => {
     setShareWorking(true);
+    setShareError(null);
     try {
       await repository.updateCurrentProfile({ sharePhone: !profile.share_phone });
       await onReloadHousehold();
     } catch (nextError) {
-      setNameError(readableError(nextError));
+      setShareError(readableError(nextError));
     } finally {
       setShareWorking(false);
     }
@@ -2675,11 +2724,12 @@ function AccountScreen({
 
   const toggleShareEmail = async () => {
     setShareWorking(true);
+    setShareError(null);
     try {
       await repository.updateCurrentProfile({ shareEmail: !profile.share_email });
       await onReloadHousehold();
     } catch (nextError) {
-      setNameError(readableError(nextError));
+      setShareError(readableError(nextError));
     } finally {
       setShareWorking(false);
     }
@@ -2903,6 +2953,7 @@ function AccountScreen({
             onChange={() => void toggleShareEmail()}
           />
         </label>
+        {shareError ? <div className="auth-error" role="alert">{shareError}</div> : null}
       </section>
 
       <section className="household-section" aria-labelledby="children-section-heading">
@@ -3288,7 +3339,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "How do I join an existing household?",
-        a: "If your co-parent already created a household, ask them for the 10-character join code on their Account screen. On the sign-in screen, choose \"Join a household\" and enter the code. Each parent uses their own Google account.",
+        a: "If your co-parent already created a household, ask them for the 10-character join code on their Account screen. When you sign in for the first time, choose \"Join my household\" during onboarding and enter the code. Each parent uses their own Google account.",
       },
       {
         q: "How do I invite a co-parent?",
@@ -3322,7 +3373,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     items: [
       {
         q: "When should I check in?",
-        a: "Check in each week by Saturday. The coordinator generates the schedule on Sunday, so your check-in needs to be submitted before then. You'll see a reminder on the Next Week tab if you haven't checked in yet.",
+        a: "Check in each week by Saturday. The coordinator generates the schedule on Sunday, so your check-in needs to be submitted before then. If you haven't checked in, you'll see a prompt on the Home tab to go to Next Week.",
       },
       {
         q: "How do I request rides for my child?",
@@ -3376,7 +3427,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "What is the confirmation deadline?",
-        a: "The deadline is shown on the Home screen (typically 3:00 PM Sunday). If you don't confirm or decline by the deadline, your assignment expires and the children become uncovered.",
+        a: "The deadline is shown on the Home screen (typically 3:00 PM Sunday). Please confirm or decline by the deadline so the coordinator knows the final roster. If you don't confirm, your assignment stays tentative.",
       },
     ],
   },
@@ -3402,7 +3453,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     items: [
       {
         q: "How do I view different weeks?",
-        a: "The This Week tab shows the current week's published schedule by default. Coordinators can use the Earlier and Later buttons to navigate between weeks; parents see the current published week.",
+        a: "The This Week tab shows the active published schedule. Use the Next Week tab's Earlier and Later buttons to browse past and future weeks.",
       },
       {
         q: "What do the coverage indicators mean?",
@@ -3419,7 +3470,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     items: [
       {
         q: "What do push notifications alert me about?",
-        a: "You'll be notified when: a new schedule is published, your child's driver declines a drive, your child is uncovered (no driver assigned), or a drive you declined needs coverage.",
+        a: "You'll be notified when: a new schedule is published, your child's driver declines a drive, or another parent covers a drive your child needs.",
       },
       {
         q: "How do I enable push notifications?",
@@ -3972,10 +4023,6 @@ export default function Prototype() {
         if (result.warning) {
           setGenerateWarning(result.warning);
         }
-        // Notify parents of uncovered children
-        if (result.version?.id) {
-          void repository.sendPushNotification(null, result.version.id, "uncovered");
-        }
       }
     } catch (error) {
       setGenerateError(readableError(error));
@@ -4129,6 +4176,8 @@ export default function Prototype() {
     setVolunteerError(null);
     try {
       await repository.volunteerForDrive(assignmentId);
+      void repository.sendPushNotification(assignmentId, null, "volunteered");
+      await loadMyAssignments();
       await loadHomeSchedule();
       await loadSchedule();
       await loadPublishedSchedule();
@@ -4440,6 +4489,7 @@ const navItems = useMemo(() => {
           onReloadOverview={() => void loadOverview()}
           declinedCount={homeSchedule ? countDeclinedRosters(homeSchedule) : 0}
           uncoveredCount={homeSchedule ? countUncoveredTrips(homeSchedule) : 0}
+          uncoveredRidersByTrip={homeSchedule?.uncoveredRidersByTrip ?? new Map()}
           generateWarning={generateWarning}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
@@ -4454,9 +4504,11 @@ const navItems = useMemo(() => {
         assignmentsError={assignmentsError}
         confirmError={confirmError}
         schedulePublished={homeSchedule?.version.status === "published"}
+        hasHomeSchedule={homeSchedule !== null}
         onConfirmAll={() => void confirmAll()}
         onReview={() => setReviewOpen(true)}
         onCoverage={() => navigate("week")}
+        onCheckIn={() => navigate("plan")}
         onDirectory={() => setDirectoryOpen(true)}
         onAccount={() => setAccountOpen(true)}
         onFaq={() => setFaqOpen(true)}
