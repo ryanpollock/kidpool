@@ -3682,6 +3682,7 @@ export default function Prototype() {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [schedule, setSchedule] = useState<ScheduleVersionWithRosters | null>(null);
+  const [homeSchedule, setHomeSchedule] = useState<ScheduleVersionWithRosters | null>(null);
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -3912,6 +3913,24 @@ export default function Prototype() {
     }
   }, [identity?.group, weekData, selectedWeekId, repository]);
 
+  const loadHomeSchedule = useCallback(async () => {
+    if (!identity?.group || !weekData) return;
+    try {
+      const roster = await repository.getGroupRoster(identity.group.id);
+      const version = await repository.getLatestScheduleVersion(
+        weekData.week.id, identity.group.id, weekData.trips,
+        roster.children, roster.vehicles, roster.profiles,
+      );
+      setHomeSchedule(version);
+    } catch (error) {
+      setHomeSchedule(null);
+    }
+  }, [identity?.group, weekData, repository]);
+
+  useEffect(() => {
+    if (weekData) void loadHomeSchedule();
+  }, [weekData, loadHomeSchedule]);
+
   useEffect(() => {
     if (weekData) void loadSchedule();
   }, [weekData, selectedWeekId, loadSchedule]);
@@ -3931,6 +3950,7 @@ export default function Prototype() {
         setGenerateError(result.error ?? "Failed to generate schedule.");
       } else {
         await loadSchedule();
+        await loadHomeSchedule();
         await loadOverview();
         if (result.warning) {
           setGenerateWarning(result.warning);
@@ -3945,7 +3965,7 @@ export default function Prototype() {
     } finally {
       setGenerating(false);
     }
-  }, [weekData, repository, loadSchedule, loadOverview]);
+  }, [weekData, repository, loadSchedule, loadHomeSchedule, loadOverview]);
 
   const subscribeToPush = useCallback(async () => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
@@ -4001,16 +4021,16 @@ export default function Prototype() {
   })();
 
   const loadMyAssignments = useCallback(async () => {
-    if (!identity?.group || !schedule) return;
+    if (!identity?.group || !homeSchedule) return;
     setAssignmentsLoading(true);
     setAssignmentsError(null);
     try {
       const roster = await repository.getGroupRoster(identity.group.id);
       const assignments = await repository.getMyDriverAssignments(
-        schedule.version.id,
+        homeSchedule.version.id,
         identity.profile.id,
         identity.group.id,
-        schedule.trips,
+        homeSchedule.trips,
         roster.children,
         roster.vehicles,
       );
@@ -4019,16 +4039,16 @@ export default function Prototype() {
       // Load declined drive alerts and uncovered children for affected parents
       const [alerts, uncovered] = await Promise.all([
         repository.getAffectedDeclinedDrives(
-          schedule.version.id,
+          homeSchedule.version.id,
           identity.profile.id,
           identity.group.id,
-          schedule.version.week_id,
+          homeSchedule.version.week_id,
         ),
         repository.getUncoveredChildren(
-          schedule.version.id,
+          homeSchedule.version.id,
           identity.profile.id,
           identity.group.id,
-          schedule.version.week_id,
+          homeSchedule.version.week_id,
         ),
       ]);
       setDeclinedAlerts(alerts);
@@ -4041,7 +4061,7 @@ export default function Prototype() {
     } finally {
       setAssignmentsLoading(false);
     }
-  }, [identity?.group, identity?.profile, schedule, repository]);
+  }, [identity?.group, identity?.profile, homeSchedule, repository]);
 
   const updateAssignmentStatus = useCallback((assignmentId: string, status: AssignmentStatus) => {
     setMyAssignments((prev) => prev.map((a) =>
@@ -4052,8 +4072,8 @@ export default function Prototype() {
   }, []);
 
   useEffect(() => {
-    if (schedule) void loadMyAssignments();
-  }, [schedule, loadMyAssignments]);
+    if (homeSchedule) void loadMyAssignments();
+  }, [homeSchedule, loadMyAssignments]);
 
   const confirmAll = useCallback(async () => {
     const tentative = myAssignments.filter((a) => a.assignment.status === "tentative");
@@ -4078,7 +4098,7 @@ export default function Prototype() {
     setVolunteerError(null);
     try {
       await repository.volunteerForDrive(assignmentId);
-      await loadMyAssignments();
+      await loadHomeSchedule();
       await loadSchedule();
     } catch (error) {
       setVolunteerError(readableError(error));
@@ -4094,12 +4114,13 @@ export default function Prototype() {
       await repository.publishSchedule(schedule.version.id);
       await repository.sendPushNotification(null, schedule.version.id, "published");
       await loadSchedule();
+      await loadHomeSchedule();
     } catch (error) {
       setGenerateError(readableError(error));
     } finally {
       setPublishing(false);
     }
-  }, [schedule, repository, loadSchedule]);
+  }, [schedule, repository, loadSchedule, loadHomeSchedule]);
 
   const createWeek = useCallback(async () => {
     if (!identity?.group) return;
@@ -4219,12 +4240,17 @@ export default function Prototype() {
     setAuthWorking(false);
   };
 
-  const navItems = useMemo(() => [
-    { id: "home" as const, label: "Home", icon: HomeIcon },
-    { id: "plan" as const, label: "Check-in", icon: BackpackIcon },
-    { id: "week" as const, label: "Week", icon: CalendarIcon },
-    { id: "coordinate" as const, label: "Status", icon: GroupIcon },
-  ], []);
+  const navItems = useMemo(() => {
+    const items: { id: AppTab; label: string; icon: typeof HomeIcon }[] = [
+      { id: "home" as const, label: "Home", icon: HomeIcon },
+      { id: "plan" as const, label: "Check-in", icon: BackpackIcon },
+      { id: "week" as const, label: "Schedule", icon: CalendarIcon },
+    ];
+    if (identity?.membership?.role === "coordinator") {
+      items.push({ id: "coordinate" as const, label: "Status", icon: GroupIcon });
+    }
+    return items;
+  }, [identity?.membership?.role]);
 
   const navigate = (tab: AppTab) => {
     setReviewOpen(false);
@@ -4351,7 +4377,7 @@ export default function Prototype() {
       );
     }
 
-    if (activeTab === "coordinate") {
+    if (activeTab === "coordinate" && identity?.membership?.role === "coordinator") {
       return (
         <CoordinatorScreen
           week={weekData}
@@ -4367,13 +4393,13 @@ export default function Prototype() {
           onGenerate={() => void generateSchedule()}
           generating={generating}
           generateError={generateError}
-          scheduleStatus={schedule?.version.status === "published" ? "published" : schedule?.version.status === "draft" ? "draft" : null}
+          scheduleStatus={homeSchedule?.version.status === "published" ? "published" : homeSchedule?.version.status === "draft" ? "draft" : null}
           onPublish={() => void publishSchedule()}
           publishing={publishing}
           onReloadWeek={() => void loadWeek()}
           onReloadOverview={() => void loadOverview()}
-          declinedCount={schedule ? countDeclinedRosters(schedule) : 0}
-          uncoveredCount={schedule ? countUncoveredTrips(schedule) : 0}
+          declinedCount={homeSchedule ? countDeclinedRosters(homeSchedule) : 0}
+          uncoveredCount={homeSchedule ? countUncoveredTrips(homeSchedule) : 0}
           generateWarning={generateWarning}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
@@ -4387,7 +4413,7 @@ export default function Prototype() {
         assignmentsLoading={assignmentsLoading}
         assignmentsError={assignmentsError}
         confirmError={confirmError}
-        schedulePublished={schedule?.version.status === "published"}
+        schedulePublished={homeSchedule?.version.status === "published"}
         onConfirmAll={() => void confirmAll()}
         onReview={() => setReviewOpen(true)}
         onCoverage={() => navigate("week")}
@@ -4494,7 +4520,7 @@ export default function Prototype() {
           key={activeTab}
           onRefresh={async () => {
             switch (activeTab) {
-              case "home": await loadMyAssignments(); break;
+              case "home": await loadHomeSchedule(); break;
               case "plan": await loadCheckin(); break;
               case "week": await loadSchedule(); break;
               case "coordinate": await loadOverview(); break;
