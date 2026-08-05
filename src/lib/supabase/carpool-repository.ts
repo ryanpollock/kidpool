@@ -1510,9 +1510,23 @@ export class CarpoolRepository {
       ? Math.max(...volunteerVehicles.map((v) => v.child_passenger_capacity))
       : null;
 
+    // A child is "handled" (not surfaced as uncovered) if they have a
+    // rider_assignment on:
+    //   - a tentative or confirmed driver (any family) — has a pending or locked driver
+    //   - a declined driver (any family) — Flow A (declined-drive alert) handles this,
+    //     and the original driver uses re-accept from Home (Fix 3)
+    //   - an expired driver who is the calling parent — they should re-accept
+    //     rather than volunteer, which would create a duplicate confirmed assignment
+    // Other families' kids on an expired driver are genuinely uncovered from
+    // the server's perspective and use Flow B (volunteer_for_uncovered_trip).
     const handledDriverAssignments = new Set(
       driverAssignments
-        .filter((da) => da.status === "tentative" || da.status === "confirmed")
+        .filter((da) =>
+          da.status === "tentative"
+          || da.status === "confirmed"
+          || da.status === "declined"
+          || (da.status === "expired" && da.driver_profile_id === profileId),
+        )
         .map((da) => da.id),
     );
 
