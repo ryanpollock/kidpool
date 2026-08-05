@@ -798,7 +798,7 @@ function countUncoveredTrips(schedule: ScheduleVersionWithRosters): number {
   for (const trip of schedule.trips) {
     const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
     const active = rosters.filter(
-      (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released",
+      (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released" && r.driverAssignment.status !== "expired",
     );
     const uncovered = schedule.uncoveredRidersByTrip.get(trip.id) ?? [];
     if (active.length === 0 || uncovered.length > 0) count++;
@@ -1111,6 +1111,7 @@ function HomeScreen({
   const confirmed = activeAssignments.filter((a) => a.assignment.status === "confirmed");
   const allConfirmed = tentative.length === 0 && confirmed.length > 0;
   const noAssignments = activeAssignments.length === 0;
+  const hasAlerts = declinedAlerts.length > 0 || uncoveredAlerts.length > 0;
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
     ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
@@ -1172,11 +1173,19 @@ function HomeScreen({
         <section className="confirmation-hero confirmation-hero--done">
           <span className="eyebrow">{weekEyebrow}</span>
           {schedulePublished ? (
-            <>
-              <h1>Your child's rides are scheduled</h1>
-              <p className="hero-support">You're not driving this week. See the full roster on the This Week tab.</p>
-              <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
-            </>
+            hasAlerts ? (
+              <>
+                <h1>Your child needs a ride</h1>
+                <p className="hero-support">Some trips don't have a driver. See the details below or check the full schedule.</p>
+                <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
+              </>
+            ) : (
+              <>
+                <h1>Your child's rides are scheduled</h1>
+                <p className="hero-support">You're not driving this week. See the full roster on the This Week tab.</p>
+                <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
+              </>
+            )
           ) : hasHomeSchedule ? (
             <>
               <h1>Schedule is being prepared</h1>
@@ -1191,22 +1200,26 @@ function HomeScreen({
           )}
         </section>
       ) : (
-        <section className={`confirmation-hero ${allConfirmed ? "confirmation-hero--done" : ""}`}>
-          <span className="eyebrow">{allConfirmed ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish") : "Action needed"}</span>
-          <h1>{allConfirmed ? (schedulePublished ? "You're all set" : "Drives confirmed") : "Confirm your drives"}</h1>
+        <section className={`confirmation-hero ${allConfirmed && !hasAlerts ? "confirmation-hero--done" : ""}`}>
+          <span className="eyebrow">{allConfirmed && !hasAlerts ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish") : "Action needed"}</span>
+          <h1>{allConfirmed && !hasAlerts ? (schedulePublished ? "You're all set" : "Drives confirmed") : hasAlerts ? "Your child needs a ride" : "Confirm your drives"}</h1>
           <p className="hero-deadline">
-            {allConfirmed ? (
+            {allConfirmed && !hasAlerts ? (
               <><CheckCircledIcon width="18" height="18" /> {confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed</>
+            ) : hasAlerts ? (
+              <>{confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed <span aria-hidden="true">·</span> <strong>{uncoveredAlerts.length + declinedAlerts.length} trip{uncoveredAlerts.length + declinedAlerts.length !== 1 ? "s" : ""} need{uncoveredAlerts.length + declinedAlerts.length === 1 ? "s" : ""} attention</strong></>
             ) : (
               <>{tentative.length} assignment{tentative.length !== 1 ? "s" : ""} <span aria-hidden="true">·</span> <strong>Confirm by {deadlineLabel}</strong></>
             )}
           </p>
-<p className="hero-support">
-            {allConfirmed
+          <p className="hero-support">
+            {allConfirmed && !hasAlerts
               ? "We'll remind you the evening before each drive."
+              : hasAlerts
+              ? "Some of your child's trips don't have a driver. See the details below."
               : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
           </p>
-          {allConfirmed && schedulePublished ? (
+          {allConfirmed && schedulePublished && !hasAlerts ? (
             <AddToCalendarButton assignments={confirmed} timezone={timezone} label="Add all to calendar" />
           ) : null}
         </section>
@@ -2189,7 +2202,7 @@ function WeekScreen({
     for (const trip of dateTrips) {
       const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
       const activeRosters = rosters.filter(
-        (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released",
+        (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released" && r.driverAssignment.status !== "expired",
       );
       if (activeRosters.length > 0) count++;
     }
@@ -2201,7 +2214,7 @@ function WeekScreen({
     const dateTrips = tripsByDate.get(date) ?? [];
     for (const trip of dateTrips) {
       const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
-      count += rosters.filter((r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released").length;
+      count += rosters.filter((r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released" || r.driverAssignment.status === "expired").length;
     }
     return count;
   }, 0);
@@ -2258,10 +2271,10 @@ function WeekScreen({
                 const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
                 const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
                 const activeRosters = rosters.filter(
-                  (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released",
+                  (r) => r.driverAssignment.status !== "declined" && r.driverAssignment.status !== "released" && r.driverAssignment.status !== "expired",
                 );
                 const declinedRosters = rosters.filter(
-                  (r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released",
+                  (r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released" || r.driverAssignment.status === "expired",
                 );
                 const uncovered = activeRosters.length === 0;
                 return (
@@ -4624,15 +4637,15 @@ const navItems = useMemo(() => {
           onGenerate={() => void generateSchedule()}
           generating={generating}
           generateError={generateError}
-          scheduleStatus={homeSchedule?.version.status === "published" ? "published" : homeSchedule?.version.status === "draft" ? "draft" : null}
+          scheduleStatus={schedule?.version.status === "published" ? "published" : schedule?.version.status === "draft" ? "draft" : null}
           onPublish={() => void publishSchedule()}
           publishing={publishing}
           onReloadWeek={() => void loadWeek()}
           onReloadOverview={() => void loadOverview()}
-          declinedCount={homeSchedule ? countDeclinedRosters(homeSchedule) : 0}
-          uncoveredCount={homeSchedule ? countUncoveredTrips(homeSchedule) : 0}
-          tentativeCount={homeSchedule ? countTentativeAssignments(homeSchedule) : 0}
-          uncoveredRidersByTrip={homeSchedule?.uncoveredRidersByTrip ?? new Map()}
+          declinedCount={schedule ? countDeclinedRosters(schedule) : 0}
+          uncoveredCount={schedule ? countUncoveredTrips(schedule) : 0}
+          tentativeCount={schedule ? countTentativeAssignments(schedule) : 0}
+          uncoveredRidersByTrip={schedule?.uncoveredRidersByTrip ?? new Map()}
           generateWarning={generateWarning}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
