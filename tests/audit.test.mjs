@@ -57,7 +57,8 @@ test("Exchange 7 repository emits audit events for vehicle add/update", async ()
 
 test("Exchange 7 repository emits audit events for schedule publication", async () => {
   const source = await readFile(repositoryUrl, "utf8");
-  assert.match(source, /recordAudit\(\s*updated\.group_id,\s*"schedule_published"/);
+  // Publish now calls the publish_schedule RPC which handles audit server-side.
+  assert.match(source, /rpc\("publish_schedule"/);
 });
 
 test("Exchange 7 Edge Function emits a schedule_generated audit event", async () => {

@@ -550,6 +550,10 @@ export type Database = {
           role: string;
         }>;
       };
+      publish_schedule: {
+        Args: { p_group_id: string; p_version_id: string };
+        Returns: Record<string, unknown>;
+      };
     };
     Enums: {
       app_role: AppRole;
