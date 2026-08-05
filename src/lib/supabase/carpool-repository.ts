@@ -1329,25 +1329,27 @@ export class CarpoolRepository {
       .sort((a, b) => tripSortKey(a.trip).localeCompare(tripSortKey(b.trip)));
   }
 
-  async publishSchedule(scheduleVersionId: string): Promise<void> {
-    const updated = unwrapRequired<Tables<"schedule_versions">>(
-      await this.client
-        .from("schedule_versions")
-        .update({
-          status: "published",
-          published_at: new Date().toISOString(),
-        })
-        .eq("id", scheduleVersionId)
-        .select("*")
-        .single(),
+  async publishSchedule(scheduleVersionId: string, groupId: string): Promise<{ expiredCount: number }> {
+    const result = unwrap(
+      await this.client.rpc("publish_schedule", {
+        p_group_id: groupId,
+        p_version_id: scheduleVersionId,
+      }),
     );
-    await this.recordAudit(
-      updated.group_id,
-      "schedule_published",
-      "schedule_version",
-      scheduleVersionId,
-      { version_number: updated.version_number, week_id: updated.week_id },
-    );
+    if (result && typeof result === "object" && "error" in result) {
+      const err = result as { error: string; count?: number };
+      if (err.error === "tentative_awaiting_confirmation") {
+        throw new Error(
+          `${err.count ?? 0} driver${(err.count ?? 0) !== 1 ? "s" : ""} haven't confirmed yet. Wait for confirmations or the confirmation deadline.`,
+        );
+      }
+      if (err.error === "not_coordinator") {
+        throw new Error("Only coordinators can publish schedules.");
+      }
+      throw new Error(`Publish failed: ${err.error}`);
+    }
+    const ok = result as { success?: boolean; expired_count?: number };
+    return { expiredCount: ok.expired_count ?? 0 };
   }
 
   async getGroupRoster(groupId: string): Promise<{
