@@ -150,9 +150,19 @@ Deno.serve(async (req) => {
 
       const versionData = await supaFetch("schedule_versions", "week_id,group_id", { id: `eq.${version_id}` });
       if (versionData.length === 0) return jsonError("Version not found", 404);
-      const { group_id } = versionData[0];
+      const { group_id, week_id } = versionData[0];
 
-      const rideRequests = await supaFetch("ride_requests", "*", { "group_id": group_id, "needs_ride": "true" });
+      // Scope ride_requests to this version's week only — not the whole group.
+      // Without scoping, families get false "your child doesn't have a ride"
+      // pushes for weeks they haven't checked in for yet.
+      const trips = await supaFetch("trips", "id", { group_id, week_id });
+      const tripIds = trips.map((t: any) => t.id);
+      if (tripIds.length === 0) return jsonResponse({ sent: 0, failed: 0 });
+
+      const rideRequests = await supaFetch("ride_requests", "*", {
+        trip_id: `in.(${tripIds.join(",")})`,
+        needs_ride: "true",
+      });
       const uncoveredChildren = rideRequests
         .filter((rr: any) => !coveredRiderIds.has(rr.child_id))
         .map((rr: any) => rr.child_id);

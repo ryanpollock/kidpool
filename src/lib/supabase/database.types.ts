@@ -524,6 +524,10 @@ export type Database = {
         Args: { target_assignment_id: string };
         Returns: DriverAssignmentRow;
       };
+      volunteer_for_uncovered_trip: {
+        Args: { p_trip_id: string; p_schedule_version_id: string };
+        Returns: DriverAssignmentRow;
+      };
       list_group_profiles: {
         Args: { target_group_id: string };
         Returns: Array<{

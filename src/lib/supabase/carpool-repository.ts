@@ -101,6 +101,7 @@ export type DeclinedDriveAlert = {
 export type UncoveredChildAlert = {
   trip: Tables<"trips">;
   children: Tables<"children">[];
+  volunteerVehicleCapacity: number | null;
 };
 
 function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
@@ -1166,6 +1167,15 @@ export class CarpoolRepository {
     );
   }
 
+  async volunteerForUncoveredTrip(tripId: string, scheduleVersionId: string) {
+    return unwrap(
+      await this.client.rpc("volunteer_for_uncovered_trip", {
+        p_trip_id: tripId,
+        p_schedule_version_id: scheduleVersionId,
+      }),
+    );
+  }
+
   async getAffectedDeclinedDrives(
     scheduleVersionId: string,
     profileId: string,
@@ -1457,7 +1467,7 @@ export class CarpoolRepository {
     groupId: string,
     weekId: string,
   ): Promise<UncoveredChildAlert[]> {
-    const [trips, rideRequests, children, driverAssignments, riderAssignments, memberships] = await Promise.all([
+    const [trips, rideRequests, children, driverAssignments, riderAssignments, memberships, vehicles] = await Promise.all([
       unwrapRequired(
         await this.client.from("trips").select("*").eq("group_id", groupId).eq("week_id", weekId),
       ),
@@ -1476,6 +1486,9 @@ export class CarpoolRepository {
       unwrapRequired(
         await this.client.from("memberships").select("*").eq("profile_id", profileId).eq("status", "active"),
       ),
+      unwrapRequired(
+        await this.client.from("vehicles").select("*").eq("group_id", groupId).eq("active", true),
+      ),
     ]);
 
     const householdIds = new Set(memberships.map((m) => m.household_id));
@@ -1483,6 +1496,11 @@ export class CarpoolRepository {
     const myChildIds = new Set(myChildren.map((c) => c.id));
     const childById = new Map(children.map((c) => [c.id, c]));
     const tripById = new Map(trips.map((t) => [t.id, t]));
+
+    const volunteerVehicles = vehicles.filter((v) => householdIds.has(v.household_id));
+    const volunteerVehicleCapacity = volunteerVehicles.length
+      ? Math.max(...volunteerVehicles.map((v) => v.child_passenger_capacity))
+      : null;
 
     const confirmedDriverAssignments = new Set(
       driverAssignments
@@ -1514,7 +1532,7 @@ export class CarpoolRepository {
       if (existing) {
         existing.children.push(child);
       } else {
-        alerts.push({ trip, children: [child] });
+        alerts.push({ trip, children: [child], volunteerVehicleCapacity });
       }
     }
     alerts.sort((a, b) => tripSortKey(a.trip).localeCompare(tripSortKey(b.trip)));
