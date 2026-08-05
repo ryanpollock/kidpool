@@ -31,6 +31,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import assert from "node:assert/strict";
 import path from "node:path";
 
 const PRODUCTION_REF = "ujcrnrcgbvzyqosykkjy";
@@ -572,7 +573,14 @@ test.describe.serial("Pilot Scenarios", () => {
   // Catches the getUncoveredChildren bug where declined assignments were
   // counted as "covering" a child, hiding the uncovered alert.
 
-  test("declined driver: rider sees uncovered alert (not hidden by declined coverage)", async ({ page }) => {
+  // ── Scenario 7: Declined driver → rider sees declined-drive alert (Flow A) ──
+  // After Fix 1, kids on a declined assignment are handled by the
+  // declined-drive alert flow (Flow A), not the uncovered flow (Flow B).
+  // The Flow B RPC rejects them ("not uncovered for this trip") so the
+  // Flow B button was broken. Fix 1 removes the broken button and
+  // surfaces Flow A's working "I can drive" button instead.
+
+  test("declined driver: rider sees declined-drive alert and can volunteer", async ({ page }) => {
     test.skip(skip, "Requires service key");
     const coord = setupHousehold(70, "DeclUncovCoord", true);
     if (!coord) { test.skip(); return; }
@@ -588,6 +596,7 @@ test.describe.serial("Pilot Scenarios", () => {
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(730)}', '${GROUP_ID}', '${driver.householdId}', 'DeclKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
       INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(731)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(732)}', '${GROUP_ID}', '${rider.householdId}', 'DeclKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(733)}', '${GROUP_ID}', '${rider.householdId}', 'RiderSUV', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;
 
       INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(740)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
       INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(740)}', '${morningTrip}', '${UID(730)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
@@ -610,7 +619,12 @@ test.describe.serial("Pilot Scenarios", () => {
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
     await page.waitForTimeout(3000);
 
-    await expect(page.getByTestId("uncovered-alert")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("decline-alert")).toBeVisible({ timeout: 5000 });
+    const volunteerBtn = page.locator('[data-testid^="volunteer-"]').first();
+    await expect(volunteerBtn).toBeVisible({ timeout: 5000 });
+    expect(await volunteerBtn.isDisabled()).toBe(false);
+    // Flow A volunteer must not also surface as a duplicate uncovered alert
+    await expect(page.getByTestId("uncovered-alert")).toBeHidden({ timeout: 1000 });
   });
 
   // ── Scenario 8: Cancel confirmed drive → affected family sees alert + volunteers ──
@@ -1204,5 +1218,310 @@ test.describe.serial("Pilot Scenarios", () => {
 
     const confirmedPill = page.locator(".roster-status--confirmed").first();
     await expect(confirmedPill).toBeVisible({ timeout: 5000 });
+  });
+
+  // ── Scenario 22: Driver cancels their only drive, then re-accepts from Home ──
+  // Reproduces the original bug: after cancelling the only drive, the
+  // "Review individually" path was hidden and no other working button
+  // existed. The driver was stuck. Fix 3 adds a "Re-accept this drive"
+  // button on Home when only declined/expired assignments remain.
+
+  test("cancel then re-accept: driver can take back their cancelled drive from Home", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(220, "ReacceptCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(221, "ReacceptDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(222, "ReacceptRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1100)}', '${GROUP_ID}', '${driver.householdId}', 'ReacceptKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1101)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1102)}', '${GROUP_ID}', '${rider.householdId}', 'ReacceptKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1103)}', '${GROUP_ID}', '${rider.householdId}', 'RiderCar', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1110)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1110)}', '${morningTrip}', '${UID(1100)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1110)}', '${morningTrip}', '${driver.userId}', '${UID(1101)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1111)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1111)}', '${morningTrip}', '${UID(1102)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    // Driver confirms, then cancels via Home UI
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const cancelLink = page.locator('[data-testid^="cancel-drive-"]').first();
+    await expect(cancelLink).toBeVisible({ timeout: 5000 });
+    await cancelLink.click();
+
+    const confirmCancelBtn = page.locator('[data-testid^="cancel-confirm-"] button:has-text("Yes, cancel drive")').first();
+    await expect(confirmCancelBtn).toBeVisible({ timeout: 5000 });
+    await confirmCancelBtn.click();
+    await page.waitForTimeout(2500);
+
+    // After cancel: hero must NOT claim "rides are scheduled" (Fix 2 — own kid
+    // was on the now-declined drive).
+    const heroText = await page.locator(".confirmation-hero h1").first().textContent();
+    assert.ok(heroText, "hero text should exist");
+    assert.ok(!/rides are scheduled/i.test(heroText), `hero must not say "rides are scheduled" after cancel, got: "${heroText}"`);
+
+    // Fix 3: a "Re-accept this drive" button is visible on Home.
+    const reacceptBtn = page.locator('[data-testid^="reaccept-"]').first();
+    await expect(reacceptBtn).toBeVisible({ timeout: 5000 });
+    expect(await reacceptBtn.isDisabled()).toBe(false);
+
+    // Fix 1: no broken uncovered "I can drive" button for this trip on the
+    // cancelling driver's home (Flow B would reject them).
+    await expect(page.getByTestId("uncovered-alert")).toBeHidden({ timeout: 1000 });
+
+    // Re-accept → assignment returns to confirmed.
+    await reacceptBtn.click();
+    await page.waitForTimeout(2500);
+
+    // After re-accept: drive is back in "Your confirmed drives" section.
+    const confirmedHero = await page.locator(".confirmation-hero h1").first().textContent();
+    assert.ok(confirmedHero, "hero text should exist after re-accept");
+    assert.ok(/all set|confirmed/i.test(confirmedHero), `hero should confirm drive is back, got: "${confirmedHero}"`);
+
+    // And the re-accept button is gone.
+    await expect(page.locator('[data-testid^="reaccept-"]')).toBeHidden({ timeout: 3000 });
+  });
+
+  // ── Scenario 23: Rider family on a cancelled drive uses Flow A (declined-drive alert) ──
+  // After Fix 1, kids on a declined assignment are routed to Flow A
+  // (declined-drive alert with working "I can drive"), not Flow B
+  // (uncovered alert with broken button that errors out).
+
+  test("rider on cancelled drive: sees Flow A declined-drive alert, not broken Flow B uncovered alert", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(230, "FlowACoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(231, "FlowADriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(232, "FlowARider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1200)}', '${GROUP_ID}', '${driver.householdId}', 'FlowAKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1201)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1202)}', '${GROUP_ID}', '${rider.householdId}', 'FlowAKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1203)}', '${GROUP_ID}', '${rider.householdId}', 'RiderSUV', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1210)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1210)}', '${morningTrip}', '${UID(1200)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1210)}', '${morningTrip}', '${driver.userId}', '${UID(1201)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1211)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1211)}', '${morningTrip}', '${UID(1202)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    const versionId = getPublishedVersionId(weekId);
+    assert.ok(versionId, "published version should exist");
+    // Driver cancels via SQL (simulating the cancel — UI path tested in Scenario 22).
+    runSql(`UPDATE public.driver_assignments SET status = 'declined' WHERE schedule_version_id = '${versionId}' AND trip_id = '${morningTrip}' AND status = 'confirmed';`);
+
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    // Flow A: declined-drive alert visible with a working volunteer button.
+    await expect(page.getByTestId("decline-alert")).toBeVisible({ timeout: 5000 });
+    const volunteerBtn = page.locator('[data-testid^="volunteer-"]').first();
+    await expect(volunteerBtn).toBeVisible({ timeout: 5000 });
+    expect(await volunteerBtn.isDisabled()).toBe(false);
+
+    // Flow B: uncovered alert is hidden for the same trip (Fix 1 — no more
+    // duplicate broken alert).
+    await expect(page.getByTestId("uncovered-alert")).toBeHidden({ timeout: 1000 });
+
+    // Rider volunteers via Flow A → trip is covered.
+    await volunteerBtn.click();
+    await page.waitForTimeout(3000);
+
+    // After volunteering: the declined-drive alert clears (drive is now covered).
+    await expect(page.getByTestId("decline-alert")).toBeHidden({ timeout: 5000 });
+  });
+
+  // ── Scenario 24: Expired driver can re-accept from Home ──
+  // A driver who let the Sunday confirmation deadline pass has an
+  // 'expired' assignment. Today they have no path back. Fix 3 extends
+  // the re-accept UI to 'expired' and the RPC allows re-response on
+  // 'expired' (with a guard against resurrecting a zero-rider
+  // assignment that a volunteer has already taken over — Scenario 25).
+
+  test("expired driver: can re-accept from Home after missing the confirmation deadline", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(240, "ExpReacceptCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(241, "ExpReacceptDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(242, "ExpReacceptRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1300)}', '${GROUP_ID}', '${driver.householdId}', 'ExpKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1301)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1302)}', '${GROUP_ID}', '${rider.householdId}', 'ExpKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1303)}', '${GROUP_ID}', '${rider.householdId}', 'RiderSUV', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1310)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1310)}', '${morningTrip}', '${UID(1300)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1310)}', '${morningTrip}', '${driver.userId}', '${UID(1301)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1311)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1311)}', '${morningTrip}', '${UID(1302)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+
+    // Simulate the Sunday confirmation deadline passing: SQL-flip the
+    // tentative assignment to 'expired', then publish (publish would
+    // normally do the expiration, but we do it explicitly to test the
+    // expired-reaccept path independently of the publish gate).
+    const draftVersionId = getLatestVersionId(weekId);
+    assert.ok(draftVersionId, "draft version should exist");
+    runSql(`
+      UPDATE public.driver_assignments SET status = 'expired' WHERE schedule_version_id = '${draftVersionId}' AND trip_id = '${morningTrip}' AND status = 'tentative';
+      UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE id = '${draftVersionId}';
+    `);
+
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    // Hero must NOT claim "rides are scheduled" (Fix 2 — expired is not covering).
+    const heroText = await page.locator(".confirmation-hero h1").first().textContent();
+    assert.ok(heroText, "hero text should exist");
+    assert.ok(!/rides are scheduled/i.test(heroText), `hero must not say "rides are scheduled" for expired, got: "${heroText}"`);
+
+    // Fix 3: re-accept button visible with expired-specific copy.
+    const reacceptBtn = page.locator('[data-testid^="reaccept-"]').first();
+    await expect(reacceptBtn).toBeVisible({ timeout: 5000 });
+    expect(await reacceptBtn.isDisabled()).toBe(false);
+
+    // Fix 1: no broken uncovered "I can drive" for the expired driver's own kid.
+    await expect(page.getByTestId("uncovered-alert")).toBeHidden({ timeout: 1000 });
+
+    // Re-accept → assignment returns to confirmed.
+    await reacceptBtn.click();
+    await page.waitForTimeout(2500);
+
+    const confirmedHero = await page.locator(".confirmation-hero h1").first().textContent();
+    assert.ok(confirmedHero, "hero text should exist after re-accept");
+    assert.ok(/all set|confirmed/i.test(confirmedHero), `hero should confirm drive is back, got: "${confirmedHero}"`);
+    await expect(page.locator('[data-testid^="reaccept-"]')).toBeHidden({ timeout: 3000 });
+  });
+
+  // ── Scenario 25: Expired re-accept blocked after a rider family has taken over ──
+  // If a rider family volunteers for an expired driver's trip via Flow B
+  // (their kids are genuinely uncovered), the rider rows move to the
+  // volunteer's new assignment. The expired driver's re-accept must be
+  // blocked — otherwise a zero-rider duplicate confirmed assignment
+  // would be created. The RPC guard raises "Another driver has already
+  // taken this drive."
+
+  test("expired re-accept blocked after rider family took over via Flow B", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(250, "ExpBlockCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(251, "ExpBlockDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(252, "ExpBlockRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1400)}', '${GROUP_ID}', '${driver.householdId}', 'ExpBlockKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1401)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1402)}', '${GROUP_ID}', '${rider.householdId}', 'ExpBlockKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1403)}', '${GROUP_ID}', '${rider.householdId}', 'RiderSUV', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1410)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1410)}', '${morningTrip}', '${UID(1400)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1410)}', '${morningTrip}', '${driver.userId}', '${UID(1401)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1411)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1411)}', '${morningTrip}', '${UID(1402)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+
+    const draftVersionId = getLatestVersionId(weekId);
+    assert.ok(draftVersionId, "draft version should exist");
+    // Expire the driver's tentative assignment and publish.
+    runSql(`
+      UPDATE public.driver_assignments SET status = 'expired' WHERE schedule_version_id = '${draftVersionId}' AND trip_id = '${morningTrip}' AND status = 'tentative';
+      UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE id = '${draftVersionId}';
+    `);
+
+    // Step 1: Rider family takes over via Flow B (their kid is genuinely uncovered).
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    await expect(page.getByTestId("uncovered-alert")).toBeVisible({ timeout: 5000 });
+    const volunteerBtn = page.locator('[data-testid^="volunteer-uncovered-"]').first();
+    await expect(volunteerBtn).toBeVisible({ timeout: 5000 });
+    await volunteerBtn.click();
+    await page.waitForTimeout(3000);
+
+    // Verify the rider family took over: their assignment is now confirmed.
+    const takeoverCheck = runSql(`SELECT count(*) AS n FROM public.driver_assignments WHERE schedule_version_id = '${draftVersionId}' AND trip_id = '${morningTrip}' AND driver_profile_id = '${rider.userId}' AND status = 'confirmed';`);
+    const takeoverCount = takeoverCheck.rows?.[0]?.n ?? 0;
+    assert.equal(takeoverCount, 1, "rider family should have taken over the trip");
+
+    // Verify the expired driver's assignment now has zero riders (rows moved).
+    const expiredAssignmentId = runSql(`SELECT id FROM public.driver_assignments WHERE schedule_version_id = '${draftVersionId}' AND trip_id = '${morningTrip}' AND driver_profile_id = '${driver.userId}' AND status = 'expired';`).rows?.[0]?.id;
+    assert.ok(expiredAssignmentId, "expired assignment should still exist");
+    const riderCount = runSql(`SELECT count(*) AS n FROM public.rider_assignments WHERE driver_assignment_id = '${expiredAssignmentId}';`).rows?.[0]?.n ?? 0;
+    assert.equal(riderCount, 0, "expired assignment should have zero riders after takeover");
+
+    // Step 2: Expired driver tries to re-accept. The button is still visible
+    // (the UI doesn't know a takeover happened), but the RPC must block it.
+    await page.context().clearCookies();
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const reacceptBtn = page.locator('[data-testid^="reaccept-"]').first();
+    await expect(reacceptBtn).toBeVisible({ timeout: 5000 });
+    await reacceptBtn.click();
+    await page.waitForTimeout(3000);
+
+    // The error message must surface, and no duplicate confirmed assignment
+    // should have been created.
+    const errorEl = page.locator(".auth-error").first();
+    await expect(errorEl).toBeVisible({ timeout: 5000 });
+    const errorText = await errorEl.textContent();
+    assert.ok(errorText && /already taken/i.test(errorText), `error should say "already taken", got: "${errorText}"`);
+
+    // Verify no second confirmed assignment was created for the expired driver.
+    const driverConfirmedCount = runSql(`SELECT count(*) AS n FROM public.driver_assignments WHERE schedule_version_id = '${draftVersionId}' AND trip_id = '${morningTrip}' AND driver_profile_id = '${driver.userId}' AND status = 'confirmed';`).rows?.[0]?.n ?? 0;
+    assert.equal(driverConfirmedCount, 0, "expired driver must not have a confirmed assignment after takeover");
   });
 });
