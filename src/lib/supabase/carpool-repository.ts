@@ -1263,6 +1263,10 @@ export class CarpoolRepository {
       const myChildren = riders.filter((r) => householdIds.has(r.household_id));
       if (myChildren.length === 0) continue;
 
+      // Don't show the declined alert to the driver who declined.
+      // They should use the Review screen to re-accept, not volunteer.
+      if (da.driver_profile_id === profileId) continue;
+
       const trip = tripById.get(da.trip_id);
       if (!trip) continue;
 

@@ -327,34 +327,31 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Auto-publish + supersede ────────────────────────────────
-// Auto-publish only if the prior was published AND no uncovered trips.
-// If there are uncovered trips, keep as draft so the coordinator can
-// review before publishing — preventing a regression from going live.
+// Auto-publish only if the prior was published AND no uncovered trips
+// AND no tentative assignments (all drivers confirmed). If there are
+// uncovered trips or unconfirmed drivers, keep as draft so the
+// coordinator can review and manually publish.
 //
 // Critical: only supersede the prior version when the new version
 // replaces it (auto-publish) or the prior was itself a draft.
 // Never supersede a published version when the new version stays
 // as draft — the published schedule must remain live for families.
-const newVersionPublished = wasPublished && !hasUncovered;
+//
+// Auto-publish routes through the publish_schedule RPC for atomicity
+// (supersede + publish in one transaction), published_at timestamp,
+// and the confirmation deadline gate.
+const hasTentative = outputs.trips.some((t) =>
+  t.assignments.some((a) => !a.confirmed)
+);
+const newVersionPublished = wasPublished && !hasUncovered && !hasTentative;
 if (newVersionPublished) {
-  // Supersede the prior published version FIRST to avoid violating
-  // the one-published-schedule-per-week unique index.
-  if (latestVersion && latestVersion.id) {
-    const { error: supersedeError } = await supabase
-      .from("schedule_versions")
-      .update({ status: "superseded" })
-      .eq("id", latestVersion.id);
-    if (supersedeError) {
-      return jsonError(`Failed to supersede prior version: ${supersedeError.message}`, 500);
-    }
-  }
-  // Then publish the new version.
-  const { error: publishError } = await supabase
-    .from("schedule_versions")
-    .update({ status: "published" })
-    .eq("id", newVersion.id);
-  if (publishError) {
-    return jsonError(`Failed to auto-publish new version: ${publishError.message}`, 500);
+  const { data: publishResult, error: publishError } = await supabase
+    .rpc("publish_schedule", { p_group_id: groupId, p_version_id: newVersion.id });
+  if (publishError || (publishResult && publishResult.error)) {
+    // RPC failed atomically — no partial state. Keep as draft so
+    // the coordinator can retry manually. Don't return an error;
+    // the schedule was still generated successfully as a draft.
+    console.warn("Auto-publish failed, keeping as draft:", publishError?.message ?? publishResult?.error);
   }
 } else if (latestVersion && latestVersion.id && latestVersion.status === "draft") {
   // New version is a draft; only supersede if the prior was also a draft
