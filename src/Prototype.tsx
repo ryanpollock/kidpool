@@ -105,7 +105,8 @@ function readableError(error: unknown) {
   if (/invalid or expired/i.test(message)) return "That household code is invalid or expired.";
   if (/already belongs/i.test(message)) return "This Google account already belongs to a household.";
   if (/network|fetch/i.test(message)) return "We couldn't reach the carpool service. Check your connection and try again.";
-  if (/not declined/i.test(message)) return "The original driver has already re-accepted this drive — your child is covered.";
+  if (/can no longer be responded to/i.test(message)) return "Another parent has already taken over this drive.";
+  if (/not declined/i.test(message)) return "This drive has already been re-accepted or taken over — your child is covered.";
   return message;
 }
 
@@ -780,7 +781,7 @@ function countDeclinedRosters(schedule: ScheduleVersionWithRosters): number {
   let count = 0;
   for (const rosters of schedule.rostersByTrip.values()) {
     count += rosters.filter(
-      (r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released",
+      (r) => r.driverAssignment.status === "declined",
     ).length;
   }
   return count;
@@ -4351,6 +4352,7 @@ export default function Prototype() {
       await loadPublishedSchedule();
     } catch (error) {
       setConfirmError(readableError(error));
+      await loadMyAssignments();
     }
   }, [repository, updateAssignmentStatus, loadMyAssignments, loadHomeSchedule, loadPublishedSchedule]);
 
@@ -4366,6 +4368,7 @@ export default function Prototype() {
       await loadPublishedSchedule();
     } catch (error) {
       setConfirmError(readableError(error));
+      await loadMyAssignments();
     } finally {
       setConfirmWorking(false);
     }
