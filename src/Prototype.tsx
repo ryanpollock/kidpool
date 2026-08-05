@@ -1036,6 +1036,7 @@ function HomeScreen({
   confirmError,
   schedulePublished,
   hasHomeSchedule,
+  homeScheduleVersionId,
   onConfirmAll,
   onReview,
   onCoverage,
@@ -1045,6 +1046,7 @@ function HomeScreen({
   onFaq,
   onRetryAssignments,
   onVolunteer,
+  onVolunteerUncovered,
   onCancelDrive,
   working,
   volunteerWorking,
@@ -1068,6 +1070,7 @@ function HomeScreen({
   confirmError: string | null;
   schedulePublished: boolean;
   hasHomeSchedule: boolean;
+  homeScheduleVersionId: string | null;
   onConfirmAll: () => void;
   onReview: () => void;
   onCoverage: () => void;
@@ -1077,6 +1080,7 @@ function HomeScreen({
   onFaq: () => void;
   onRetryAssignments: () => void;
   onVolunteer: (assignmentId: string) => void;
+  onVolunteerUncovered: (tripId: string, versionId: string) => void;
   onCancelDrive: (assignmentId: string) => void;
   working: boolean;
   volunteerWorking: boolean;
@@ -1250,19 +1254,38 @@ function HomeScreen({
             <h2 id="uncovered-heading">Your child needs a ride</h2>
           </div>
           <p className="decline-alert-body">
-            The schedule doesn't have a driver for the following {uncoveredAlerts.length === 1 ? "trip" : "trips"}. Contact the admin or check the full schedule.
+            The schedule doesn't have a driver for the following {uncoveredAlerts.length === 1 ? "trip" : "trips"}. You can volunteer to drive or contact the admin.
           </p>
+          {volunteerError ? <div className="auth-error" role="alert">{volunteerError}</div> : null}
           <ul className="decline-alert-list">
-            {uncoveredAlerts.map((alert) => (
-              <li key={alert.trip.id}>
-                <div className="decline-alert-trip">
-                  <strong>{tripLabel(alert.trip)}</strong>
-                  <span className="decline-alert-children">
-                    {alert.children.map((c) => `${c.first_name} ${c.last_name}`).join(", ")}
-                  </span>
-                </div>
-              </li>
-            ))}
+            {uncoveredAlerts.map((alert) => {
+              const riderCount = alert.children.length;
+              const capacity = alert.volunteerVehicleCapacity;
+              const tooSmall = capacity !== null && capacity < riderCount;
+              return (
+                <li key={alert.trip.id}>
+                  <div className="decline-alert-trip">
+                    <strong>{tripLabel(alert.trip)}</strong>
+                    <span className="decline-alert-children">
+                      {alert.children.map((c) => `${c.first_name} ${c.last_name}`).join(", ")}
+                    </span>
+                  </div>
+                  <p className="decline-alert-meta">
+                    {riderCount} child{riderCount !== 1 ? "ren" : ""} need{riderCount === 1 ? "s" : ""} a ride
+                    {capacity !== null ? ` · Your car seats ${capacity}` : ""}
+                    {tooSmall ? ` — not enough seats` : ""}
+                  </p>
+                  <button
+                    className="primary-button decline-alert-volunteer"
+                    data-testid={`volunteer-uncovered-${alert.trip.id}`}
+                    disabled={volunteerWorking || tooSmall || capacity === null}
+                    onClick={() => onVolunteerUncovered(alert.trip.id, homeScheduleVersionId ?? "")}
+                  >
+                    <CheckIcon width="18" height="18" /> {capacity === null ? "No vehicle" : tooSmall ? "Car too small" : "I can drive"}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </section>
       ) : null}
@@ -4237,6 +4260,25 @@ export default function Prototype() {
     }
   }, [repository, loadMyAssignments, loadSchedule, loadHomeSchedule, loadPublishedSchedule]);
 
+  const volunteerForUncoveredTrip = useCallback(async (tripId: string, versionId: string) => {
+    setVolunteerWorking(true);
+    setVolunteerError(null);
+    try {
+      const newAssignment = await repository.volunteerForUncoveredTrip(tripId, versionId);
+      if (newAssignment) {
+        void repository.sendPushNotification(newAssignment.id, null, "volunteered");
+      }
+      await loadMyAssignments();
+      await loadHomeSchedule();
+      await loadSchedule();
+      await loadPublishedSchedule();
+    } catch (error) {
+      setVolunteerError(readableError(error));
+    } finally {
+      setVolunteerWorking(false);
+    }
+  }, [repository, loadMyAssignments, loadSchedule, loadHomeSchedule, loadPublishedSchedule]);
+
   const publishSchedule = useCallback(async () => {
     if (!schedule || !identity?.group) return;
     setPublishing(true);
@@ -4555,6 +4597,7 @@ const navItems = useMemo(() => {
         confirmError={confirmError}
         schedulePublished={homeSchedule?.version.status === "published"}
         hasHomeSchedule={homeSchedule !== null}
+        homeScheduleVersionId={homeSchedule?.version.id ?? null}
         onConfirmAll={() => void confirmAll()}
         onReview={() => setReviewOpen(true)}
         onCoverage={() => navigate("week")}
@@ -4564,6 +4607,7 @@ const navItems = useMemo(() => {
         onFaq={() => setFaqOpen(true)}
         onRetryAssignments={() => void loadMyAssignments()}
         onVolunteer={(assignmentId) => void volunteerForDrive(assignmentId)}
+        onVolunteerUncovered={(tripId, versionId) => void volunteerForUncoveredTrip(tripId, versionId)}
         onCancelDrive={(assignmentId) => void cancelDrive(assignmentId)}
         working={confirmWorking}
         volunteerWorking={volunteerWorking}
