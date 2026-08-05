@@ -104,7 +104,8 @@ function readableError(error: unknown) {
   const message = error instanceof Error ? error.message : "Something went wrong.";
   if (/invalid or expired/i.test(message)) return "That household code is invalid or expired.";
   if (/already belongs/i.test(message)) return "This Google account already belongs to a household.";
-  if (/network|fetch/i.test(message)) return "We couldn’t reach the carpool service. Check your connection and try again.";
+  if (/network|fetch/i.test(message)) return "We couldn't reach the carpool service. Check your connection and try again.";
+  if (/not declined/i.test(message)) return "The original driver has already re-accepted this drive — your child is covered.";
   return message;
 }
 
@@ -1050,6 +1051,7 @@ function HomeScreen({
   onVolunteer,
   onVolunteerUncovered,
   onCancelDrive,
+  onReaccept,
   working,
   volunteerWorking,
   volunteerError,
@@ -1087,6 +1089,7 @@ function HomeScreen({
   onVolunteer: (assignmentId: string) => void;
   onVolunteerUncovered: (tripId: string, versionId: string) => void;
   onCancelDrive: (assignmentId: string) => void;
+  onReaccept: (assignmentId: string) => void;
   working: boolean;
   volunteerWorking: boolean;
   volunteerError: string | null;
@@ -1109,6 +1112,15 @@ function HomeScreen({
   const activeAssignments = myAssignments.filter(
     (a) => a.assignment.status !== "declined" && a.assignment.status !== "released" && a.assignment.status !== "expired",
   );
+  // Assignments the current user cancelled (declined) or let expire
+  // (expired). These are reachable for re-acceptance from Home when
+  // there are no active drives — without this path the cancelled
+  // driver would have no way back (Review screen is hidden when
+  // activeAssignments is empty).
+  const reacceptableAssignments = myAssignments.filter(
+    (a) => a.assignment.status === "declined" || a.assignment.status === "expired",
+  );
+  const hasReacceptable = reacceptableAssignments.length > 0;
   const tentative = activeAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = activeAssignments.filter((a) => a.assignment.status === "confirmed");
   const allConfirmed = tentative.length === 0 && confirmed.length > 0;
@@ -1171,7 +1183,7 @@ function HomeScreen({
           <div className="auth-error" role="alert">{homeScheduleError}</div>
           <button className="primary-button" data-testid="retry-load-assignments" onClick={onRetryAssignments}>Try again</button>
         </section>
-      ) : noAssignments ? (
+      ) : noAssignments && !hasReacceptable ? (
         <section className="confirmation-hero confirmation-hero--done">
           <span className="eyebrow">{weekEyebrow}</span>
           {schedulePublished ? (
@@ -1208,11 +1220,23 @@ function HomeScreen({
           )}
         </section>
       ) : (
-        <section className={`confirmation-hero ${allConfirmed && !hasAlerts ? "confirmation-hero--done" : ""}`}>
-          <span className="eyebrow">{allConfirmed && !hasAlerts ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish") : "Action needed"}</span>
-          <h1>{allConfirmed && !hasAlerts ? (schedulePublished ? "You're all set" : "Drives confirmed") : hasAlerts ? "Your child needs a ride" : "Confirm your drives"}</h1>
+        <section className={`confirmation-hero ${allConfirmed && !hasAlerts && !hasReacceptable ? "confirmation-hero--done" : ""}`}>
+          <span className="eyebrow">
+            {allConfirmed && !hasAlerts && !hasReacceptable
+              ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish")
+              : "Action needed"}
+          </span>
+          <h1>
+            {hasReacceptable
+              ? (reacceptableAssignments.length === 1 ? "You have a cancelled drive" : "You have cancelled drives")
+              : allConfirmed && !hasAlerts
+                ? (schedulePublished ? "You're all set" : "Drives confirmed")
+                : hasAlerts ? "Your child needs a ride" : "Confirm your drives"}
+          </h1>
           <p className="hero-deadline">
-            {allConfirmed && !hasAlerts ? (
+            {hasReacceptable ? (
+              <>{confirmed.length} confirmed <span aria-hidden="true">·</span> <strong>{reacceptableAssignments.length} cancelled — re-accept below</strong></>
+            ) : allConfirmed && !hasAlerts ? (
               <><CheckCircledIcon width="18" height="18" /> {confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed</>
             ) : hasAlerts ? (
               <>{confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed <span aria-hidden="true">·</span> <strong>{uncoveredAlerts.length + declinedAlerts.length} trip{uncoveredAlerts.length + declinedAlerts.length !== 1 ? "s" : ""} need{uncoveredAlerts.length + declinedAlerts.length === 1 ? "s" : ""} attention</strong></>
@@ -1221,13 +1245,15 @@ function HomeScreen({
             )}
           </p>
           <p className="hero-support">
-            {allConfirmed && !hasAlerts
-              ? "We'll remind you the evening before each drive."
-              : hasAlerts
-              ? "Some of your child's trips don't have a driver. See the details below."
-              : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
+            {hasReacceptable
+              ? "Re-accept cancelled drives below or contact the coordinator to reassign."
+              : allConfirmed && !hasAlerts
+                ? "We'll remind you the evening before each drive."
+                : hasAlerts
+                  ? "Some of your child's trips don't have a driver. See the details below."
+                  : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
           </p>
-          {allConfirmed && schedulePublished && !hasAlerts ? (
+          {allConfirmed && schedulePublished && !hasAlerts && !hasReacceptable ? (
             <AddToCalendarButton assignments={confirmed} timezone={timezone} label="Add all to calendar" />
           ) : null}
         </section>
@@ -1406,6 +1432,39 @@ function HomeScreen({
         </section>
       ) : null}
 
+      {hasReacceptable ? (
+        <section className="assignment-section" aria-labelledby="reaccept-heading">
+          <h2 id="reaccept-heading">Cancelled or missed drives</h2>
+          <div className="assignment-list">
+            {reacceptableAssignments.map((entry) => {
+              const status = entry.assignment.status;
+              return (
+                <div className="detail-card" key={entry.assignment.id}>
+                  <AssignmentRow
+                    trip={entry.trip}
+                    vehicle={entry.vehicle}
+                    riderCount={entry.children.length}
+                    status={status}
+                  />
+                  <div className="declined-notice"><Cross2Icon /><span>
+                    <strong>{status === "expired" ? "Confirmation deadline passed" : "You cancelled this drive"}</strong>
+                    <small>{status === "expired" ? "Re-accept to confirm you can drive." : "Re-accept if you can still drive."}</small>
+                  </span></div>
+                  <button
+                    className="primary-button"
+                    data-testid={`reaccept-${entry.assignment.id}`}
+                    disabled={working}
+                    onClick={() => onReaccept(entry.assignment.id)}
+                  >
+                    <CheckIcon width="18" height="18" /> Re-accept this drive
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
       {schedulePublished ? (
         <button className="coverage-alert" onClick={onCoverage} data-testid="coverage-alert">
           <span><ExclamationTriangleIcon width="20" height="20" /></span>
@@ -1556,16 +1615,16 @@ function ReviewScreen({
                   </button>
                 )}
               </>
-            ) : status === "declined" ? (
+            ) : status === "declined" || status === "expired" ? (
               <>
-                <div className="declined-notice"><Cross2Icon /><span><strong>Declined</strong><small>This drive has been released.</small></span></div>
+                <div className="declined-notice"><Cross2Icon /><span><strong>{status === "expired" ? "Expired" : "Declined"}</strong><small>{status === "expired" ? "Confirmation deadline passed — re-accept to confirm." : "This drive has been released."}</small></span></div>
                 <button className="primary-button" disabled={working === entry.assignment.id} onClick={() => void respond(entry.assignment.id, "confirmed")}>
                   <CheckIcon /> Re-accept this drive
                 </button>
               </>
             ) : (
               <>
-                <div className="declined-notice"><Cross2Icon /><span><strong>{status === "released" ? "Reassigned" : "Expired"}</strong><small>{status === "released" ? "Another driver has taken this drive." : "This drive has expired."}</small></span></div>
+                <div className="declined-notice"><Cross2Icon /><span><strong>Reassigned</strong><small>Another driver has taken this drive.</small></span></div>
               </>
             )}
           </div>
@@ -2330,7 +2389,7 @@ function WeekScreen({
                           <div className="trip-roster roster--declined" key={entry.driverAssignment.id}>
                             <div className="roster-driver">
                               <strong>{entry.driverProfile.full_name}</strong>
-                              <small>{entry.vehicle.label} · {entry.driverAssignment.status === "released" ? "Released" : "Declined"}</small>
+                              <small>{entry.vehicle.label} · {entry.driverAssignment.status === "released" ? "Released" : entry.driverAssignment.status === "expired" ? "Expired" : "Declined"}</small>
                             </div>
                           </div>
                         ))}
@@ -4140,6 +4199,10 @@ export default function Prototype() {
     if (activeTab === "week" && weekData && identity?.membership?.role === "coordinator") void loadSchedule();
   }, [activeTab, weekData, loadSchedule, identity?.membership?.role]);
 
+  useEffect(() => {
+    if (activeTab === "coordinate" && weekData && identity?.membership?.role === "coordinator") void loadSchedule();
+  }, [activeTab, weekData, loadSchedule, identity?.membership?.role]);
+
   const generateSchedule = useCallback(async () => {
     if (!weekData) return;
     setGenerating(true);
@@ -4288,6 +4351,23 @@ export default function Prototype() {
       await loadPublishedSchedule();
     } catch (error) {
       setConfirmError(readableError(error));
+    }
+  }, [repository, updateAssignmentStatus, loadMyAssignments, loadHomeSchedule, loadPublishedSchedule]);
+
+  const reacceptDrive = useCallback(async (assignmentId: string) => {
+    setConfirmError(null);
+    setConfirmWorking(true);
+    try {
+      await repository.respondToDriverAssignment(assignmentId, "confirmed");
+      updateAssignmentStatus(assignmentId, "confirmed");
+      void repository.sendPushNotification(assignmentId, null, "volunteered");
+      await loadMyAssignments();
+      await loadHomeSchedule();
+      await loadPublishedSchedule();
+    } catch (error) {
+      setConfirmError(readableError(error));
+    } finally {
+      setConfirmWorking(false);
     }
   }, [repository, updateAssignmentStatus, loadMyAssignments, loadHomeSchedule, loadPublishedSchedule]);
 
@@ -4663,10 +4743,18 @@ const navItems = useMemo(() => {
     }
 
     const householdId = identity.membership?.household_id;
+    // A child is "in schedule" only when at least one of their roster
+    // entries is on a tentative or confirmed driver. Declined/expired/
+    // released assignments are not actually covering the child —
+    // the hero must not claim "rides are scheduled" in those states.
     const familyChildInSchedule = homeSchedule && householdId
       ? Array.from(homeSchedule.rostersByTrip.values())
           .flat()
-          .some(entry => entry.children.some(child => child.household_id === householdId))
+          .some(entry =>
+            entry.children.some(child => child.household_id === householdId)
+            && (entry.driverAssignment.status === "tentative"
+              || entry.driverAssignment.status === "confirmed")
+          )
       : false;
 
     return (
@@ -4691,6 +4779,7 @@ const navItems = useMemo(() => {
         onVolunteer={(assignmentId) => void volunteerForDrive(assignmentId)}
         onVolunteerUncovered={(tripId, versionId) => void volunteerForUncoveredTrip(tripId, versionId)}
         onCancelDrive={(assignmentId) => void cancelDrive(assignmentId)}
+        onReaccept={(assignmentId) => void reacceptDrive(assignmentId)}
         working={confirmWorking}
         volunteerWorking={volunteerWorking}
         volunteerError={volunteerError}
@@ -4794,7 +4883,7 @@ const navItems = useMemo(() => {
               case "home": await loadHomeSchedule(); break;
               case "plan": await loadCheckin(); break;
               case "week": await loadSchedule(); await loadPublishedSchedule(); break;
-              case "coordinate": await loadOverview(); await loadHomeSchedule(); break;
+              case "coordinate": await loadOverview(); await loadHomeSchedule(); await loadSchedule(); break;
             }
           }}
         >
