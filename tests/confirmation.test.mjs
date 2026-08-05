@@ -42,8 +42,10 @@ test("Exchange 6 repository exposes confirmation and publish methods", async () 
   assert.match(source, /declineReason\?: string/);
   assert.match(source, /decline_reason: declineReason \?\? null/);
   assert.match(source, /MyDriverAssignment/);
-  assert.match(source, /status: "published"/);
-  assert.match(source, /published_at/);
+  // Publish now calls the publish_schedule RPC instead of a direct UPDATE.
+  assert.match(source, /rpc\("publish_schedule"/);
+  assert.match(source, /p_group_id/);
+  assert.match(source, /p_version_id/);
 });
 
 test("Exchange 6 HomeScreen shows real assignments with confirm-all flow", async () => {

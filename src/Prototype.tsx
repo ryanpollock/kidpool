@@ -2466,23 +2466,44 @@ function CoordinatorScreen({
       {isCoordinator && week ? (
         <div className="coordinator-generate">
           {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
-          {scheduleStatus === "draft" ? (
+{scheduleStatus === "draft" ? (
             <>
               <button className="secondary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
                 {generating ? "Generating…" : "Regenerate draft"}
               </button>
-              <button className="primary-button" data-testid="publish-schedule" disabled={publishing || tentativeCount > 0} onClick={onPublish}>
-                {publishing ? "Publishing…" : tentativeCount > 0 ? `${tentativeCount} awaiting confirmation` : "Publish schedule"}
-              </button>
+              {(() => {
+                const deadlinePassed = week?.week.confirmation_deadline
+                  ? new Date() > new Date(week.week.confirmation_deadline)
+                  : true;
+                const canPublish = tentativeCount === 0 || deadlinePassed;
+                return (
+                  <button
+                    className="primary-button"
+                    data-testid="publish-schedule"
+                    disabled={publishing || !canPublish}
+                    onClick={onPublish}
+                  >
+                    {publishing
+                      ? "Publishing…"
+                      : tentativeCount > 0 && !deadlinePassed
+                        ? `${tentativeCount} awaiting confirmation`
+                        : tentativeCount > 0 && deadlinePassed
+                          ? `Publish (${tentativeCount} unconfirmed will expire)`
+                          : "Publish schedule"}
+                  </button>
+                );
+              })()}
               <small className="helper-copy">
                 {tentativeCount > 0
-                  ? `${tentativeCount} driver${tentativeCount !== 1 ? "s" : ""} haven't confirmed yet. Publish is blocked until they confirm or their assignment expires.`
+                  ? new Date() > new Date(week?.week.confirmation_deadline ?? 0)
+                    ? `${tentativeCount} driver${tentativeCount !== 1 ? "s" : ""} haven't confirmed. Publishing will expire their assignments and flag those trips as uncovered.`
+                    : `${tentativeCount} driver${tentativeCount !== 1 ? "s" : ""} haven't confirmed yet. Wait for confirmations or the confirmation deadline.`
                   : uncoveredCount > 0
                     ? "Publishing will lock this schedule. Uncovered trips will be flagged for families."
                     : "Publishing locks this schedule for all families."}
               </small>
             </>
-            ) : scheduleStatus === "published" ? (
+          ) : scheduleStatus === "published" ? (
               <>
                 <div className="publish-notice">
                   <CheckCircledIcon width="18" height="18" />
@@ -4217,10 +4238,10 @@ export default function Prototype() {
   }, [repository, loadMyAssignments, loadSchedule, loadHomeSchedule, loadPublishedSchedule]);
 
   const publishSchedule = useCallback(async () => {
-    if (!schedule) return;
+    if (!schedule || !identity?.group) return;
     setPublishing(true);
     try {
-      await repository.publishSchedule(schedule.version.id);
+      await repository.publishSchedule(schedule.version.id, identity.group.id);
       await repository.sendPushNotification(null, schedule.version.id, "published");
       await loadSchedule();
       await loadHomeSchedule();
@@ -4231,7 +4252,7 @@ export default function Prototype() {
     } finally {
       setPublishing(false);
     }
-  }, [schedule, repository, loadSchedule, loadHomeSchedule, loadWeek, loadPublishedSchedule]);
+  }, [schedule, identity, repository, loadSchedule, loadHomeSchedule, loadWeek, loadPublishedSchedule]);
 
   const createWeek = useCallback(async () => {
     if (!identity?.group) return;
