@@ -16,6 +16,7 @@ import {
   ExclamationTriangleIcon,
   GroupIcon,
   HomeIcon,
+  LockClosedIcon,
   MoonIcon,
   PersonIcon,
   QuestionMarkCircledIcon,
@@ -1497,6 +1498,7 @@ function PlanScreen({
   allWeeks,
   selectedWeekId,
   onSelectWeek,
+  weekLocked,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -1518,6 +1520,7 @@ function PlanScreen({
   allWeeks: Tables<"weeks">[];
   selectedWeekId: string | null;
   onSelectWeek: (weekId: string | null) => void;
+  weekLocked: boolean;
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -1525,20 +1528,16 @@ function PlanScreen({
   const [coParentUpdate, setCoParentUpdate] = useState<string | null>(null);
 
   const submitted = checkin?.status === "submitted";
+  const locked = submitted || weekLocked;
   const children = setup?.children ?? [];
   const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
 
   const planHeading = (() => {
-    if (!week) return "Plan next week";
+    if (!week) return "Plan ahead";
     const todayStr = new Date().toISOString().slice(0, 10);
     const startsOn = week.week.starts_on;
-    const weekStart = new Date(startsOn + "T00:00:00");
-    const friday = new Date(weekStart);
-    friday.setDate(weekStart.getDate() + 4);
-    const fridayStr = friday.toISOString().slice(0, 10);
-    if (todayStr >= startsOn && todayStr <= fridayStr) return "Plan this week";
-    if (startsOn > todayStr) return "Plan next week";
-    return "Plan an earlier week";
+    if (startsOn > todayStr) return "Plan ahead";
+    return "Reviewing check-in";
   })();
 
   const currentIdx = allWeeks.findIndex((w) => w.id === (selectedWeekId ?? week?.week.id));
@@ -1582,10 +1581,10 @@ function PlanScreen({
       <div className="screen-content plan-screen" data-testid="plan-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Check-in</span>
+          <span className="eyebrow">Next Week</span>
           <h1>{planHeading}</h1>
         </header>
-        <p className="helper-copy">Loading the upcoming week…</p>
+        <p className="helper-copy">Loading the next plannable week…</p>
       </div>
     );
   }
@@ -1595,7 +1594,7 @@ function PlanScreen({
       <div className="screen-content plan-screen" data-testid="plan-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Check-in</span>
+          <span className="eyebrow">Next Week</span>
           <h1>{planHeading}</h1>
         </header>
         <div className="auth-error" role="alert">{weekError}</div>
@@ -1609,7 +1608,7 @@ function PlanScreen({
       <div className="screen-content plan-screen" data-testid="plan-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Check-in</span>
+          <span className="eyebrow">Next Week</span>
           <h1>{planHeading}</h1>
         </header>
         <div className="empty-state">
@@ -1631,7 +1630,7 @@ function PlanScreen({
       <div className="screen-content plan-screen" data-testid="plan-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Check-in</span>
+          <span className="eyebrow">Next Week</span>
           <h1>{planHeading}</h1>
           <p>{weekLabel(week.week.starts_on)}</p>
         </header>
@@ -1646,7 +1645,7 @@ function PlanScreen({
       <div className="screen-content plan-screen" data-testid="plan-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Check-in</span>
+          <span className="eyebrow">Next Week</span>
           <h1>{planHeading}</h1>
           <p>{weekLabel(week.week.starts_on)}</p>
         </header>
@@ -1678,7 +1677,7 @@ function PlanScreen({
   }
 
   const toggleRide = async (tripId: string, childId: string) => {
-    if (submitted || !checkin) return;
+    if (locked || !checkin) return;
     const key = `${tripId}:${childId}`;
     const current = rideMap.get(key) ?? false;
     try {
@@ -1690,7 +1689,7 @@ function PlanScreen({
   };
 
   const setDrivePreference = async (tripId: string, pref: DrivePreference) => {
-    if (submitted || !checkin) return;
+    if (locked || !checkin) return;
     if (pref !== "cannot" && !activeVehicle) {
       setSubmitError("Add a vehicle in your account before volunteering to drive.");
       return;
@@ -1745,7 +1744,7 @@ function PlanScreen({
     <div className="screen-content plan-screen" data-testid="plan-screen">
       <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
       <header className="page-title">
-        <span className="eyebrow">Check-in</span>
+        <span className="eyebrow">Next Week</span>
         <h1>{planHeading}</h1>
         <p>{weekLabel(week.week.starts_on)}</p>
       </header>
@@ -1770,7 +1769,12 @@ function PlanScreen({
         <div className="coparent-toast" data-testid="coparent-update">{coParentUpdate}</div>
       ) : null}
 
-      {submitted ? (
+      {weekLocked ? (
+        <div className="success-banner">
+          <LockClosedIcon width="24" height="24" />
+          <span><strong>Check-in locked</strong><small>This week's schedule has been published.</small></span>
+        </div>
+      ) : submitted ? (
         <div className="success-banner">
           <CheckCircledIcon width="24" height="24" />
           <span><strong>Week submitted</strong><small>Your check-in is locked. Reopen to make changes.</small></span>
@@ -1779,14 +1783,14 @@ function PlanScreen({
 
       {submitError ? <div className="auth-error" role="alert">{submitError}</div> : null}
 
-      {!submitted ? (
+      {!locked ? (
         <div className="checkin-summary">
           <span><strong>{[...rideMap.values()].filter(Boolean).length}</strong> rides needed</span>
           <span><strong>{[...driveMap.values()].filter((p) => p !== "cannot").length}</strong> trips you can drive</span>
         </div>
       ) : null}
 
-      {!submitted ? (
+      {!locked ? (
         children.map((child) => {
           const childRides = week.trips.filter((t) => rideMap.get(`${t.id}:${child.id}`)).length;
           if (childRides > 0) return null;
@@ -1826,7 +1830,7 @@ function PlanScreen({
                       <button
                         key={child.id}
                         className={riding ? "ride-pill ride-pill--on" : "ride-pill"}
-                        disabled={submitted}
+                        disabled={locked}
                         onClick={() => void toggleRide(trip.id, child.id)}
                         aria-pressed={riding}
                         aria-label={`${child.first_name} ${riding ? "needs a ride" : "does not need a ride"}`}
@@ -1854,7 +1858,7 @@ function PlanScreen({
                       <button
                         key={pref}
                         className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
-                        disabled={submitted || busy}
+                        disabled={locked || busy}
                         onClick={() => void setDrivePreference(trip.id, pref)}
                         aria-pressed={active}
                         aria-label={preferenceLabel(pref)}
@@ -1889,7 +1893,7 @@ function PlanScreen({
         </span>
       </div>
 
-      {submitted ? (
+      {weekLocked ? null : submitted ? (
         <button className="secondary-button" disabled={submitting} onClick={() => void reopen()}>
           {submitting ? "Reopening…" : "Reopen my check-in"}
         </button>
@@ -1953,7 +1957,7 @@ function WeekScreen({
       <div className="screen-content week-screen" data-testid="week-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Family schedule</span>
+          <span className="eyebrow">This Week</span>
           <h1>{weekHeading}</h1>
         </header>
         <p className="helper-copy">Loading…</p>
@@ -1966,7 +1970,7 @@ function WeekScreen({
       <div className="screen-content week-screen" data-testid="week-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Family schedule</span>
+          <span className="eyebrow">This Week</span>
           <h1>{weekHeading}</h1>
         </header>
         <div className="auth-error" role="alert">{weekError}</div>
@@ -1980,7 +1984,7 @@ function WeekScreen({
       <div className="screen-content week-screen" data-testid="week-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Family schedule</span>
+          <span className="eyebrow">This Week</span>
           <h1>{weekHeading}</h1>
         </header>
         <div className="empty-state">
@@ -2016,7 +2020,7 @@ function WeekScreen({
       <div className="screen-content week-screen" data-testid="week-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Family schedule</span>
+          <span className="eyebrow">This Week</span>
           <h1>{startDate.short} – {endDate.short}</h1>
         </header>
         <p className="helper-copy">Loading schedule…</p>
@@ -2029,7 +2033,7 @@ function WeekScreen({
       <div className="screen-content week-screen" data-testid="week-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Family schedule</span>
+          <span className="eyebrow">This Week</span>
           <h1>{startDate.short} – {endDate.short}</h1>
         </header>
         <div className="auth-error" role="alert">{scheduleError}</div>
@@ -2043,10 +2047,10 @@ function WeekScreen({
       <div className="screen-content week-screen" data-testid="week-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">Family schedule</span>
+          <span className="eyebrow">This Week</span>
           <h1>{startDate.short} – {endDate.short}</h1>
         </header>
-        {allWeeks.length > 1 ? (
+        {isCoordinator && allWeeks.length > 1 ? (
           <div className="week-nav" data-testid="schedule-week-nav">
             <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
               <ChevronLeftIcon /> Earlier
@@ -2085,8 +2089,8 @@ function WeekScreen({
                 <div className="leg leg--pending">
                   <ClockIcon />
                   <span>
-                    <small>Awaiting schedule</small>
-                    <strong>No trips yet</strong>
+                    <small>Schedule not published</small>
+                    <strong>Awaiting confirmation</strong>
                   </span>
                 </div>
               </article>
@@ -2094,7 +2098,7 @@ function WeekScreen({
           })}
         </div>
         <div className="empty-state">
-          <p>No draft schedule yet.</p>
+          <p>No schedule published yet.</p>
           {isCoordinator ? (
             <>
               {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
@@ -2103,7 +2107,7 @@ function WeekScreen({
               </button>
             </>
           ) : (
-            <p className="helper-copy">An admin needs to generate the draft.</p>
+            <p className="helper-copy">No schedule has been published yet. Check back soon.</p>
           )}
         </div>
       </div>
@@ -2150,7 +2154,7 @@ function WeekScreen({
     <div className="screen-content week-screen" data-testid="week-screen">
       <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
       <header className="page-title">
-        <span className="eyebrow">Family schedule</span>
+        <span className="eyebrow">This Week</span>
         <h1>{weekLabel(week.week.starts_on)}</h1>
         <p>
           <span className={`schedule-badge ${isPublished ? "schedule-badge--published" : "schedule-badge--draft"}`}>
@@ -2160,7 +2164,7 @@ function WeekScreen({
         </p>
       </header>
 
-      {allWeeks.length > 1 ? (
+      {isCoordinator && allWeeks.length > 1 ? (
         <div className="week-nav" data-testid="schedule-week-nav">
           <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
             <ChevronLeftIcon /> Earlier
@@ -2450,7 +2454,7 @@ function CoordinatorScreen({
             <h2>{uncoveredCount} trip{uncoveredCount !== 1 ? "s" : ""} with uncovered children</h2>
           </div>
           <p className="decline-alert-body">
-            Some children don't have a driver assigned. Check the Schedule tab for details before publishing.
+            Some children don't have a driver assigned. Check the This Week tab for details before publishing.
           </p>
         </div>
       ) : null}
@@ -2474,7 +2478,7 @@ function CoordinatorScreen({
               </button>
               <small className="helper-copy">
                 {uncoveredCount > 0
-                  ? "Cannot publish — some children don't have a driver. Check the Schedule tab."
+                  ? "Cannot publish — some children don't have a driver. Check the This Week tab."
                   : "Publishing locks this schedule for all families."}
               </small>
             </>
@@ -3373,23 +3377,23 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     items: [
       {
         q: "When should I check in?",
-        a: "Check in each week by Saturday. The coordinator generates the schedule on Sunday, so your check-in needs to be submitted before then. You'll see a reminder on the Check-in tab if you haven't checked in yet.",
+        a: "Check in each week by Saturday. The coordinator generates the schedule on Sunday, so your check-in needs to be submitted before then. You'll see a reminder on the Next Week tab if you haven't checked in yet.",
       },
       {
         q: "How do I request rides for my child?",
-        a: "On the Check-in tab, tap each AM or PM slot for each day your child needs a ride. The highlighted slots show which trips you're requesting. Tap again to toggle off.",
+        a: "On the Next Week tab, tap each AM or PM slot for each day your child needs a ride. The highlighted slots show which trips you're requesting. Tap again to toggle off.",
       },
       {
         q: "What does Prefer, Can, and Can't mean for driving?",
         a: "Prefer means you'd like to drive that trip. Can means you're available if needed. Can't means you cannot drive that trip. The scheduler prioritizes Prefer drivers first, then Can drivers if needed. You must have a vehicle on file to mark Prefer or Can.",
       },
       {
-        q: "What is max drives per week?",
-        a: "This caps how many trips you'll be assigned to drive in a single week. Set it based on your availability. If you set it to 0, you won't drive at all — your child can still ride.",
+        q: "What if I can't drive at all?",
+        a: "Set every trip to \"Can't\" on the Next Week tab. Your child can still ride — other parents will drive. You can also leave your vehicle off your profile entirely.",
       },
       {
         q: "Can I change my check-in after submitting?",
-        a: "Yes. Tap \"Reopen\" on the Check-in tab to un-submit your check-in, make changes, and submit again. The coordinator sees your latest submission when they generate the schedule.",
+        a: "Yes, if the week hasn't started and the schedule hasn't been published yet. Tap \"Reopen\" on the Next Week tab to un-submit your check-in, make changes, and submit again. Once the schedule is published or the week starts, the check-in is locked.",
       },
     ],
   },
@@ -3406,7 +3410,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "Who can generate and publish schedules?",
-        a: "Only coordinators. The coordinator creates the week, generates the draft schedule, reviews it, and publishes it. If you're not a coordinator, you'll see the schedule on the Schedule tab but can't generate or publish.",
+        a: "Only coordinators. The coordinator creates the week, generates the draft schedule, reviews it, and publishes it. If you're not a coordinator, you'll see the published schedule on the This Week tab but can't generate or publish.",
       },
     ],
   },
@@ -3440,7 +3444,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "What are uncovered riders?",
-        a: "Uncovered riders are children who need a ride for a trip but don't have a driver assigned. They're shown on the Schedule tab with amber chips listing each child's name. The coordinator should review these before publishing.",
+        a: "Uncovered riders are children who need a ride for a trip but don't have a driver assigned. They're shown on the This Week tab with amber chips listing each child's name. The coordinator should review these before publishing.",
       },
       {
         q: "How do I volunteer to cover a drive?",
@@ -3449,11 +3453,11 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     ],
   },
   {
-    title: "Schedule tab",
+    title: "This Week tab",
     items: [
       {
         q: "How do I view different weeks?",
-        a: "On the Schedule tab, use the Earlier, Current, and Later buttons to navigate between weeks. The current week is shown by default.",
+        a: "The This Week tab shows the current week's published schedule by default. Coordinators can use the Earlier and Later buttons to navigate between weeks; parents see the current published week.",
       },
       {
         q: "What do the coverage indicators mean?",
@@ -3461,7 +3465,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "Can I see who's in each car?",
-        a: "Yes. On the Schedule tab, tap any drive card to see the driver, vehicle, route, and all children assigned to that car. Child photos appear if they've been uploaded.",
+        a: "Yes. On the This Week tab, tap any drive card to see the driver, vehicle, route, and all children assigned to that car. Child photos appear if they've been uploaded.",
       },
     ],
   },
@@ -3712,6 +3716,10 @@ export default function Prototype() {
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [schedule, setSchedule] = useState<ScheduleVersionWithRosters | null>(null);
   const [homeSchedule, setHomeSchedule] = useState<ScheduleVersionWithRosters | null>(null);
+  const [publishedWeek, setPublishedWeek] = useState<WeekWithTrips | null>(null);
+  const [publishedSchedule, setPublishedSchedule] = useState<ScheduleVersionWithRosters | null>(null);
+  const [publishedLoading, setPublishedLoading] = useState(false);
+  const [planWeekLockedMap, setPlanWeekLockedMap] = useState<Record<string, boolean>>({});
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -3801,6 +3809,7 @@ export default function Prototype() {
     setWeekError(null);
     setPlanWeekLoading(true);
     setPlanWeekError(null);
+    setPublishedLoading(true);
     try {
       const data = await repository.getCurrentWeek(identity.group.id);
       setWeekData(data);
@@ -3812,12 +3821,20 @@ export default function Prototype() {
       setWeekLoading(false);
     }
     try {
-      const planData = await repository.getPlanWeek(identity.group.id);
+      const planData = await repository.getNextPlanWeek(identity.group.id);
       setPlanWeekData(planData);
     } catch (error) {
       setPlanWeekError(readableError(error));
     } finally {
       setPlanWeekLoading(false);
+    }
+    try {
+      const pubWeek = await repository.getActivePublishedWeek(identity.group.id);
+      setPublishedWeek(pubWeek);
+    } catch (error) {
+      setPublishedWeek(null);
+    } finally {
+      setPublishedLoading(false);
     }
   }, [identity?.group, repository]);
 
@@ -3956,9 +3973,41 @@ export default function Prototype() {
     }
   }, [identity?.group, weekData, repository]);
 
+  const loadPublishedSchedule = useCallback(async () => {
+    if (!identity?.group || !publishedWeek) { setPublishedSchedule(null); return; }
+    try {
+      const roster = await repository.getGroupRoster(identity.group.id);
+      const version = await repository.getLatestPublishedVersion(
+        publishedWeek.week.id, identity.group.id, publishedWeek.trips,
+        roster.children, roster.vehicles, roster.profiles,
+      );
+      setPublishedSchedule(version);
+    } catch (error) {
+      setPublishedSchedule(null);
+    }
+  }, [identity?.group, publishedWeek, repository]);
+
   useEffect(() => {
     if (weekData) void loadHomeSchedule();
   }, [weekData, loadHomeSchedule]);
+
+  useEffect(() => {
+    if (publishedWeek) void loadPublishedSchedule();
+  }, [publishedWeek, loadPublishedSchedule]);
+
+  useEffect(() => {
+    if (!identity?.group) return;
+    void (async () => {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const futureWeeks = allWeeks.filter((w) => w.starts_on >= todayStr);
+      const entries: [string, boolean][] = [];
+      for (const w of futureWeeks) {
+        const published = await repository.publishedVersionExists(w.id, identity.group!.id);
+        entries.push([w.id, published]);
+      }
+      setPlanWeekLockedMap(Object.fromEntries(entries));
+    })();
+  }, [allWeeks, identity?.group, repository]);
 
   useEffect(() => {
     if (weekData) void loadSchedule();
@@ -4156,12 +4205,14 @@ export default function Prototype() {
       await repository.sendPushNotification(null, schedule.version.id, "published");
       await loadSchedule();
       await loadHomeSchedule();
+      await loadWeek();
+      await loadPublishedSchedule();
     } catch (error) {
       setGenerateError(readableError(error));
     } finally {
       setPublishing(false);
     }
-  }, [schedule, repository, loadSchedule, loadHomeSchedule]);
+  }, [schedule, repository, loadSchedule, loadHomeSchedule, loadWeek, loadPublishedSchedule]);
 
   const createWeek = useCallback(async () => {
     if (!identity?.group) return;
@@ -4287,8 +4338,8 @@ export default function Prototype() {
 const navItems = useMemo(() => {
     const items: { id: AppTab; label: string; icon: typeof HomeIcon }[] = [
       { id: "home" as const, label: "Home", icon: HomeIcon },
-      { id: "plan" as const, label: "Check-in", icon: BackpackIcon },
-      { id: "week" as const, label: "Schedule", icon: CalendarIcon },
+      { id: "week" as const, label: "This Week", icon: CalendarIcon },
+      { id: "plan" as const, label: "Next Week", icon: BackpackIcon },
     ];
     if (identity?.membership?.role === "coordinator") {
       items.push({ id: "coordinate" as const, label: "Status", icon: GroupIcon });
@@ -4369,9 +4420,16 @@ const navItems = useMemo(() => {
     }
 
     if (activeTab === "plan") {
+      const planWeek = activePlanWeek;
+      const planWeekStarted = planWeek
+        ? planWeek.week.starts_on <= new Date().toISOString().slice(0, 10)
+        : false;
+      const planWeekPublished = planWeek
+        ? planWeekLockedMap[planWeek.week.id] ?? false
+        : false;
       return (
         <PlanScreen
-          week={activePlanWeek}
+          week={planWeek}
           weekLoading={selectedPlanWeekId ? planViewWeekLoading : planWeekLoading}
           weekError={selectedPlanWeekId ? null : planWeekError}
           checkin={checkin}
@@ -4391,29 +4449,31 @@ const navItems = useMemo(() => {
           allWeeks={allWeeks}
           selectedWeekId={selectedPlanWeekId}
           onSelectWeek={setSelectedPlanWeekId}
+          weekLocked={planWeekStarted || planWeekPublished}
         />
       );
     }
 
     if (activeTab === "week") {
+      const isCoord = identity.membership?.role === "coordinator";
       return (
         <WeekScreen
-          week={viewWeekData ?? weekData}
-          weekLoading={weekLoading}
-          weekError={weekError}
-          schedule={schedule}
-          scheduleLoading={scheduleLoading}
-          scheduleError={scheduleError}
-          isCoordinator={identity.membership?.role === "coordinator"}
+          week={isCoord ? (viewWeekData ?? weekData) : publishedWeek}
+          weekLoading={isCoord ? weekLoading : publishedLoading}
+          weekError={isCoord ? weekError : null}
+          schedule={isCoord ? schedule : publishedSchedule}
+          scheduleLoading={isCoord ? scheduleLoading : publishedLoading}
+          scheduleError={isCoord ? scheduleError : null}
+          isCoordinator={isCoord}
           onGenerate={() => void generateSchedule()}
           generating={generating}
           generateError={generateError}
           onReloadWeek={() => void loadWeek()}
-          onReloadSchedule={() => void loadSchedule()}
-          weekStartsOn={weekData?.week.starts_on ?? null}
-          allWeeks={allWeeks}
-          selectedWeekId={selectedWeekId}
-          onSelectWeek={(id) => { setSelectedWeekId(id); }}
+          onReloadSchedule={() => isCoord ? void loadSchedule() : void loadPublishedSchedule()}
+          weekStartsOn={(isCoord ? (viewWeekData ?? weekData) : publishedWeek)?.week.starts_on ?? null}
+          allWeeks={isCoord ? allWeeks : []}
+          selectedWeekId={isCoord ? selectedWeekId : null}
+          onSelectWeek={(id) => { if (isCoord) setSelectedWeekId(id); }}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
           onOpenDrive={(id) => setDriveDetailId(id)}
@@ -4567,7 +4627,7 @@ const navItems = useMemo(() => {
             switch (activeTab) {
               case "home": await loadHomeSchedule(); break;
               case "plan": await loadCheckin(); break;
-              case "week": await loadSchedule(); break;
+              case "week": await loadSchedule(); await loadPublishedSchedule(); break;
               case "coordinate": await loadOverview(); break;
             }
           }}

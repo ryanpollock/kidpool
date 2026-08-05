@@ -1669,4 +1669,195 @@ async getLatestScheduleVersion(
 
     return { version, trips, rostersByTrip, uncoveredRidersByTrip };
   }
+
+  async publishedVersionExists(weekId: string, groupId: string): Promise<boolean> {
+    const rows = unwrap(
+      await this.client
+        .from("schedule_versions")
+        .select("id")
+        .eq("week_id", weekId)
+        .eq("group_id", groupId)
+        .eq("status", "published")
+        .limit(1),
+    );
+    return (rows ?? []).length > 0;
+  }
+
+  async getActivePublishedWeek(groupId: string): Promise<WeekWithTrips | null> {
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    const versions = unwrapRequired(
+      await this.client
+        .from("schedule_versions")
+        .select("week_id, weeks!inner(id, group_id, starts_on, checkin_deadline, confirmation_deadline, published_at, status)")
+        .eq("group_id", groupId)
+        .eq("status", "published"),
+    );
+
+    if (versions.length === 0) return null;
+
+    const weeks = versions
+      .map((v) => v.weeks as unknown as Tables<"weeks">)
+      .filter((w): w is Tables<"weeks"> => w != null && w.group_id === groupId);
+
+    if (weeks.length === 0) return null;
+
+    const underway = weeks.find((w) => {
+      const start = new Date(w.starts_on + "T00:00:00");
+      const fri = new Date(start);
+      fri.setDate(start.getDate() + 4);
+      return todayStr >= w.starts_on && todayStr <= fri.toISOString().slice(0, 10);
+    });
+    if (underway) {
+      const trips = await this.listTripsForWeek(underway.id);
+      return { week: underway, trips };
+    }
+
+    const upcoming = weeks
+      .filter((w) => w.starts_on > todayStr)
+      .sort((a, b) => a.starts_on.localeCompare(b.starts_on))[0];
+    if (upcoming) {
+      const trips = await this.listTripsForWeek(upcoming.id);
+      return { week: upcoming, trips };
+    }
+
+    const past = weeks.sort((a, b) => b.starts_on.localeCompare(a.starts_on))[0];
+    if (past) {
+      const trips = await this.listTripsForWeek(past.id);
+      return { week: past, trips };
+    }
+    return null;
+  }
+
+  async getNextPlanWeek(groupId: string): Promise<WeekWithTrips | null> {
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    const futureRows = unwrapRequired(
+      await this.client
+        .from("weeks")
+        .select("*")
+        .eq("group_id", groupId)
+        .gt("starts_on", todayStr)
+        .order("starts_on", { ascending: true }),
+    );
+
+    for (const week of futureRows) {
+      const published = await this.publishedVersionExists(week.id, groupId);
+      if (!published) {
+        const trips = await this.listTripsForWeek(week.id);
+        return { week, trips };
+      }
+    }
+
+    if (futureRows.length > 0) {
+      const trips = await this.listTripsForWeek(futureRows[0].id);
+      return { week: futureRows[0], trips };
+    }
+    return null;
+  }
+
+  async getLatestPublishedVersion(
+    weekId: string,
+    groupId: string,
+    trips: Tables<"trips">[],
+    children: Tables<"children">[],
+    vehicles: Tables<"vehicles">[],
+    profiles: Tables<"profiles">[],
+  ): Promise<ScheduleVersionWithRosters | null> {
+    const version = unwrap(
+      await this.client
+        .from("schedule_versions")
+        .select("*")
+        .eq("week_id", weekId)
+        .eq("group_id", groupId)
+        .eq("status", "published")
+        .order("version_number", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    );
+    if (!version) return null;
+
+    const tripIds = trips.map((t) => t.id);
+    const [driverAssignments, riderAssignments, rideRequestsData] = await Promise.all([
+      unwrapRequired(
+        await this.client
+          .from("driver_assignments")
+          .select("*")
+          .eq("schedule_version_id", version.id)
+          .eq("group_id", groupId)
+          .order("driver_profile_id"),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("rider_assignments")
+          .select("*")
+          .eq("schedule_version_id", version.id)
+          .eq("group_id", groupId),
+      ),
+      tripIds.length
+        ? unwrapRequired(
+            await this.client
+              .from("ride_requests")
+              .select("*")
+              .eq("group_id", groupId)
+              .in("trip_id", tripIds),
+          )
+        : [],
+    ]);
+
+    const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
+    const childById = new Map(children.map((c) => [c.id, c]));
+    const profileById = new Map(profiles.map((p) => [p.id, p]));
+    const ridersByAssignment = new Map<string, Tables<"children">[]>();
+    for (const rider of riderAssignments) {
+      const existing = ridersByAssignment.get(rider.driver_assignment_id) ?? [];
+      const child = childById.get(rider.child_id);
+      if (child) {
+        existing.push(child);
+        ridersByAssignment.set(rider.driver_assignment_id, existing);
+      }
+    }
+
+    const rostersByTrip = new Map<string, ScheduleRosterEntry[]>();
+    for (const assignment of driverAssignments) {
+      const profile = profileById.get(assignment.driver_profile_id);
+      const vehicle = vehicleById.get(assignment.vehicle_id);
+      if (!profile || !vehicle) continue;
+      const entry: ScheduleRosterEntry = {
+        driverAssignment: assignment,
+        driverProfile: profile,
+        vehicle,
+        children: ridersByAssignment.get(assignment.id) ?? [],
+      };
+      const existing = rostersByTrip.get(assignment.trip_id) ?? [];
+      existing.push(entry);
+      rostersByTrip.set(assignment.trip_id, existing);
+    }
+
+    const activeDriverAssignmentIds = new Set(
+      driverAssignments
+        .filter((da) => da.status === "tentative" || da.status === "confirmed")
+        .map((da) => da.id),
+    );
+    const coveredChildIdsByTrip = new Map<string, Set<string>>();
+    for (const ra of riderAssignments) {
+      if (!activeDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
+      const existing = coveredChildIdsByTrip.get(ra.trip_id) ?? new Set<string>();
+      existing.add(ra.child_id);
+      coveredChildIdsByTrip.set(ra.trip_id, existing);
+    }
+    const uncoveredRidersByTrip = new Map<string, Tables<"children">[]>();
+    for (const rr of rideRequestsData ?? []) {
+      if (!rr.needs_ride) continue;
+      const covered = coveredChildIdsByTrip.get(rr.trip_id) ?? new Set<string>();
+      if (covered.has(rr.child_id)) continue;
+      const child = childById.get(rr.child_id);
+      if (!child) continue;
+      const existing = uncoveredRidersByTrip.get(rr.trip_id) ?? [];
+      existing.push(child);
+      uncoveredRidersByTrip.set(rr.trip_id, existing);
+    }
+
+    return { version, trips, rostersByTrip, uncoveredRidersByTrip };
+  }
 }

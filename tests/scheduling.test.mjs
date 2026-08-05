@@ -216,7 +216,7 @@ test("Exchange 5 WeekScreen renders real schedule with rosters and coverage stat
   assert.match(source, /roster-driver/);
   assert.match(source, /roster-children/);
   assert.match(source, /No drivers/);
-  assert.match(source, /No draft schedule yet/);
+  assert.match(source, /No schedule published yet/);
 });
 
 // ── Regression tests for confirmed-driver preservation and decline/expired exclusion ──
