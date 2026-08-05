@@ -290,13 +290,11 @@ test("Plan screen supports week navigation with Earlier/Later/Current reset", as
   assert.match(source, /onSelectWeek\(null\)/);
 });
 
-test("This Week tab (coordinator) supports week navigation with Earlier/Later/Current reset", async () => {
+test("This Week tab is pinned (no week navigation for anyone)", async () => {
   const source = await readFile(prototypeUrl, "utf8");
 
-  assert.match(source, /data-testid="schedule-week-nav"/);
-  assert.match(source, /data-testid="schedule-week-reset"/);
-  assert.match(source, /week-nav-btn--reset/);
-  assert.match(source, /onSelectWeek\(null\)/);
+  assert.doesNotMatch(source, /data-testid="schedule-week-nav"/);
+  assert.doesNotMatch(source, /data-testid="schedule-week-reset"/);
 });
 
 test("Plan screen heading is dynamic based on week vs today", async () => {
