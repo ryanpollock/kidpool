@@ -1924,9 +1924,6 @@ function WeekScreen({
   onReloadWeek,
   onReloadSchedule,
   weekStartsOn,
-  allWeeks,
-  selectedWeekId,
-  onSelectWeek,
   avatarUrl,
   onAccount,
   onOpenDrive,
@@ -1941,18 +1938,11 @@ function WeekScreen({
   onReloadWeek: () => void;
   onReloadSchedule: () => void;
   weekStartsOn: string | null;
-  allWeeks: Tables<"weeks">[];
-  selectedWeekId: string | null;
-  onSelectWeek: (weekId: string | null) => void;
   avatarUrl: string | null;
   onAccount: () => void;
   onOpenDrive: (assignmentId: string) => void;
 }) {
   const weekHeading = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
-  const currentIdx = allWeeks.findIndex((w) => w.id === (selectedWeekId ?? week?.week.id));
-  const hasPrev = currentIdx < allWeeks.length - 1;
-  const hasNext = currentIdx > 0;
-  const showReset = selectedWeekId !== null;
   if (weekLoading) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
@@ -2049,21 +2039,6 @@ function WeekScreen({
           <span className="eyebrow">This Week</span>
           <h1>{startDate.short} – {endDate.short}</h1>
         </header>
-        {isCoordinator && allWeeks.length > 1 ? (
-          <div className="week-nav" data-testid="schedule-week-nav">
-            <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
-              <ChevronLeftIcon /> Earlier
-            </button>
-            {showReset ? (
-              <button className="week-nav-btn week-nav-btn--reset" data-testid="schedule-week-reset" onClick={() => onSelectWeek(null)}>
-                Current
-              </button>
-            ) : null}
-            <button className="week-nav-btn" disabled={!hasNext} onClick={() => { if (hasNext) onSelectWeek(allWeeks[currentIdx - 1].id); }}>
-              Later <ChevronRightIcon />
-            </button>
-          </div>
-        ) : null}
         <div className="week-list">
           {weekdays.map((serviceDate) => {
             const dateInfo = formatTripDate(serviceDate);
@@ -2157,22 +2132,6 @@ function WeekScreen({
           {isPublished ? null : <span className="schedule-algo">{schedule.version.algorithm_version}</span>}
         </p>
       </header>
-
-      {isCoordinator && allWeeks.length > 1 ? (
-        <div className="week-nav" data-testid="schedule-week-nav">
-          <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
-            <ChevronLeftIcon /> Earlier
-          </button>
-          {showReset ? (
-            <button className="week-nav-btn week-nav-btn--reset" data-testid="schedule-week-reset" onClick={() => onSelectWeek(null)}>
-              Current
-            </button>
-          ) : null}
-          <button className="week-nav-btn" disabled={!hasNext} onClick={() => { if (hasNext) onSelectWeek(allWeeks[currentIdx - 1].id); }}>
-            Later <ChevronRightIcon />
-          </button>
-        </div>
-      ) : null}
 
       <div className="week-status-strip">
         <span><CheckCircledIcon /> {coveredCount} covered</span>
@@ -3688,8 +3647,6 @@ export default function Prototype() {
   const [planWeekLoading, setPlanWeekLoading] = useState(false);
   const [planWeekError, setPlanWeekError] = useState<string | null>(null);
   const [allWeeks, setAllWeeks] = useState<Tables<"weeks">[]>([]);
-  const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
-  const [viewWeekData, setViewWeekData] = useState<WeekWithTrips | null>(null);
   const [selectedPlanWeekId, setSelectedPlanWeekId] = useState<string | null>(null);
   const [planViewWeekData, setPlanViewWeekData] = useState<WeekWithTrips | null>(null);
   const [planViewWeekLoading, setPlanViewWeekLoading] = useState(false);
@@ -3925,15 +3882,9 @@ export default function Prototype() {
     setScheduleLoading(true);
     setScheduleError(null);
     try {
-      // Use selectedWeekId if set (week navigation), otherwise the current week.
-      const viewWeek = selectedWeekId
-        ? await repository.getWeekById(selectedWeekId)
-        : weekData;
-      setViewWeekData(viewWeek);
-      if (!viewWeek) { setSchedule(null); return; }
       const roster = await repository.getGroupRoster(identity.group.id);
       const version = await repository.getLatestScheduleVersion(
-        viewWeek.week.id, identity.group.id, viewWeek.trips,
+        weekData.week.id, identity.group.id, weekData.trips,
         roster.children, roster.vehicles, roster.profiles,
       );
       setSchedule(version);
@@ -3943,7 +3894,7 @@ export default function Prototype() {
     } finally {
       setScheduleLoading(false);
     }
-  }, [identity?.group, weekData, selectedWeekId, repository]);
+  }, [identity?.group, weekData, repository]);
 
   const loadHomeSchedule = useCallback(async () => {
     if (!identity?.group || !weekData) return;
@@ -3997,7 +3948,7 @@ export default function Prototype() {
 
   useEffect(() => {
     if (weekData && identity?.membership?.role === "coordinator") void loadSchedule();
-  }, [weekData, selectedWeekId, loadSchedule, identity?.membership?.role]);
+  }, [weekData, loadSchedule, identity?.membership?.role]);
 
   useEffect(() => {
     if (activeTab === "week" && weekData && identity?.membership?.role === "coordinator") void loadSchedule();
@@ -4392,21 +4343,17 @@ const navItems = useMemo(() => {
       );
     }
 
-    if (driveDetailId && identity) {
-      const isCoord = identity.membership?.role === "coordinator";
-      const driveSchedule = isCoord ? schedule : publishedSchedule;
-      if (driveSchedule) {
-        const found = findDriveDetail(driveSchedule, driveDetailId);
-        if (found) {
-          return (
-            <DriveDetailScreen
-              entry={found.entry}
-              trip={found.trip}
-              serviceDate={found.serviceDate}
-              onBack={() => setDriveDetailId(null)}
-            />
-          );
-        }
+    if (driveDetailId && identity && publishedSchedule) {
+      const found = findDriveDetail(publishedSchedule, driveDetailId);
+      if (found) {
+        return (
+          <DriveDetailScreen
+            entry={found.entry}
+            trip={found.trip}
+            serviceDate={found.serviceDate}
+            onBack={() => setDriveDetailId(null)}
+          />
+        );
       }
     }
 
@@ -4451,22 +4398,18 @@ const navItems = useMemo(() => {
     }
 
     if (activeTab === "week") {
-      const isCoord = identity.membership?.role === "coordinator";
       return (
         <WeekScreen
-          week={isCoord ? (viewWeekData ?? weekData) : publishedWeek}
-          weekLoading={isCoord ? weekLoading : publishedLoading}
-          weekError={isCoord ? weekError : null}
-          schedule={isCoord ? schedule : publishedSchedule}
-          scheduleLoading={isCoord ? scheduleLoading : publishedLoading}
-          scheduleError={isCoord ? scheduleError : null}
-          isCoordinator={isCoord}
+          week={publishedWeek}
+          weekLoading={publishedLoading}
+          weekError={null}
+          schedule={publishedSchedule}
+          scheduleLoading={publishedLoading}
+          scheduleError={null}
+          isCoordinator={identity.membership?.role === "coordinator"}
           onReloadWeek={() => void loadWeek()}
-          onReloadSchedule={() => isCoord ? void loadSchedule() : void loadPublishedSchedule()}
-          weekStartsOn={(isCoord ? (viewWeekData ?? weekData) : publishedWeek)?.week.starts_on ?? null}
-          allWeeks={isCoord ? allWeeks : []}
-          selectedWeekId={isCoord ? selectedWeekId : null}
-          onSelectWeek={(id) => { if (isCoord) setSelectedWeekId(id); }}
+          onReloadSchedule={() => void loadPublishedSchedule()}
+          weekStartsOn={publishedWeek?.week.starts_on ?? null}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
           onOpenDrive={(id) => setDriveDetailId(id)}
