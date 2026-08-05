@@ -1037,6 +1037,7 @@ function HomeScreen({
   schedulePublished,
   hasHomeSchedule,
   homeScheduleVersionId,
+  homeScheduleError,
   onConfirmAll,
   onReview,
   onCoverage,
@@ -1071,6 +1072,7 @@ function HomeScreen({
   schedulePublished: boolean;
   hasHomeSchedule: boolean;
   homeScheduleVersionId: string | null;
+  homeScheduleError: string | null;
   onConfirmAll: () => void;
   onReview: () => void;
   onCoverage: () => void;
@@ -1150,11 +1152,18 @@ function HomeScreen({
       ) : assignmentsError ? (
         <section className="confirmation-hero confirmation-hero--done">
           <span className="eyebrow">{weekEyebrow}</span>
-          <h1>We couldn’t load your drives</h1>
+          <h1>We couldn't load your drives</h1>
           <div className="auth-error" role="alert">{assignmentsError}</div>
           <button className="primary-button" data-testid="retry-load-assignments" onClick={onRetryAssignments}>Try again</button>
         </section>
-) : noAssignments ? (
+      ) : homeScheduleError ? (
+        <section className="confirmation-hero confirmation-hero--done">
+          <span className="eyebrow">{weekEyebrow}</span>
+          <h1>We couldn't load the schedule</h1>
+          <div className="auth-error" role="alert">{homeScheduleError}</div>
+          <button className="primary-button" data-testid="retry-load-assignments" onClick={onRetryAssignments}>Try again</button>
+        </section>
+      ) : noAssignments ? (
         <section className="confirmation-hero confirmation-hero--done">
           <span className="eyebrow">{weekEyebrow}</span>
           {schedulePublished ? (
@@ -1223,6 +1232,7 @@ function HomeScreen({
                   const riderCount = alert.children.length;
                   const capacity = alert.volunteerVehicleCapacity;
                   const tooSmall = capacity !== null && capacity < riderCount;
+                  const noVehicle = capacity === null;
                   return (
                     <>
                       <p className="decline-alert-meta">
@@ -1233,10 +1243,10 @@ function HomeScreen({
                       <button
                         className="primary-button decline-alert-volunteer"
                         data-testid={`volunteer-${alert.assignment.id}`}
-                        disabled={volunteerWorking || tooSmall}
+                        disabled={volunteerWorking || tooSmall || noVehicle}
                         onClick={() => onVolunteer(alert.assignment.id)}
                       >
-                        <CheckIcon width="18" height="18" /> {tooSmall ? "Car too small" : "I can drive"}
+                        <CheckIcon width="18" height="18" /> {noVehicle ? "No vehicle" : tooSmall ? "Car too small" : "I can drive"}
                       </button>
                     </>
                   );
@@ -3795,7 +3805,7 @@ export default function Prototype() {
   const [confirmPublish, setConfirmPublish] = useState(false);
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const [myAssignments, setMyAssignments] = useState<MyDriverAssignment[]>([]);
-  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(true);
   const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
   const [declinedAlerts, setDeclinedAlerts] = useState<DeclinedDriveAlert[]>([]);
   const [uncoveredAlerts, setUncoveredAlerts] = useState<UncoveredChildAlert[]>([]);
@@ -4019,17 +4029,33 @@ export default function Prototype() {
     }
   }, [identity?.group, weekData, repository]);
 
+  const [homeScheduleError, setHomeScheduleError] = useState<string | null>(null);
+
   const loadHomeSchedule = useCallback(async () => {
     if (!identity?.group || !weekData) return;
+    setHomeScheduleError(null);
     try {
       const roster = await repository.getGroupRoster(identity.group.id);
-      const version = await repository.getLatestScheduleVersion(
+      // Prefer the latest published version for families; fall back to the
+      // latest version (draft) only if no published version exists.
+      // This prevents a coordinator's draft regeneration from hiding the
+      // live published schedule that families are relying on.
+      const published = await repository.getLatestPublishedVersion(
         weekData.week.id, identity.group.id, weekData.trips,
         roster.children, roster.vehicles, roster.profiles,
       );
-      setHomeSchedule(version);
+      if (published) {
+        setHomeSchedule(published);
+      } else {
+        const version = await repository.getLatestScheduleVersion(
+          weekData.week.id, identity.group.id, weekData.trips,
+          roster.children, roster.vehicles, roster.profiles,
+        );
+        setHomeSchedule(version);
+      }
     } catch (error) {
       setHomeSchedule(null);
+      setHomeScheduleError(readableError(error));
     }
   }, [identity?.group, weekData, repository]);
 
@@ -4172,23 +4198,30 @@ export default function Prototype() {
       );
       setMyAssignments(assignments);
 
-      // Load declined drive alerts and uncovered children for affected parents
-      const [alerts, uncovered] = await Promise.all([
-        repository.getAffectedDeclinedDrives(
-          homeSchedule.version.id,
-          identity.profile.id,
-          identity.group.id,
-          homeSchedule.version.week_id,
-        ),
-        repository.getUncoveredChildren(
-          homeSchedule.version.id,
-          identity.profile.id,
-          identity.group.id,
-          homeSchedule.version.week_id,
-        ),
-      ]);
-      setDeclinedAlerts(alerts);
-      setUncoveredAlerts(uncovered);
+      // Load declined drive alerts and uncovered children for affected parents.
+      // These are loaded independently so a failure in alert queries doesn't
+      // wipe the assignments that already loaded successfully.
+      try {
+        const [alerts, uncovered] = await Promise.all([
+          repository.getAffectedDeclinedDrives(
+            homeSchedule.version.id,
+            identity.profile.id,
+            identity.group.id,
+            homeSchedule.version.week_id,
+          ),
+          repository.getUncoveredChildren(
+            homeSchedule.version.id,
+            identity.profile.id,
+            identity.group.id,
+            homeSchedule.version.week_id,
+          ),
+        ]);
+        setDeclinedAlerts(alerts);
+        setUncoveredAlerts(uncovered);
+      } catch {
+        setDeclinedAlerts([]);
+        setUncoveredAlerts([]);
+      }
     } catch (error) {
       setMyAssignments([]);
       setDeclinedAlerts([]);
@@ -4255,6 +4288,7 @@ export default function Prototype() {
       await loadPublishedSchedule();
     } catch (error) {
       setVolunteerError(readableError(error));
+      void loadMyAssignments();
     } finally {
       setVolunteerWorking(false);
     }
@@ -4274,6 +4308,7 @@ export default function Prototype() {
       await loadPublishedSchedule();
     } catch (error) {
       setVolunteerError(readableError(error));
+      void loadMyAssignments();
     } finally {
       setVolunteerWorking(false);
     }
@@ -4598,6 +4633,7 @@ const navItems = useMemo(() => {
         schedulePublished={homeSchedule?.version.status === "published"}
         hasHomeSchedule={homeSchedule !== null}
         homeScheduleVersionId={homeSchedule?.version.id ?? null}
+        homeScheduleError={homeScheduleError}
         onConfirmAll={() => void confirmAll()}
         onReview={() => setReviewOpen(true)}
         onCoverage={() => navigate("week")}

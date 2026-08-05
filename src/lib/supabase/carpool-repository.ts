@@ -882,16 +882,20 @@ export class CarpoolRepository {
     );
     if (existing) return existing;
 
+    // Use upsert with onConflict to handle the co-parent race condition:
+    // two parents in the same household opening the check-in simultaneously
+    // both see no existing row and both try to insert. The unique constraint
+    // on (week_id, household_id) would cause a duplicate key error without this.
     return unwrapRequired<Tables<"weekly_checkins">>(
       await this.client
         .from("weekly_checkins")
-        .insert({
+        .upsert({
           group_id: groupId,
           week_id: weekId,
           household_id: householdId,
           status: "draft",
           max_drives: 10,
-        })
+        }, { onConflict: "week_id,household_id" })
         .select("*")
         .single(),
     );
@@ -1502,15 +1506,15 @@ export class CarpoolRepository {
       ? Math.max(...volunteerVehicles.map((v) => v.child_passenger_capacity))
       : null;
 
-    const confirmedDriverAssignments = new Set(
+    const handledDriverAssignments = new Set(
       driverAssignments
-        .filter((da) => da.status === "confirmed")
+        .filter((da) => da.status === "tentative" || da.status === "confirmed" || da.status === "declined")
         .map((da) => da.id),
     );
 
     const coveredChildrenByTrip = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
-      if (!confirmedDriverAssignments.has(ra.driver_assignment_id)) continue;
+      if (!handledDriverAssignments.has(ra.driver_assignment_id)) continue;
       const existing = coveredChildrenByTrip.get(ra.trip_id) ?? new Set<string>();
       existing.add(ra.child_id);
       coveredChildrenByTrip.set(ra.trip_id, existing);
