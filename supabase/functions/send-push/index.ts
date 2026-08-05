@@ -206,6 +206,31 @@ Deno.serve(async (req) => {
       title = "Check-in deadline";
       bodyText = `Your check-in deadline is approaching. Submit your ride needs soon.`;
       tag = "deadline-reminder";
+    } else if (type === "volunteered" && assignment_id) {
+      const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: assignment_id });
+      const childIds = riderAssignments.map((ra: any) => ra.child_id);
+      if (childIds.length === 0) return jsonResponse({ sent: 0, failed: 0 });
+
+      const children = await supaFetch("children", "household_id,id", { "id.in": `(${childIds.join(",")})` });
+      const householdIds = [...new Set(children.map((c: any) => c.household_id))];
+
+      for (const hid of householdIds) {
+        const memberships = await supaFetch("memberships", "profile_id", { household_id: hid, status: "active" });
+        recipientProfileIds.push(...memberships.map((m: any) => m.profile_id));
+      }
+
+      const assignment = await supaFetch("driver_assignments", "*", { id: `eq.${assignment_id}` });
+      if (assignment.length > 0) {
+        const da = assignment[0];
+        const trip = await supaFetch("trips", "*", { id: `eq.${da.trip_id}` });
+        if (trip.length > 0) {
+          const t = trip[0];
+          const period = t.direction === "morning" ? "morning" : "afternoon";
+          title = "Drive covered";
+          bodyText = `A driver has covered the ${period} trip on ${t.service_date} for your child.`;
+          tag = `volunteered-${assignment_id}`;
+        }
+      }
     } else {
       return jsonError(`Invalid type or missing parameters: ${type}`, 400);
     }
