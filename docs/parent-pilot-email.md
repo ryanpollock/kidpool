@@ -29,7 +29,7 @@ I've been building an app to help coordinate carpooling between Midtown Terrace 
 **The weekly rhythm:**
 - **Saturday:** Check in on the Check-in tab — toggle which days your child needs rides and which days you can drive. Takes about a minute once your defaults are set.
 - **Sunday:** I'll generate the draft schedule, then publish it. If you're assigned to drive, you'll get a confirmation request on the Home tab. Tap "Confirm all drives" or review and decline individual trips.
-- **During the week:** Open the Week tab to see who's driving each day, who's in each car, and pickup times. You can add drives to your phone's calendar from the Home tab.
+- **During the week:** Open the Schedule tab to see who's driving each day, who's in each car, and pickup times. You can add drives to your phone's calendar from the Home tab.
 
 **Pilot timeline:**
 - **Week of Aug 10 (pilot):** We'll run the full workflow — check in, generate the schedule, confirm drives — but this is a test week. No actual driving required; just walk through the app so we can shake out any issues before it's real.

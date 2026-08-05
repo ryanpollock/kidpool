@@ -1031,6 +1031,7 @@ function HomeScreen({
   onFaq,
   onRetryAssignments,
   onVolunteer,
+  onCancelDrive,
   working,
   volunteerWorking,
   volunteerError,
@@ -1060,6 +1061,7 @@ function HomeScreen({
   onFaq: () => void;
   onRetryAssignments: () => void;
   onVolunteer: (assignmentId: string) => void;
+  onCancelDrive: (assignmentId: string) => void;
   working: boolean;
   volunteerWorking: boolean;
   volunteerError: string | null;
@@ -1077,11 +1079,11 @@ function HomeScreen({
   timezone: string;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
+  const [cancelingId, setCancelingId] = useState<string | null>(null);
   const activeAssignments = myAssignments.filter((a) => a.assignment.status !== "declined");
   const tentative = activeAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = activeAssignments.filter((a) => a.assignment.status === "confirmed");
-  const declined = myAssignments.filter((a) => a.assignment.status === "declined");
-  const allConfirmed = tentative.length === 0 && confirmed.length > 0 && declined.length === 0;
+  const allConfirmed = tentative.length === 0 && confirmed.length > 0;
   const noAssignments = activeAssignments.length === 0;
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
@@ -1238,13 +1240,43 @@ function HomeScreen({
           </div>
           <div className="assignment-list">
             {activeAssignments.map((entry) => (
-              <AssignmentRow
-                key={entry.assignment.id}
-                trip={entry.trip}
-                vehicle={entry.vehicle}
-                riderCount={entry.children.length}
-                status={entry.assignment.status}
-              />
+              <div className="assignment-row-wrapper" key={entry.assignment.id}>
+                <AssignmentRow
+                  trip={entry.trip}
+                  vehicle={entry.vehicle}
+                  riderCount={entry.children.length}
+                  status={entry.assignment.status}
+                />
+                {entry.assignment.status === "confirmed" ? (
+                  cancelingId === entry.assignment.id ? (
+                    <div className="cancel-confirm" data-testid={`cancel-confirm-${entry.assignment.id}`}>
+                      <p className="cancel-confirm-warning">Cancel this drive? Affected families will be notified immediately.</p>
+                      <div className="confirm-code-actions">
+                        <button
+                          className="decline-button"
+                          data-testid={`confirm-cancel-${entry.assignment.id}`}
+                          disabled={working}
+                          onClick={() => {
+                            void onCancelDrive(entry.assignment.id);
+                            setCancelingId(null);
+                          }}
+                        >
+                          {working ? "Canceling…" : "Yes, cancel drive"}
+                        </button>
+                        <button className="text-button" disabled={working} onClick={() => setCancelingId(null)}>Keep drive</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      className="cancel-drive-link"
+                      data-testid={`cancel-drive-${entry.assignment.id}`}
+                      onClick={() => setCancelingId(entry.assignment.id)}
+                    >
+                      Can't make this drive
+                    </button>
+                  )
+                ) : null}
+              </div>
             ))}
           </div>
           {!allConfirmed ? (
@@ -1272,9 +1304,6 @@ function HomeScreen({
                     <button className="text-button" disabled={working} onClick={() => setConfirmAllOpen(false)}>Cancel</button>
                   </div>
                 </div>
-              ) : null}
-              {declined.length > 0 && tentative.length === 0 ? (
-                <p className="helper-copy">All drives resolved. Use "Review individually" to change a response.</p>
               ) : null}
               <button className="text-button" onClick={onReview}>Review individually</button>
             </>
@@ -1492,7 +1521,6 @@ function PlanScreen({
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [maxDrives, setMaxDrives] = useState("2");
   const [pendingDrive, setPendingDrive] = useState<Record<string, DrivePreference>>({});
   const [coParentUpdate, setCoParentUpdate] = useState<string | null>(null);
 
@@ -1518,10 +1546,6 @@ function PlanScreen({
   const hasNext = currentIdx > 0;
   const showNav = allWeeks.length > 1;
   const showReset = selectedWeekId !== null;
-
-  useEffect(() => {
-    if (checkin) setMaxDrives(String(checkin.max_drives || 2));
-  }, [checkin?.id]);
 
   // Realtime: subscribe to checkin changes so co-parents see each other's edits
   useEffect(() => {
@@ -1694,7 +1718,7 @@ function PlanScreen({
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await repository.submitCheckin(checkin.id, Number(maxDrives) || 0);
+      await repository.submitCheckin(checkin.id);
       onReloadCheckin();
     } catch (error) {
       setSubmitError(readableError(error));
@@ -1857,22 +1881,6 @@ function PlanScreen({
         );
       })}
 
-      {!submitted ? (
-        <section className="checkin-max-drives">
-          <label className="auth-field">
-            <span>Max drives for your household</span>
-            <KeyboardInput
-              value={maxDrives}
-              onChange={(event) => setMaxDrives(event.target.value.replace(/[^0-9]/g, ""))}
-              inputMode="numeric"
-              placeholder="2"
-              autoComplete="off"
-            />
-            <small>Applies to all drivers in your household this week.</small>
-          </label>
-        </section>
-      ) : null}
-
       <div className="vehicle-summary">
         <span><DashboardIcon /></span>
         <span>
@@ -1930,7 +1938,7 @@ function WeekScreen({
   weekStartsOn: string | null;
   allWeeks: Tables<"weeks">[];
   selectedWeekId: string | null;
-  onSelectWeek: (weekId: string) => void;
+  onSelectWeek: (weekId: string | null) => void;
   avatarUrl: string | null;
   onAccount: () => void;
   onOpenDrive: (assignmentId: string) => void;
@@ -1939,6 +1947,7 @@ function WeekScreen({
   const currentIdx = allWeeks.findIndex((w) => w.id === (selectedWeekId ?? week?.week.id));
   const hasPrev = currentIdx < allWeeks.length - 1;
   const hasNext = currentIdx > 0;
+  const showReset = selectedWeekId !== null;
   if (weekLoading) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
@@ -2037,6 +2046,21 @@ function WeekScreen({
           <span className="eyebrow">Family schedule</span>
           <h1>{startDate.short} – {endDate.short}</h1>
         </header>
+        {allWeeks.length > 1 ? (
+          <div className="week-nav" data-testid="schedule-week-nav">
+            <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
+              <ChevronLeftIcon /> Earlier
+            </button>
+            {showReset ? (
+              <button className="week-nav-btn week-nav-btn--reset" data-testid="schedule-week-reset" onClick={() => onSelectWeek(null)}>
+                Current
+              </button>
+            ) : null}
+            <button className="week-nav-btn" disabled={!hasNext} onClick={() => { if (hasNext) onSelectWeek(allWeeks[currentIdx - 1].id); }}>
+              Later <ChevronRightIcon />
+            </button>
+          </div>
+        ) : null}
         <div className="week-list">
           {weekdays.map((serviceDate) => {
             const dateInfo = formatTripDate(serviceDate);
@@ -2137,10 +2161,15 @@ function WeekScreen({
       </header>
 
       {allWeeks.length > 1 ? (
-        <div className="week-nav">
+        <div className="week-nav" data-testid="schedule-week-nav">
           <button className="week-nav-btn" disabled={!hasPrev} onClick={() => { if (hasPrev) onSelectWeek(allWeeks[currentIdx + 1].id); }}>
             <ChevronLeftIcon /> Earlier
           </button>
+          {showReset ? (
+            <button className="week-nav-btn week-nav-btn--reset" data-testid="schedule-week-reset" onClick={() => onSelectWeek(null)}>
+              Current
+            </button>
+          ) : null}
           <button className="week-nav-btn" disabled={!hasNext} onClick={() => { if (hasNext) onSelectWeek(allWeeks[currentIdx - 1].id); }}>
             Later <ChevronRightIcon />
           </button>
@@ -2421,7 +2450,7 @@ function CoordinatorScreen({
             <h2>{uncoveredCount} trip{uncoveredCount !== 1 ? "s" : ""} with uncovered children</h2>
           </div>
           <p className="decline-alert-body">
-            Some children don't have a driver assigned. Check the Week tab for details before publishing.
+            Some children don't have a driver assigned. Check the Schedule tab for details before publishing.
           </p>
         </div>
       ) : null}
@@ -2445,7 +2474,7 @@ function CoordinatorScreen({
               </button>
               <small className="helper-copy">
                 {uncoveredCount > 0
-                  ? "Cannot publish — some children don't have a driver. Check the Week tab."
+                  ? "Cannot publish — some children don't have a driver. Check the Schedule tab."
                   : "Publishing locks this schedule for all families."}
               </small>
             </>
@@ -3377,7 +3406,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "Who can generate and publish schedules?",
-        a: "Only coordinators. The coordinator creates the week, generates the draft schedule, reviews it, and publishes it. If you're not a coordinator, you'll see the schedule on the Week tab but can't generate or publish.",
+        a: "Only coordinators. The coordinator creates the week, generates the draft schedule, reviews it, and publishes it. If you're not a coordinator, you'll see the schedule on the Schedule tab but can't generate or publish.",
       },
     ],
   },
@@ -3411,7 +3440,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "What are uncovered riders?",
-        a: "Uncovered riders are children who need a ride for a trip but don't have a driver assigned. They're shown on the Week tab with amber chips listing each child's name. The coordinator should review these before publishing.",
+        a: "Uncovered riders are children who need a ride for a trip but don't have a driver assigned. They're shown on the Schedule tab with amber chips listing each child's name. The coordinator should review these before publishing.",
       },
       {
         q: "How do I volunteer to cover a drive?",
@@ -3420,11 +3449,11 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     ],
   },
   {
-    title: "Week tab",
+    title: "Schedule tab",
     items: [
       {
         q: "How do I view different weeks?",
-        a: "On the Week tab, use the Earlier and Later buttons to navigate between weeks. The current week is shown by default.",
+        a: "On the Schedule tab, use the Earlier, Current, and Later buttons to navigate between weeks. The current week is shown by default.",
       },
       {
         q: "What do the coverage indicators mean?",
@@ -3432,7 +3461,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "Can I see who's in each car?",
-        a: "Yes. On the Week tab, tap any drive card to see the driver, vehicle, route, and all children assigned to that car. Child photos appear if they've been uploaded.",
+        a: "Yes. On the Schedule tab, tap any drive card to see the driver, vehicle, route, and all children assigned to that car. Child photos appear if they've been uploaded.",
       },
     ],
   },
@@ -4071,6 +4100,18 @@ export default function Prototype() {
     ));
   }, []);
 
+  const cancelDrive = useCallback(async (assignmentId: string) => {
+    setConfirmError(null);
+    try {
+      await repository.respondToDriverAssignment(assignmentId, "declined");
+      updateAssignmentStatus(assignmentId, "declined");
+      void repository.sendPushNotification(assignmentId, null, "declined");
+      await loadMyAssignments();
+    } catch (error) {
+      setConfirmError(readableError(error));
+    }
+  }, [repository, updateAssignmentStatus, loadMyAssignments]);
+
   useEffect(() => {
     if (homeSchedule) void loadMyAssignments();
   }, [homeSchedule, loadMyAssignments]);
@@ -4144,7 +4185,10 @@ export default function Prototype() {
 
     void supabase.auth.getSession().then(async ({ data, error }) => {
       if (!mounted) return;
-      if (error) setAuthError(readableError(error));
+      if (error) {
+        console.warn("[auth] getSession error:", error.message);
+        await supabase.auth.signOut({ scope: "local" });
+      }
       setAuthInitialized(true);
 
       // Dev/staging test auth bypass: auto sign in with ?testAuth=email|password
@@ -4240,7 +4284,7 @@ export default function Prototype() {
     setAuthWorking(false);
   };
 
-  const navItems = useMemo(() => {
+const navItems = useMemo(() => {
     const items: { id: AppTab; label: string; icon: typeof HomeIcon }[] = [
       { id: "home" as const, label: "Home", icon: HomeIcon },
       { id: "plan" as const, label: "Check-in", icon: BackpackIcon },
@@ -4274,7 +4318,7 @@ export default function Prototype() {
           repository={repository}
           householdId={identity.membership?.household_id ?? ""}
           groupId={identity.group.id}
-          onReloadHousehold={() => void loadHousehold()}
+          onReloadHousehold={() => { void loadHousehold(); void loadIdentity(); }}
           onBack={() => setAccountOpen(false)}
           onSignOut={() => void signOut()}
           working={authWorking}
@@ -4422,6 +4466,7 @@ export default function Prototype() {
         onFaq={() => setFaqOpen(true)}
         onRetryAssignments={() => void loadMyAssignments()}
         onVolunteer={(assignmentId) => void volunteerForDrive(assignmentId)}
+        onCancelDrive={(assignmentId) => void cancelDrive(assignmentId)}
         working={confirmWorking}
         volunteerWorking={volunteerWorking}
         volunteerError={volunteerError}
