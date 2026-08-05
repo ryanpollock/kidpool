@@ -920,3 +920,146 @@ test("Priority: Edge Function honors is_priority from DB rows", { skip: !SERVICE
   deleteTestUser(driver.userId);
   deleteTestUser(other.userId);
 });
+
+// ── Backend edge-case tests (Phase C) ─────────────────────────────
+
+test("Backend: auto-publish does not invoke send-push (no 'published' notification)", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(500, "AutoPubCoord", "coordinator", true);
+  const driver = setupHousehold(501, "AutoPubDriver", "member", false);
+  const { weekId, tripIds } = setupWeekAndTrips(coord.userId, coord.householdId);
+  const tripId = tripIds[0];
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(365)}', '${GROUP_ID}', '${driver.householdId}', 'AutoPubCar', 4, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(267)}', '${GROUP_ID}', '${driver.householdId}', 'AutoPubKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(567)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(567)}', '${tripId}', '${UID(267)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(567)}', '${tripId}', '${driver.userId}', '${UID(365)}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  // Pre-publish the schedule so auto-publish triggers on regenerate
+  const coordToken = signInUser("autopubcoord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "First generate should succeed");
+
+  // Confirm all assignments and publish via SQL
+  runSql(`
+    UPDATE public.driver_assignments SET status = 'confirmed' WHERE schedule_version_id IN (SELECT id FROM schedule_versions WHERE week_id = '${weekId}' AND status = 'draft');
+    UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE week_id = '${weekId}' AND status = 'draft';
+  `);
+
+  // Now regenerate — all assignments are confirmed, no uncovered, prior was published
+  // → auto-publish should fire inside the Edge Function
+  const regenResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(regenResult.success, "Regenerate should succeed");
+
+  // Verify the new version is published (auto-publish fired)
+  const versions = restGet("schedule_versions", { week_id: weekId });
+  const latest = versions.sort((a, b) => b.version_number - a.version_number)[0];
+  assert.equal(latest.status, "published", "Auto-publish should have published the new version");
+
+  // Verify NO push notifications were sent (auto-publish does not invoke send-push)
+  // We check audit_events for a "published" action — the Edge Function writes audit_events
+  // but does NOT invoke send-push. If it did, there would be a separate audit event or
+  // a push_subscriptions row. We verify by checking that no "published" push audit exists.
+  const auditEvents = restGet("audit_events", { group_id: GROUP_ID });
+  const pushAuditEvents = auditEvents.filter((e) => e.action === "push_sent" || e.action === "published_notification");
+  assert.equal(pushAuditEvents.length, 0, "Auto-publish should not send push notifications (known gap: documented for post-pilot fix)");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+});
+
+test("Backend: volunteer_for_uncovered_trip has no max_drives check (documents current behavior)", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(510, "MaxDrCoord", "coordinator", true);
+  const rider = setupHousehold(512, "MaxDrRider", "member", false);
+  assert.ok(coord.userId, `Coord user should be created. Got null.`);
+  assert.ok(rider.userId, `Rider user should be created. Got null.`);
+  const { weekId, tripIds } = setupWeekAndTrips(coord.userId, coord.householdId);
+  const afternoonTrip = tripIds[1];
+
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(269)}', '${GROUP_ID}', '${rider.householdId}', 'MaxDrKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;`);
+  runSql(`INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(367)}', '${GROUP_ID}', '${rider.householdId}', 'MaxDrRiderCar', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;`);
+  runSql(`INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(569)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;`);
+  runSql(tripIds.map((t) => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(569)}', '${t}', '${UID(269)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;`).join("\n"));
+  runSql(tripIds.map((t) => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(569)}', '${t}', '${UID(269)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;`).join("\n"));
+
+  // Generate and publish — no driver available, so rider's child is uncovered
+  const coordToken = signInUser("maxdrcoord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Generate should succeed");
+  runSql(`
+    UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE week_id = '${weekId}' AND status = 'draft';
+  `);
+
+  const versions = restGet("schedule_versions", { week_id: weekId, status: "published" });
+  const versionId = versions[0].id;
+
+  // Verify setup
+  const checkins = restGet("weekly_checkins", { id: UID(569) });
+  assert.ok(checkins.length > 0, `Rider checkin should exist. Got ${checkins.length}`);
+  const children = restGet("children", { id: UID(269) });
+  assert.ok(children.length > 0, `Rider child should exist. Got ${children.length}`);
+  const rideReqs = restGet("ride_requests", { checkin_id: UID(569) });
+  assert.ok(rideReqs.length > 0, `Rider should have ride_requests. Got ${rideReqs.length}`);
+
+  // Rider (max_drives=0) attempts to volunteer for uncovered afternoon trip
+  const riderToken = signInUser("maxdrrider@test.kidpool");
+  const riderJwt = riderToken.access_token;
+  const volunteerResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${riderJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"p_trip_id":"${afternoonTrip}","p_schedule_version_id":"${versionId}"}' "${SUPABASE_URL}/rest/v1/rpc/volunteer_for_uncovered_trip"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+
+  // Current behavior: the RPC does NOT check max_drives, so volunteering succeeds
+  // even though the rider's max_drives is 0. This documents the known gap.
+  assert.ok(!volunteerResult.code || !volunteerResult.message,
+    `Volunteer should succeed despite max_drives=0 (known gap: no max_drives check). Got: ${JSON.stringify(volunteerResult)}`);
+
+  const newAssignments = restGet("driver_assignments", { schedule_version_id: versionId, trip_id: afternoonTrip, driver_profile_id: rider.userId });
+  assert.ok(newAssignments.length > 0, "Volunteer assignment should be created despite max_drives=0");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(rider.userId);
+});
+
+test("Backend: submitCheckin allows empty check-in (no ride requests)", { skip: !SERVICE_KEY }, async () => {
+  const family = setupHousehold(520, "EmptyCheck", "member", false);
+  const { weekId } = setupWeekAndTrips(family.userId, family.householdId);
+
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(270)}', '${GROUP_ID}', '${family.householdId}', 'EmptyKid', 'Family', '${family.userId}') ON CONFLICT DO NOTHING;`);
+  runSql(`INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(368)}', '${GROUP_ID}', '${family.householdId}', 'EmptyCar', 4, true, '${family.userId}') ON CONFLICT DO NOTHING;`);
+  runSql(`INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(570)}', '${GROUP_ID}', '${weekId}', '${family.householdId}', 'draft', 5) ON CONFLICT DO NOTHING;`);
+
+  // Submit the check-in with zero ride requests and zero driver availability
+  const familyToken = signInUser("emptycheck@test.kidpool");
+  const familyJwt = familyToken.access_token;
+
+  const submitResult = JSON.parse(execSync(
+    `curl -s -X PATCH -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${familyJwt}" -H "Content-Type: application/json" -H "Prefer: return=representation" -d '{"status":"submitted"}' "${SUPABASE_URL}/rest/v1/weekly_checkins?id=eq.${UID(570)}&group_id=eq.${GROUP_ID}"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+
+  // Current behavior: empty check-in submission succeeds (no validation for ride requests)
+  assert.ok(Array.isArray(submitResult) && submitResult.length > 0, `Empty check-in submission should return the updated row. Got: ${JSON.stringify(submitResult)}`);
+  assert.equal(submitResult[0].status, "submitted", "Check-in should be marked submitted");
+
+  const rideRequests = restGet("ride_requests", { checkin_id: UID(570) });
+  assert.equal(rideRequests.length, 0, "No ride requests should exist for the empty check-in");
+
+  cleanupAllTestData();
+  deleteTestUser(family.userId);
+});

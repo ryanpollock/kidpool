@@ -1512,7 +1512,7 @@ export class CarpoolRepository {
 
     const handledDriverAssignments = new Set(
       driverAssignments
-        .filter((da) => da.status === "tentative" || da.status === "confirmed" || da.status === "declined")
+        .filter((da) => da.status === "tentative" || da.status === "confirmed")
         .map((da) => da.id),
     );
 

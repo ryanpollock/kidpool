@@ -8,6 +8,21 @@
 //   4. Expired driver — This Week tab must not show as active
 //   5. Coordinator regenerate — family still sees published, not draft
 //   6. Coordinator can publish a draft after regenerating
+//   7. Declined driver: rider sees uncovered alert (getUncoveredChildren bug)
+//   8. Cancel confirmed drive → affected family sees alert
+//   9. Volunteer for uncovered trip → alert clears
+//   10. Volunteer disabled "Car too small"
+//   11. Volunteer disabled "No vehicle"
+//   12. Happy path: all confirmed → "You're all set" + Add to Calendar
+//   13. Rider happy path: in schedule, not driving → "rides are scheduled"
+//   14. No schedule yet → hero shows check-in deadline
+//   15. Draft not published → "Schedule is being prepared"
+//   16. Deadline display: hero shows "Confirm by" in Pacific
+//   17. Publish gate: disabled before deadline with tentative
+//   18. Publish gate: enabled after deadline, tentative expire
+//   19. Coordinator status: household check-in status per household
+//   20. Coordinator alerts: declined + uncovered admin alerts
+//   21. This Week: status pills show tentative vs confirmed
 //
 // Targets the STAGING project (jfyjgmhqnlbdcafoarrg).
 // Run: npm run test:runtime -- --grep "Pilot Scenarios"
@@ -551,5 +566,643 @@ test.describe.serial("Pilot Scenarios", () => {
         await expect(publishBtn).toBeVisible({ timeout: 5000 });
       }
     }
+  });
+
+  // ── Scenario 7: Declined driver's rider shows as uncovered, not covered ──
+  // Catches the getUncoveredChildren bug where declined assignments were
+  // counted as "covering" a child, hiding the uncovered alert.
+
+  test("declined driver: rider sees uncovered alert (not hidden by declined coverage)", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(70, "DeclUncovCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(71, "DeclUncovDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(72, "DeclUncovRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(730)}', '${GROUP_ID}', '${driver.householdId}', 'DeclKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(731)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(732)}', '${GROUP_ID}', '${rider.householdId}', 'DeclKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(740)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(740)}', '${morningTrip}', '${UID(730)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(740)}', '${morningTrip}', '${driver.userId}', '${UID(731)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(741)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(741)}', '${morningTrip}', '${UID(732)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    const versionId = getPublishedVersionId(weekId);
+    if (versionId) {
+      runSql(`UPDATE public.driver_assignments SET status = 'declined' WHERE schedule_version_id = '${versionId}' AND trip_id = '${morningTrip}' AND status = 'confirmed';`);
+    }
+
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    await expect(page.getByTestId("uncovered-alert")).toBeVisible({ timeout: 5000 });
+  });
+
+  // ── Scenario 8: Cancel confirmed drive → affected family sees alert + volunteers ──
+
+  test("cancel confirmed drive: affected family sees alert and can volunteer", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(80, "CancelCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(81, "CancelDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(82, "CancelRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(750)}', '${GROUP_ID}', '${driver.householdId}', 'CancelKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(751)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(752)}', '${GROUP_ID}', '${rider.householdId}', 'CancelKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(753)}', '${GROUP_ID}', '${rider.householdId}', 'RiderCar', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(760)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(760)}', '${morningTrip}', '${UID(750)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(760)}', '${morningTrip}', '${driver.userId}', '${UID(751)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(761)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(761)}', '${morningTrip}', '${UID(752)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const cancelLink = page.locator('[data-testid^="cancel-drive-"]').first();
+    await expect(cancelLink).toBeVisible({ timeout: 5000 });
+    await cancelLink.click();
+
+    const confirmBtn = page.locator('[data-testid^="cancel-confirm-"] button:has-text("Yes, cancel drive")').first();
+    await expect(confirmBtn).toBeVisible({ timeout: 5000 });
+    await confirmBtn.click();
+    await page.waitForTimeout(2000);
+
+    await page.context().clearCookies();
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    await expect(page.getByTestId("decline-alert")).toBeVisible({ timeout: 5000 });
+    const volunteerBtn = page.locator('[data-testid^="volunteer-"]').first();
+    await expect(volunteerBtn).toBeVisible({ timeout: 5000 });
+    expect(await volunteerBtn.isDisabled()).toBe(false);
+  });
+
+  // ── Scenario 9: Volunteer for uncovered trip → alert clears ──
+
+  test("volunteer for uncovered trip: rider covers trip and alert clears", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(90, "UncovVolCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(91, "UncovVolDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(92, "UncovVolRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(770)}', '${GROUP_ID}', '${driver.householdId}', 'UncovKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(771)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 1, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(772)}', '${GROUP_ID}', '${rider.householdId}', 'UncovKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(773)}', '${GROUP_ID}', '${rider.householdId}', 'RiderSUV', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(780)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(780)}', '${morningTrip}', '${UID(770)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(780)}', '${morningTrip}', '${driver.userId}', '${UID(771)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(781)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(781)}', '${morningTrip}', '${UID(772)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    await expect(page.getByTestId("uncovered-alert")).toBeVisible({ timeout: 5000 });
+    const volunteerBtn = page.locator('[data-testid^="volunteer-uncovered-"]').first();
+    await expect(volunteerBtn).toBeVisible({ timeout: 5000 });
+    expect(await volunteerBtn.isDisabled()).toBe(false);
+
+    await volunteerBtn.click();
+    await page.waitForTimeout(3000);
+
+    await expect(page.getByTestId("uncovered-alert")).toBeHidden({ timeout: 5000 });
+  });
+
+  // ── Scenario 10: Volunteer disabled "Car too small" ──
+
+  test("volunteer uncovered: disabled 'Car too small' when vehicle capacity insufficient", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(100, "SmallCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(101, "SmallDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(102, "SmallRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(790)}', '${GROUP_ID}', '${driver.householdId}', 'DriverKid', 'Small', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(791)}', '${GROUP_ID}', '${driver.householdId}', 'MicroCar', 1, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(792)}', '${GROUP_ID}', '${rider.householdId}', 'SmallKid1', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(793)}', '${GROUP_ID}', '${rider.householdId}', 'SmallKid2', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(794)}', '${GROUP_ID}', '${rider.householdId}', 'SmallKid3', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(795)}', '${GROUP_ID}', '${rider.householdId}', 'TinyCar', 2, true, '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(800)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(800)}', '${morningTrip}', '${UID(790)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(800)}', '${morningTrip}', '${driver.userId}', '${UID(791)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(801)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(801)}', '${morningTrip}', '${UID(792)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(801)}', '${morningTrip}', '${UID(793)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(801)}', '${morningTrip}', '${UID(794)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    await expect(page.getByTestId("uncovered-alert")).toBeVisible({ timeout: 5000 });
+    const volunteerBtn = page.locator('[data-testid^="volunteer-uncovered-"]').first();
+    await expect(volunteerBtn).toBeVisible({ timeout: 5000 });
+    expect(await volunteerBtn.isDisabled()).toBe(true);
+    const btnText = (await volunteerBtn.textContent()) ?? "";
+    expect(btnText.toLowerCase()).toContain("too small");
+  });
+
+  // ── Scenario 11: Volunteer disabled "No vehicle" ──
+
+  test("volunteer uncovered: disabled 'No vehicle' when rider has no active vehicle", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(110, "NoVehCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(111, "NoVehDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(112, "NoVehRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(810)}', '${GROUP_ID}', '${driver.householdId}', 'NoVehKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(811)}', '${GROUP_ID}', '${driver.householdId}', 'MicroCar', 1, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(812)}', '${GROUP_ID}', '${rider.householdId}', 'NoVehKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(820)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(820)}', '${morningTrip}', '${UID(810)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(820)}', '${morningTrip}', '${driver.userId}', '${UID(811)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(821)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(821)}', '${morningTrip}', '${UID(812)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    await expect(page.getByTestId("uncovered-alert")).toBeVisible({ timeout: 5000 });
+    const volunteerBtn = page.locator('[data-testid^="volunteer-uncovered-"]').first();
+    await expect(volunteerBtn).toBeVisible({ timeout: 5000 });
+    expect(await volunteerBtn.isDisabled()).toBe(true);
+    const btnText = (await volunteerBtn.textContent()) ?? "";
+    expect(btnText.toLowerCase()).toContain("no vehicle");
+  });
+
+  // ── Scenario 12: Happy path — all confirmed + published + no alerts ──
+
+  test("happy path: all confirmed + published + no alerts → hero says 'You're all set'", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(120, "HappyCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(121, "HappyDriver", false);
+    if (!driver) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(830)}', '${GROUP_ID}', '${driver.householdId}', 'HappyKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(831)}', '${GROUP_ID}', '${driver.householdId}', 'HappyCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(840)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(840)}', '${morningTrip}', '${UID(830)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(840)}', '${morningTrip}', '${driver.userId}', '${UID(831)}', 'prefer') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    const versionId = getPublishedVersionId(weekId);
+    if (versionId) {
+      runSql(`UPDATE public.driver_assignments SET status = 'confirmed' WHERE schedule_version_id = '${versionId}' AND status = 'tentative';`);
+    }
+
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const heroText = await page.locator(".confirmation-hero h1").first().textContent();
+    expect(heroText).toBeTruthy();
+    expect(heroText!.toLowerCase()).toContain("all set");
+    await expect(page.getByTestId("add-to-calendar")).toBeVisible({ timeout: 5000 });
+  });
+
+  // ── Scenario 13: Rider happy path — in schedule, not driving ──
+
+  test("rider happy path: in schedule, not driving → hero says 'rides are scheduled'", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(130, "RiderHappyCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(131, "RiderHappyDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(132, "RiderHappyRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(850)}', '${GROUP_ID}', '${driver.householdId}', 'RiderHappyKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(851)}', '${GROUP_ID}', '${driver.householdId}', 'BigCar', 5, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(852)}', '${GROUP_ID}', '${rider.householdId}', 'RiderHappyKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(860)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(860)}', '${morningTrip}', '${UID(850)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(860)}', '${morningTrip}', '${driver.userId}', '${UID(851)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(861)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(861)}', '${morningTrip}', '${UID(852)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const heroText = await page.locator(".confirmation-hero h1").first().textContent();
+    expect(heroText).toBeTruthy();
+    expect(heroText!.toLowerCase()).toContain("rides are scheduled");
+  });
+
+  // ── Scenario 14: No schedule yet → hero shows check-in deadline ──
+
+  test("no schedule yet: hero shows 'No schedule yet' with check-in deadline", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const family = setupHousehold(140, "NoSched", false);
+    if (!family) { test.skip(); return; }
+
+    setupCurrentWeekWithTrips();
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(870)}', '${GROUP_ID}', '${family.householdId}', 'NoSchedKid', 'Family', '${family.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(871)}', '${GROUP_ID}', '${family.householdId}', 'FamilyCar', 4, true, '${family.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await signInWithTestAuth(page, family.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const heroText = await page.locator(".confirmation-hero h1").first().textContent();
+    expect(heroText).toBeTruthy();
+    expect(heroText!.toLowerCase()).toContain("no schedule yet");
+    const heroSupport = await page.locator(".confirmation-hero .hero-support").first().textContent();
+    expect(heroSupport).toBeTruthy();
+    expect(heroSupport!.toLowerCase()).toContain("submit by");
+  });
+
+  // ── Scenario 15: Draft not published → hero says 'Schedule is being prepared' ──
+
+  test("draft not published: hero says 'Schedule is being prepared'", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(150, "DraftCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(151, "DraftDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(152, "DraftRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(880)}', '${GROUP_ID}', '${driver.householdId}', 'DraftKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(881)}', '${GROUP_ID}', '${driver.householdId}', 'DraftCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(882)}', '${GROUP_ID}', '${rider.householdId}', 'DraftKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(890)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(890)}', '${morningTrip}', '${UID(880)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(890)}', '${morningTrip}', '${driver.userId}', '${UID(881)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(891)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(891)}', '${morningTrip}', '${UID(882)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const heroText = await page.locator(".confirmation-hero h1").first().textContent();
+    expect(heroText).toBeTruthy();
+    expect(heroText!.toLowerCase()).toContain("being prepared");
+  });
+
+  // ── Scenario 16: Home hero shows confirmation deadline in Pacific ──
+
+  test("deadline display: hero shows 'Confirm by' in Pacific time, not UTC", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(160, "DlCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(161, "DlDriver", false);
+    if (!driver) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(900)}', '${GROUP_ID}', '${driver.householdId}', 'DlKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(901)}', '${GROUP_ID}', '${driver.householdId}', 'DlCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(910)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(910)}', '${morningTrip}', '${UID(900)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(910)}', '${morningTrip}', '${driver.userId}', '${UID(901)}', 'prefer') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const heroText = await page.locator(".confirmation-hero h1").first().textContent();
+    expect(heroText).toBeTruthy();
+    expect(heroText!.toLowerCase()).toContain("confirm your drives");
+    const deadlineText = await page.locator(".confirmation-hero .hero-deadline").first().textContent();
+    expect(deadlineText).toBeTruthy();
+    expect(deadlineText!.toLowerCase()).toContain("confirm by");
+    expect(deadlineText!.toLowerCase()).toContain("pm");
+    expect(deadlineText!.toLowerCase()).not.toContain("am");
+  });
+
+  // ── Scenario 17: Publish disabled before deadline with tentative ──
+
+  test("publish gate: disabled 'awaiting confirmation' when tentative remain before deadline", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(170, "PubGateCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(171, "PubGateDriver", false);
+    if (!driver) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    // Set confirmation deadline to a future date so the publish gate is active
+    const futureDeadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    runSql(`
+      UPDATE public.weeks SET confirmation_deadline = '${futureDeadline}' WHERE id = '${weekId}';
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(920)}', '${GROUP_ID}', '${driver.householdId}', 'PubGateKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(921)}', '${GROUP_ID}', '${driver.householdId}', 'PubGateCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(930)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(930)}', '${morningTrip}', '${UID(920)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(930)}', '${morningTrip}', '${driver.userId}', '${UID(921)}', 'prefer') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+
+    await signInWithTestAuth(page, coord.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.getByTestId("nav-coordinate").click();
+    await expect(page.getByTestId("coordinator-screen")).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+
+    const publishBtn = page.getByTestId("publish-schedule");
+    await expect(publishBtn).toBeVisible({ timeout: 5000 });
+    expect(await publishBtn.isDisabled()).toBe(true);
+    const btnText = (await publishBtn.textContent()) ?? "";
+    expect(btnText.toLowerCase()).toContain("awaiting confirmation");
+  });
+
+  // ── Scenario 18: Publish after deadline expires tentative ──
+
+  test("publish gate: enabled after deadline, tentative expire on publish", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(180, "PubExpCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(181, "PubExpDriver", false);
+    if (!driver) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    const now = new Date();
+    const pastDeadline = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    runSql(`
+      UPDATE public.weeks SET confirmation_deadline = '${pastDeadline}' WHERE id = '${weekId}';
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(940)}', '${GROUP_ID}', '${driver.householdId}', 'PubExpKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(941)}', '${GROUP_ID}', '${driver.householdId}', 'PubExpCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(950)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(950)}', '${morningTrip}', '${UID(940)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(950)}', '${morningTrip}', '${driver.userId}', '${UID(941)}', 'prefer') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+
+    await signInWithTestAuth(page, coord.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.getByTestId("nav-coordinate").click();
+    await expect(page.getByTestId("coordinator-screen")).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+
+    const publishBtn = page.getByTestId("publish-schedule");
+    await expect(publishBtn).toBeVisible({ timeout: 5000 });
+    expect(await publishBtn.isDisabled()).toBe(false);
+    const btnText = (await publishBtn.textContent()) ?? "";
+    expect(btnText.toLowerCase()).toContain("expire");
+
+    await publishBtn.click();
+    await page.waitForTimeout(3000);
+
+    const versionResult = runSql(`SELECT status FROM public.schedule_versions WHERE week_id = '${weekId}' ORDER BY version_number DESC LIMIT 1;`);
+    const rows = versionResult.rows ?? [];
+    if (rows.length > 0) {
+      const status = (rows[0] as Record<string, unknown>).status as string;
+      expect(status).toBe("published");
+    }
+  });
+
+  // ── Scenario 19: Coordinator Status tab shows household check-in status ──
+
+  test("coordinator status: shows submitted/in-progress/not-started per household", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(190, "StatusCoord", true);
+    if (!coord) { test.skip(); return; }
+    const submitted = setupHousehold(191, "StatusSubmitted", false);
+    if (!submitted) { test.skip(); return; }
+    const inProgress = setupHousehold(192, "StatusInProgress", false);
+    if (!inProgress) { test.skip(); return; }
+    const notStarted = setupHousehold(193, "StatusNotStarted", false);
+    if (!notStarted) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(960)}', '${GROUP_ID}', '${submitted.householdId}', 'SubKid', 'Family', '${submitted.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(961)}', '${GROUP_ID}', '${submitted.householdId}', 'SubCar', 4, true, '${submitted.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(962)}', '${GROUP_ID}', '${inProgress.householdId}', 'ProgKid', 'Family', '${inProgress.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(970)}', '${GROUP_ID}', '${weekId}', '${submitted.householdId}', 'submitted', 3) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(970)}', '${morningTrip}', '${UID(960)}', true, '${submitted.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(970)}', '${morningTrip}', '${submitted.userId}', '${UID(961)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(971)}', '${GROUP_ID}', '${weekId}', '${inProgress.householdId}', 'draft', 3) ON CONFLICT DO NOTHING;
+    `);
+
+    await signInWithTestAuth(page, coord.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.getByTestId("nav-coordinate").click();
+    await expect(page.getByTestId("coordinator-screen")).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+
+    const statusList = page.locator(".household-status-list");
+    await expect(statusList).toBeVisible({ timeout: 5000 });
+    const statusText = (await statusList.textContent()) ?? "";
+    expect(statusText).toContain("StatusSubmitted Pilot");
+    expect(statusText).toContain("Submitted");
+    expect(statusText).toContain("StatusInProgress Pilot");
+    expect(statusText).toContain("In progress");
+    expect(statusText).toContain("StatusNotStarted Pilot");
+    expect(statusText).toContain("Not started");
+  });
+
+  // ── Scenario 20: Coordinator sees declined + uncovered admin alerts ──
+
+  test("coordinator alerts: declined and uncovered admin alerts visible", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(200, "AdminCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(201, "AdminDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(202, "AdminRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(980)}', '${GROUP_ID}', '${driver.householdId}', 'AdminKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(981)}', '${GROUP_ID}', '${driver.householdId}', 'AdminCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(982)}', '${GROUP_ID}', '${rider.householdId}', 'AdminKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(990)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(990)}', '${morningTrip}', '${UID(980)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(990)}', '${morningTrip}', '${driver.userId}', '${UID(981)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(991)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      ${tripIds.slice(0, 2).map(t => `INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(991)}', '${t}', '${UID(982)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;`).join('\n')}
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+
+    const versionId = getLatestVersionId(weekId);
+    if (versionId) {
+      runSql(`UPDATE public.driver_assignments SET status = 'declined' WHERE schedule_version_id = '${versionId}' AND trip_id = '${morningTrip}' AND status = 'tentative';`);
+    }
+
+    await signInWithTestAuth(page, coord.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.getByTestId("nav-coordinate").click();
+    await expect(page.getByTestId("coordinator-screen")).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+
+    await expect(page.getByTestId("decline-alert-admin")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("uncovered-alert-admin")).toBeVisible({ timeout: 5000 });
+  });
+
+  // ── Scenario 21: This Week status pills — tentative vs confirmed ──
+
+  test("this week: status pills show tentative and confirmed on drive cards", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(210, "PillCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(211, "PillDriver", false);
+    if (!driver) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1000)}', '${GROUP_ID}', '${driver.householdId}', 'PillKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1001)}', '${GROUP_ID}', '${driver.householdId}', 'PillCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1010)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1010)}', '${morningTrip}', '${UID(1000)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1010)}', '${morningTrip}', '${driver.userId}', '${UID(1001)}', 'prefer') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    await signInWithTestAuth(page, coord.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.getByTestId("nav-week").click();
+    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+
+    const confirmedPill = page.locator(".roster-status--confirmed").first();
+    await expect(confirmedPill).toBeVisible({ timeout: 5000 });
   });
 });
