@@ -104,7 +104,8 @@ function readableError(error: unknown) {
   const message = error instanceof Error ? error.message : "Something went wrong.";
   if (/invalid or expired/i.test(message)) return "That household code is invalid or expired.";
   if (/already belongs/i.test(message)) return "This Google account already belongs to a household.";
-  if (/network|fetch/i.test(message)) return "We couldn’t reach the carpool service. Check your connection and try again.";
+  if (/network|fetch/i.test(message)) return "We couldn't reach the carpool service. Check your connection and try again.";
+  if (/not declined/i.test(message)) return "The original driver has already re-accepted this drive — your child is covered.";
   return message;
 }
 
@@ -1182,93 +1183,60 @@ function HomeScreen({
           <div className="auth-error" role="alert">{homeScheduleError}</div>
           <button className="primary-button" data-testid="retry-load-assignments" onClick={onRetryAssignments}>Try again</button>
         </section>
-      ) : noAssignments ? (
-        hasReacceptable ? (
-          <>
-            <section className="confirmation-hero">
-              <span className="eyebrow">Action needed</span>
-              <h1>{reacceptableAssignments.length === 1 ? "You have a cancelled drive" : "You have cancelled drives"}</h1>
-              <p className="hero-support">
-                {reacceptableAssignments.length === 1
-                  ? "Re-accept below if you can still drive, or contact the coordinator to reassign."
-                  : "Re-accept any below if you can still drive, or contact the coordinator to reassign."}
-              </p>
-            </section>
-            {confirmError ? <div className="auth-error" role="alert">{confirmError}</div> : null}
-            <section className="assignment-section" aria-labelledby="reaccept-heading">
-              <h2 id="reaccept-heading">Cancelled or missed drives</h2>
-              <div className="assignment-list">
-                {reacceptableAssignments.map((entry) => {
-                  const status = entry.assignment.status;
-                  return (
-                    <div className="detail-card" key={entry.assignment.id}>
-                      <AssignmentRow
-                        trip={entry.trip}
-                        vehicle={entry.vehicle}
-                        riderCount={entry.children.length}
-                        status={status}
-                      />
-                      <div className="declined-notice"><Cross2Icon /><span>
-                        <strong>{status === "expired" ? "Confirmation deadline passed" : "You cancelled this drive"}</strong>
-                        <small>{status === "expired" ? "Re-accept to confirm you can drive." : "Re-accept if you can still drive."}</small>
-                      </span></div>
-                      <button
-                        className="primary-button"
-                        data-testid={`reaccept-${entry.assignment.id}`}
-                        disabled={working}
-                        onClick={() => onReaccept(entry.assignment.id)}
-                      >
-                        <CheckIcon width="18" height="18" /> Re-accept this drive
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          </>
-        ) : (
-          <section className="confirmation-hero confirmation-hero--done">
-            <span className="eyebrow">{weekEyebrow}</span>
-            {schedulePublished ? (
-              hasAlerts ? (
-                <>
-                  <h1>Your child needs a ride</h1>
-                  <p className="hero-support">Some trips don't have a driver. See the details below or check the full schedule.</p>
-                  <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
-                </>
-              ) : familyChildInSchedule ? (
-                <>
-                  <h1>Your child's rides are scheduled</h1>
-                  <p className="hero-support">You're not driving this week. See the full roster on the This Week tab.</p>
-                  <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
-                </>
-              ) : (
-                <>
-                  <h1>No rides this week</h1>
-                  <p className="hero-support">Your child isn't in this week's schedule. Check in for next week so the coordinator can include your child.</p>
-                  <button className="primary-button" onClick={onCheckIn}>Go to Next Week</button>
-                </>
-              )
-            ) : hasHomeSchedule ? (
+      ) : noAssignments && !hasReacceptable ? (
+        <section className="confirmation-hero confirmation-hero--done">
+          <span className="eyebrow">{weekEyebrow}</span>
+          {schedulePublished ? (
+            hasAlerts ? (
               <>
-                <h1>Schedule is being prepared</h1>
-                <p className="hero-support">The coordinator is still working on this week's schedule. Check back after it's published.</p>
+                <h1>Your child needs a ride</h1>
+                <p className="hero-support">Some trips don't have a driver. See the details below or check the full schedule.</p>
+                <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
+              </>
+            ) : familyChildInSchedule ? (
+              <>
+                <h1>Your child's rides are scheduled</h1>
+                <p className="hero-support">You're not driving this week. See the full roster on the This Week tab.</p>
+                <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
               </>
             ) : (
               <>
-                <h1>No schedule yet</h1>
-                <p className="hero-support">Check in for next week so the coordinator can build the schedule. Submit by <strong>{checkinDeadlineLabel}</strong>.</p>
+                <h1>No rides this week</h1>
+                <p className="hero-support">Your child isn't in this week's schedule. Check in for next week so the coordinator can include your child.</p>
                 <button className="primary-button" onClick={onCheckIn}>Go to Next Week</button>
               </>
-            )}
-          </section>
-        )
+            )
+          ) : hasHomeSchedule ? (
+            <>
+              <h1>Schedule is being prepared</h1>
+              <p className="hero-support">The coordinator is still working on this week's schedule. Check back after it's published.</p>
+            </>
+          ) : (
+            <>
+              <h1>No schedule yet</h1>
+              <p className="hero-support">Check in for next week so the coordinator can build the schedule. Submit by <strong>{checkinDeadlineLabel}</strong>.</p>
+              <button className="primary-button" onClick={onCheckIn}>Go to Next Week</button>
+            </>
+          )}
+        </section>
       ) : (
-        <section className={`confirmation-hero ${allConfirmed && !hasAlerts ? "confirmation-hero--done" : ""}`}>
-          <span className="eyebrow">{allConfirmed && !hasAlerts ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish") : "Action needed"}</span>
-          <h1>{allConfirmed && !hasAlerts ? (schedulePublished ? "You're all set" : "Drives confirmed") : hasAlerts ? "Your child needs a ride" : "Confirm your drives"}</h1>
+        <section className={`confirmation-hero ${allConfirmed && !hasAlerts && !hasReacceptable ? "confirmation-hero--done" : ""}`}>
+          <span className="eyebrow">
+            {allConfirmed && !hasAlerts && !hasReacceptable
+              ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish")
+              : "Action needed"}
+          </span>
+          <h1>
+            {hasReacceptable
+              ? (reacceptableAssignments.length === 1 ? "You have a cancelled drive" : "You have cancelled drives")
+              : allConfirmed && !hasAlerts
+                ? (schedulePublished ? "You're all set" : "Drives confirmed")
+                : hasAlerts ? "Your child needs a ride" : "Confirm your drives"}
+          </h1>
           <p className="hero-deadline">
-            {allConfirmed && !hasAlerts ? (
+            {hasReacceptable ? (
+              <>{confirmed.length} confirmed <span aria-hidden="true">·</span> <strong>{reacceptableAssignments.length} cancelled — re-accept below</strong></>
+            ) : allConfirmed && !hasAlerts ? (
               <><CheckCircledIcon width="18" height="18" /> {confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed</>
             ) : hasAlerts ? (
               <>{confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed <span aria-hidden="true">·</span> <strong>{uncoveredAlerts.length + declinedAlerts.length} trip{uncoveredAlerts.length + declinedAlerts.length !== 1 ? "s" : ""} need{uncoveredAlerts.length + declinedAlerts.length === 1 ? "s" : ""} attention</strong></>
@@ -1277,13 +1245,15 @@ function HomeScreen({
             )}
           </p>
           <p className="hero-support">
-            {allConfirmed && !hasAlerts
-              ? "We'll remind you the evening before each drive."
-              : hasAlerts
-              ? "Some of your child's trips don't have a driver. See the details below."
-              : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
+            {hasReacceptable
+              ? "Re-accept cancelled drives below or contact the coordinator to reassign."
+              : allConfirmed && !hasAlerts
+                ? "We'll remind you the evening before each drive."
+                : hasAlerts
+                  ? "Some of your child's trips don't have a driver. See the details below."
+                  : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
           </p>
-          {allConfirmed && schedulePublished && !hasAlerts ? (
+          {allConfirmed && schedulePublished && !hasAlerts && !hasReacceptable ? (
             <AddToCalendarButton assignments={confirmed} timezone={timezone} label="Add all to calendar" />
           ) : null}
         </section>
@@ -1459,6 +1429,39 @@ function HomeScreen({
           ) : (
             <button className="secondary-button" onClick={onReview}>View passenger rosters <ChevronRightIcon /></button>
           )}
+        </section>
+      ) : null}
+
+      {hasReacceptable ? (
+        <section className="assignment-section" aria-labelledby="reaccept-heading">
+          <h2 id="reaccept-heading">Cancelled or missed drives</h2>
+          <div className="assignment-list">
+            {reacceptableAssignments.map((entry) => {
+              const status = entry.assignment.status;
+              return (
+                <div className="detail-card" key={entry.assignment.id}>
+                  <AssignmentRow
+                    trip={entry.trip}
+                    vehicle={entry.vehicle}
+                    riderCount={entry.children.length}
+                    status={status}
+                  />
+                  <div className="declined-notice"><Cross2Icon /><span>
+                    <strong>{status === "expired" ? "Confirmation deadline passed" : "You cancelled this drive"}</strong>
+                    <small>{status === "expired" ? "Re-accept to confirm you can drive." : "Re-accept if you can still drive."}</small>
+                  </span></div>
+                  <button
+                    className="primary-button"
+                    data-testid={`reaccept-${entry.assignment.id}`}
+                    disabled={working}
+                    onClick={() => onReaccept(entry.assignment.id)}
+                  >
+                    <CheckIcon width="18" height="18" /> Re-accept this drive
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </section>
       ) : null}
 
@@ -2386,7 +2389,7 @@ function WeekScreen({
                           <div className="trip-roster roster--declined" key={entry.driverAssignment.id}>
                             <div className="roster-driver">
                               <strong>{entry.driverProfile.full_name}</strong>
-                              <small>{entry.vehicle.label} · {entry.driverAssignment.status === "released" ? "Released" : "Declined"}</small>
+                              <small>{entry.vehicle.label} · {entry.driverAssignment.status === "released" ? "Released" : entry.driverAssignment.status === "expired" ? "Expired" : "Declined"}</small>
                             </div>
                           </div>
                         ))}
@@ -4196,6 +4199,10 @@ export default function Prototype() {
     if (activeTab === "week" && weekData && identity?.membership?.role === "coordinator") void loadSchedule();
   }, [activeTab, weekData, loadSchedule, identity?.membership?.role]);
 
+  useEffect(() => {
+    if (activeTab === "coordinate" && weekData && identity?.membership?.role === "coordinator") void loadSchedule();
+  }, [activeTab, weekData, loadSchedule, identity?.membership?.role]);
+
   const generateSchedule = useCallback(async () => {
     if (!weekData) return;
     setGenerating(true);
@@ -4353,6 +4360,7 @@ export default function Prototype() {
     try {
       await repository.respondToDriverAssignment(assignmentId, "confirmed");
       updateAssignmentStatus(assignmentId, "confirmed");
+      void repository.sendPushNotification(assignmentId, null, "volunteered");
       await loadMyAssignments();
       await loadHomeSchedule();
       await loadPublishedSchedule();
@@ -4875,7 +4883,7 @@ const navItems = useMemo(() => {
               case "home": await loadHomeSchedule(); break;
               case "plan": await loadCheckin(); break;
               case "week": await loadSchedule(); await loadPublishedSchedule(); break;
-              case "coordinate": await loadOverview(); await loadHomeSchedule(); break;
+              case "coordinate": await loadOverview(); await loadHomeSchedule(); await loadSchedule(); break;
             }
           }}
         >

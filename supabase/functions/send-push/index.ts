@@ -128,6 +128,8 @@ Deno.serve(async (req) => {
       const assignment = await supaFetch("driver_assignments", "*", { id: `eq.${assignment_id}` });
       if (assignment.length > 0) {
         const da = assignment[0];
+        // Exclude the declining driver from receiving their own cancellation push.
+        recipientProfileIds = recipientProfileIds.filter((id: string) => id !== da.driver_profile_id);
         const driver = await supaFetch("profiles", "full_name", { id: `eq.${da.driver_profile_id}` });
         const trip = await supaFetch("trips", "*", { id: `eq.${da.trip_id}` });
         if (trip.length > 0) {
@@ -232,6 +234,8 @@ Deno.serve(async (req) => {
       const assignment = await supaFetch("driver_assignments", "*", { id: `eq.${assignment_id}` });
       if (assignment.length > 0) {
         const da = assignment[0];
+        // Exclude the volunteering driver from receiving their own coverage push.
+        recipientProfileIds = recipientProfileIds.filter((id: string) => id !== da.driver_profile_id);
         const trip = await supaFetch("trips", "*", { id: `eq.${da.trip_id}` });
         if (trip.length > 0) {
           const t = trip[0];

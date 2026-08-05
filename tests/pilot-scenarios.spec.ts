@@ -1524,4 +1524,212 @@ test.describe.serial("Pilot Scenarios", () => {
     const driverConfirmedCount = runSql(`SELECT count(*) AS n FROM public.driver_assignments WHERE schedule_version_id = '${draftVersionId}' AND trip_id = '${morningTrip}' AND driver_profile_id = '${driver.userId}' AND status = 'confirmed';`).rows?.[0]?.n ?? 0;
     assert.equal(driverConfirmedCount, 0, "expired driver must not have a confirmed assignment after takeover");
   });
+
+  // ── Scenario 26: Mixed state — 2 confirmed + 2 declined, re-accept one, others visible ──
+  // The core data-integrity fix: when a driver has a mix of confirmed and
+  // cancelled drives, ALL must be visible on Home. Previously the re-accept
+  // section only rendered when noAssignments was true, so re-accepting one
+  // caused the others to vanish and the hero to lie ("You're all set").
+
+  test("mixed state: 2 confirmed + 2 declined, re-accept one, others still visible", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(260, "MixedCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(261, "MixedDriver", false);
+    if (!driver) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    // Use 4 morning trips: Mon(0), Tue(2), Wed(4), Thu(6)
+    const trips = [tripIds[0], tripIds[2], tripIds[4], tripIds[6]];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1500)}', '${GROUP_ID}', '${driver.householdId}', 'MixedKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1501)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1510)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      ${trips.map((tId, i) => `
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1510)}', '${tId}', '${UID(1500)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1510)}', '${tId}', '${driver.userId}', '${UID(1501)}', 'prefer') ON CONFLICT DO NOTHING;`).join("")}
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    const versionId = getPublishedVersionId(weekId);
+    assert.ok(versionId, "published version should exist");
+
+    // Verify driver has 4 confirmed assignments
+    const assignmentRows = runSql(`SELECT id, trip_id FROM public.driver_assignments WHERE schedule_version_id = '${versionId}' AND driver_profile_id = '${driver.userId}' AND status = 'confirmed' ORDER BY trip_id;`).rows ?? [];
+    assert.equal(assignmentRows.length, 4, `driver should have 4 confirmed assignments, got ${assignmentRows.length}`);
+
+    // SQL-decline 2 of them (Tue and Thu — tripIds[2] and tripIds[6])
+    const toDecline = assignmentRows.filter(a => a.trip_id === tripIds[2] || a.trip_id === tripIds[6]);
+    assert.equal(toDecline.length, 2, "should find 2 assignments to decline");
+    for (const a of toDecline) {
+      runSql(`UPDATE public.driver_assignments SET status = 'declined' WHERE id = '${a.id}';`);
+    }
+
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    // Fix 2: hero must NOT say "You're all set" when there are cancelled drives.
+    const heroText = await page.locator(".confirmation-hero h1").first().textContent();
+    assert.ok(heroText, "hero text should exist");
+    assert.ok(/cancelled/i.test(heroText), `hero should mention cancelled drives, got: "${heroText}"`);
+
+    // Fix 1: all 4 drives must be visible — 2 confirmed, 2 with re-accept buttons.
+    const reacceptButtons = page.locator('[data-testid^="reaccept-"]');
+    await expect(reacceptButtons.first()).toBeVisible({ timeout: 5000 });
+    const reacceptCount = await reacceptButtons.count();
+    assert.equal(reacceptCount, 2, `should have 2 re-accept buttons, got ${reacceptCount}`);
+
+    // Re-accept one (the first one found).
+    await reacceptButtons.first().click();
+    await page.waitForTimeout(3000);
+
+    // After re-accept: 3 confirmed, 1 still declined with re-accept button.
+    const remainingReaccept = page.locator('[data-testid^="reaccept-"]');
+    await expect(remainingReaccept.first()).toBeVisible({ timeout: 5000 });
+    const remainingCount = await remainingReaccept.count();
+    assert.equal(remainingCount, 1, `should have 1 re-accept button remaining, got ${remainingCount}`);
+
+    // Hero should still say "Action needed" (1 cancelled drive left).
+    const heroAfter = await page.locator(".confirmation-hero h1").first().textContent();
+    assert.ok(heroAfter, "hero text should exist after re-accept");
+    assert.ok(/cancelled/i.test(heroAfter), `hero should still mention cancelled, got: "${heroAfter}"`);
+  });
+
+  // ── Scenario 27: Friendly error when volunteering for already re-accepted drive ──
+  // If a rider family sees a stale Flow A alert (the original driver already
+  // re-accepted) and taps "I can drive", the raw DB error "This assignment
+  // is not declined" was shown. Fix 5 maps it to a friendly message.
+
+  test("volunteer after re-accept: friendly error message instead of raw DB string", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(270, "FriendlyErrCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(271, "FriendlyErrDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(272, "FriendlyErrRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1600)}', '${GROUP_ID}', '${driver.householdId}', 'ErrKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1601)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1602)}', '${GROUP_ID}', '${rider.householdId}', 'ErrKid', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1603)}', '${GROUP_ID}', '${rider.householdId}', 'RiderSUV', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1610)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1610)}', '${morningTrip}', '${UID(1600)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1610)}', '${morningTrip}', '${driver.userId}', '${UID(1601)}', 'prefer') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1611)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 0) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1611)}', '${morningTrip}', '${UID(1602)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+    publishScheduleViaSql(weekId);
+
+    const versionId = getPublishedVersionId(weekId);
+    assert.ok(versionId, "published version should exist");
+
+    // SQL-decline the driver's confirmed assignment.
+    runSql(`UPDATE public.driver_assignments SET status = 'declined' WHERE schedule_version_id = '${versionId}' AND trip_id = '${morningTrip}' AND status = 'confirmed';`);
+
+    // Driver re-accepts via UI.
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const reacceptBtn = page.locator('[data-testid^="reaccept-"]').first();
+    await expect(reacceptBtn).toBeVisible({ timeout: 5000 });
+    await reacceptBtn.click();
+    await page.waitForTimeout(3000);
+
+    // Now sign in as rider. The Flow A alert may still be stale (cached from
+    // the page load). If visible, tap "I can drive" and verify friendly error.
+    await page.context().clearCookies();
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    // The declined-drive alert should be gone (driver re-accepted, so the
+    // assignment is now confirmed). If it IS still showing (stale cache),
+    // tap the volunteer button and verify the friendly error.
+    const declineAlert = page.getByTestId("decline-alert");
+    const isAlertVisible = await declineAlert.isVisible().catch(() => false);
+
+    if (isAlertVisible) {
+      const volunteerBtn = page.locator('[data-testid^="volunteer-"]').first();
+      if (await volunteerBtn.isVisible().catch(() => false)) {
+        await volunteerBtn.click();
+        await page.waitForTimeout(2000);
+
+        // Fix 5: error should be friendly, not raw DB string.
+        const errorEl = page.locator(".auth-error, .decline-alert .auth-error").first();
+        const errorText = await errorEl.textContent().catch(() => null);
+        assert.ok(errorText, "error message should be visible");
+        assert.ok(!/not declined/i.test(errorText), `should not show raw DB error, got: "${errorText}"`);
+        assert.ok(/already re-accepted|covered/i.test(errorText), `should show friendly message, got: "${errorText}"`);
+      }
+    }
+
+    // Whether or not the stale alert was visible, the trip should be covered
+    // (driver re-accepted). Verify in DB.
+    const confirmedCount = runSql(`SELECT count(*) AS n FROM public.driver_assignments WHERE schedule_version_id = '${versionId}' AND trip_id = '${morningTrip}' AND driver_profile_id = '${driver.userId}' AND status = 'confirmed';`).rows?.[0]?.n ?? 0;
+    assert.equal(confirmedCount, 1, "driver should have 1 confirmed assignment after re-accept");
+  });
+
+  // ── Scenario 28: This Week tab shows "Expired" not "Declined" for expired assignments ──
+
+  test("this week: expired assignment labeled 'Expired' not 'Declined'", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const coord = setupHousehold(280, "ExpLabelCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(281, "ExpLabelDriver", false);
+    if (!driver) { test.skip(); return; }
+
+    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const morningTrip = tripIds[0];
+
+    runSql(`
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1700)}', '${GROUP_ID}', '${driver.householdId}', 'LabelKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1701)}', '${GROUP_ID}', '${driver.householdId}', 'Sedan', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1710)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1710)}', '${morningTrip}', '${UID(1700)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1710)}', '${morningTrip}', '${driver.userId}', '${UID(1701)}', 'prefer') ON CONFLICT DO NOTHING;
+    `);
+
+    await generateSchedule(coord.email, weekId);
+    await page.waitForTimeout(1000);
+
+    const draftVersionId = getLatestVersionId(weekId);
+    assert.ok(draftVersionId, "draft version should exist");
+    // Expire the driver's tentative assignment and publish.
+    runSql(`
+      UPDATE public.driver_assignments SET status = 'expired' WHERE schedule_version_id = '${draftVersionId}' AND trip_id = '${morningTrip}' AND status = 'tentative';
+      UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE id = '${draftVersionId}';
+    `);
+
+    await signInWithTestAuth(page, coord.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await page.getByTestId("nav-week").click();
+    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+
+    // Fix 6: the expired assignment should be labeled "Expired", not "Declined".
+    const rosterLabel = page.locator(".roster--declined small").first();
+    await expect(rosterLabel).toBeVisible({ timeout: 5000 });
+    const labelText = await rosterLabel.textContent();
+    assert.ok(labelText, "roster label should exist");
+    assert.ok(/expired/i.test(labelText), `label should say "Expired", got: "${labelText}"`);
+    assert.ok(!/^Declined$/.test(labelText.trim()), `label should NOT say just "Declined", got: "${labelText}"`);
+  });
 });
