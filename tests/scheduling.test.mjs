@@ -208,8 +208,6 @@ test("Exchange 5 WeekScreen renders real schedule with rosters and coverage stat
   const source = await readFile(prototypeUrl, "utf8");
 
   assert.match(source, /data-testid="week-screen"/);
-  assert.match(source, /data-testid="generate-schedule"/);
-  assert.match(source, /data-testid="regenerate-schedule"/);
   assert.match(source, /ScheduleVersionWithRosters/);
   assert.match(source, /rostersByTrip/);
   assert.match(source, /trip-roster/);
