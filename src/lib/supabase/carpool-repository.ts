@@ -1727,7 +1727,14 @@ async getLatestScheduleVersion(
       const published = await this.publishedVersionExists(week.id, groupId);
       if (!published) {
         const trips = await this.listTripsForWeek(week.id);
-        return { week, trips };
+        // Skip 0-trip weeks (Thanksgiving, Winter Break, Spring Break).
+        // Families can't submit a check-in for a week with no trips, and
+        // the submit button is disabled with "Select ride needs first."
+        // Jumping to the next week with trips prevents families from
+        // getting stuck on a break week they can't advance past.
+        if (trips.length > 0) {
+          return { week, trips };
+        }
       }
     }
 
