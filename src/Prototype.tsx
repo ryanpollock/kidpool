@@ -4293,6 +4293,7 @@ export default function Prototype() {
 
   useEffect(() => {
     if (homeSchedule) void loadMyAssignments();
+    else setAssignmentsLoading(false);
   }, [homeSchedule, loadMyAssignments]);
 
   const confirmAll = useCallback(async () => {
