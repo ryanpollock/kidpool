@@ -4578,7 +4578,8 @@ const navItems = useMemo(() => {
         </MobileScroll>
       </AppErrorBoundary>
       {!reviewOpen && !accountOpen && !directoryOpen && !driveDetailId && !faqOpen ? (
-        <nav className="bottom-nav" aria-label="Primary navigation">
+        <nav className="bottom-nav" aria-label="Primary navigation"
+          style={{ gridTemplateColumns: `repeat(${navItems.length}, 1fr)` }}>
           {navItems.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
