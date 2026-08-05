@@ -302,9 +302,8 @@ test("Schedule screen (Week tab) supports week navigation with Earlier/Later/Cur
 test("Plan screen heading is dynamic based on week vs today", async () => {
   const source = await readFile(prototypeUrl, "utf8");
 
-  assert.match(source, /Plan this week/);
-  assert.match(source, /Plan next week/);
-  assert.match(source, /Plan an earlier week/);
+  assert.match(source, /Plan ahead/);
+  assert.match(source, /Reviewing check-in/);
   assert.match(source, /planHeading/);
 });
 
