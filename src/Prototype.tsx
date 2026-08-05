@@ -1038,6 +1038,7 @@ function HomeScreen({
   hasHomeSchedule,
   homeScheduleVersionId,
   homeScheduleError,
+  familyChildInSchedule,
   onConfirmAll,
   onReview,
   onCoverage,
@@ -1074,6 +1075,7 @@ function HomeScreen({
   hasHomeSchedule: boolean;
   homeScheduleVersionId: string | null;
   homeScheduleError: string | null;
+  familyChildInSchedule: boolean;
   onConfirmAll: () => void;
   onReview: () => void;
   onCoverage: () => void;
@@ -1179,11 +1181,17 @@ function HomeScreen({
                 <p className="hero-support">Some trips don't have a driver. See the details below or check the full schedule.</p>
                 <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
               </>
-            ) : (
+            ) : familyChildInSchedule ? (
               <>
                 <h1>Your child's rides are scheduled</h1>
                 <p className="hero-support">You're not driving this week. See the full roster on the This Week tab.</p>
                 <button className="secondary-button" onClick={onCoverage}>View this week's schedule</button>
+              </>
+            ) : (
+              <>
+                <h1>No rides this week</h1>
+                <p className="hero-support">Your child isn't in this week's schedule. Check in for next week so the coordinator can include your child.</p>
+                <button className="primary-button" onClick={onCheckIn}>Go to Next Week</button>
               </>
             )
           ) : hasHomeSchedule ? (
@@ -4653,6 +4661,13 @@ const navItems = useMemo(() => {
       );
     }
 
+    const householdId = identity.membership?.household_id;
+    const familyChildInSchedule = homeSchedule && householdId
+      ? Array.from(homeSchedule.rostersByTrip.values())
+          .flat()
+          .some(entry => entry.children.some(child => child.household_id === householdId))
+      : false;
+
     return (
       <HomeScreen
         myAssignments={myAssignments}
@@ -4663,6 +4678,7 @@ const navItems = useMemo(() => {
         hasHomeSchedule={homeSchedule !== null}
         homeScheduleVersionId={homeSchedule?.version.id ?? null}
         homeScheduleError={homeScheduleError}
+        familyChildInSchedule={familyChildInSchedule}
         onConfirmAll={() => void confirmAll()}
         onReview={() => setReviewOpen(true)}
         onCoverage={() => navigate("week")}
