@@ -22,6 +22,10 @@ const welcomeEmailMigrationUrl = new URL(
   "../supabase/migrations/202608070004_welcome_email_trigger.sql",
   import.meta.url,
 );
+const volunteerAlreadyDrivingMigrationUrl = new URL(
+  "../supabase/migrations/202608070005_volunteer_already_driving.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -393,4 +397,30 @@ test("prototype: tab renamed to Admin, triage board layout", async () => {
   assert.match(tsx, /data-testid="confirm-regenerate"/);
   assert.match(tsx, /data-testid="regenerate-schedule-coord"/);
   assert.match(tsx, /data-testid="generate-warning"/);
+});
+
+// ─── volunteer_for_uncovered_trip: already-driving fix ─────
+
+test("volunteer_uncovered: reuses existing assignment when caller is already driving", async () => {
+  const sql = await readFile(volunteerAlreadyDrivingMigrationUrl, "utf8");
+
+  // Rewrites the RPC
+  assert.match(sql, /create or replace function public\.volunteer_for_uncovered_trip\(/);
+
+  // Detects existing tentative/confirmed assignment
+  assert.match(sql, /existing_assignment/);
+  assert.match(sql, /status in \('tentative', 'confirmed'\)/);
+
+  // Uses existing assignment instead of creating a new one
+  assert.match(sql, /new_assignment := existing_assignment/);
+
+  // Checks capacity before adding children to existing car
+  assert.match(sql, /v_available_capacity/);
+  assert.match(sql, /car is full/);
+
+  // No longer raises the old "already assigned" error as an exception
+  assert.doesNotMatch(sql, /raise exception 'You are already assigned to drive this trip'/);
+
+  // Audits whether it reused an existing assignment
+  assert.match(sql, /reused_existing_assignment/);
 });
