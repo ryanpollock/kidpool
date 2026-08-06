@@ -86,7 +86,7 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 Run these before considering any change complete:
 
 ```bash
-npm test                    # 82 foundation + 7 admin-automation + 49 scheduling + 4 sites = 142 tests (no live DB)
+npm test                    # 82 foundation + 7 admin-automation + 54 scheduling + 4 sites = 147 tests (no live DB)
 npm run test:integration   # 22 tests against live Supabase (needs service key in macOS keychain)
 npm run test:runtime       # Playwright: 8 mobile-runtime + 22 E2E + 5 journeys + 4 exploratory = 39 tests
 npx tsc --noEmit           # TypeScript check
@@ -94,7 +94,7 @@ npm run check:runtime      # Mobile runtime integrity (28 protected files)
 npm run build              # Full production build (uploads source maps to Sentry if SENTRY_AUTH_TOKEN is set)
 ```
 
-All 203 tests must pass before pushing to `main`.
+All 208 tests must pass before pushing to `main`.
 
 ### Dev test-auth bypass
 

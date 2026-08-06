@@ -923,7 +923,7 @@ test("Priority: Edge Function honors is_priority from DB rows", { skip: !SERVICE
 
 // ── Backend edge-case tests (Phase C) ─────────────────────────────
 
-test("Backend: auto-publish does not invoke send-push (no 'published' notification)", { skip: !SERVICE_KEY }, async () => {
+test("Backend: auto-publish publishes new version when prior was published and all confirmed", { skip: !SERVICE_KEY }, async () => {
   const coord = setupHousehold(500, "AutoPubCoord", "coordinator", true);
   const driver = setupHousehold(501, "AutoPubDriver", "member", false);
   const { weekId, tripIds } = setupWeekAndTrips(coord.userId, coord.householdId);
@@ -959,19 +959,16 @@ test("Backend: auto-publish does not invoke send-push (no 'published' notificati
     { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
   ));
   assert.ok(regenResult.success, "Regenerate should succeed");
+  assert.ok(regenResult.auto_published, "Edge Function should report auto_published=true");
 
   // Verify the new version is published (auto-publish fired)
   const versions = restGet("schedule_versions", { week_id: weekId });
   const latest = versions.sort((a, b) => b.version_number - a.version_number)[0];
   assert.equal(latest.status, "published", "Auto-publish should have published the new version");
 
-  // Verify NO push notifications were sent (auto-publish does not invoke send-push)
-  // We check audit_events for a "published" action — the Edge Function writes audit_events
-  // but does NOT invoke send-push. If it did, there would be a separate audit event or
-  // a push_subscriptions row. We verify by checking that no "published" push audit exists.
-  const auditEvents = restGet("audit_events", { group_id: GROUP_ID });
-  const pushAuditEvents = auditEvents.filter((e) => e.action === "push_sent" || e.action === "published_notification");
-  assert.equal(pushAuditEvents.length, 0, "Auto-publish should not send push notifications (known gap: documented for post-pilot fix)");
+  // Note: auto-publish now invokes send-push (published + uncovered + admin_escalation
+  // types). Test users have no push_subscriptions rows so no pushes are actually
+  // delivered; verifying push delivery is out of scope for this test.
 
   cleanupAllTestData();
   deleteTestUser(coord.userId);

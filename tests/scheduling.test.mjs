@@ -670,3 +670,278 @@ test("priority: is_priority omitted = identical to today (backward compat)", asy
   assert.equal(t1?.uncovered_rider_count, 0, "all riders covered (no priority field set)");
   assert.equal(t1?.assigned_rider_count, 5, "all assigned");
 });
+
+// ── Capacity-filling tests ────────────────────────────────────────
+// These test the algorithm's behavior at scale: multi-driver coverage,
+// load balancing across a week, chronological greedy ordering, priority
+// across multiple cars, and stability across regenerations.
+
+test("capacity: both drivers used when one can't fit everyone", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // 1 trip, 5 riders, 2 drivers (cap 3 each), no own children.
+  // A single driver can only take 3; the second driver must be used for the rest.
+  const inputs = {
+    trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
+    children: [
+      { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams" },
+      { id: "c2", household_id: "h1", first_name: "Ben", last_name: "Adams" },
+      { id: "c3", household_id: "h2", first_name: "Cleo", last_name: "Bennett" },
+      { id: "c4", household_id: "h2", first_name: "Dan", last_name: "Bennett" },
+      { id: "c5", household_id: "h3", first_name: "Eve", last_name: "Chen" },
+    ],
+    vehicles: [
+      { id: "v1", household_id: "h1", label: "Car1", child_passenger_capacity: 3 },
+      { id: "v2", household_id: "h2", label: "Car2", child_passenger_capacity: 3 },
+    ],
+    profiles: [
+      { id: "p1", full_name: "Driver1", household_id: "h1" },
+      { id: "p2", full_name: "Driver2", household_id: "h2" },
+    ],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t1", child_id: "c2", needs_ride: true },
+      { trip_id: "t1", child_id: "c3", needs_ride: true },
+      { trip_id: "t1", child_id: "c4", needs_ride: true },
+      { trip_id: "t1", child_id: "c5", needs_ride: true },
+    ],
+    availability: [
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t1", driver_profile_id: "p2", vehicle_id: "v2", preference: "prefer" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 5], ["p2", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  assert.ok(t1, "t1 should exist");
+  assert.equal(t1?.uncovered_rider_count, 0, "all 5 riders should be covered");
+  assert.equal(t1?.assigned_rider_count, 5, "all 5 riders assigned");
+  // Both drivers should be assigned (one car can't fit 5)
+  const p1Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  const p2Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p2");
+  assert.ok(p1Assignment, "p1 should be assigned");
+  assert.ok(p2Assignment, "p2 should be assigned (p1 can't fit all 5)");
+  // Neither car overfilled
+  assert.ok(p1Assignment && p1Assignment.assigned_child_ids.length <= 3, "p1 car not overfilled");
+  assert.ok(p2Assignment && p2Assignment.assigned_child_ids.length <= 3, "p2 car not overfilled");
+});
+
+test("capacity: load balancing — fewer-assignments driver wins next trip", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // 2 trips, 2 drivers both prefer both trips, 1 rider per trip (no own children).
+  // t1 processed first: p1 wins by name sort ("Driver1" < "Driver2").
+  // t2 processed: p2 has 0 assignments, p1 has 1 → p2 wins by fewest-assignments tiebreak.
+  const inputs = {
+    trips: [
+      { id: "t1", service_date: "2026-08-03", direction: "morning" },
+      { id: "t2", service_date: "2026-08-04", direction: "morning" },
+    ],
+    children: [
+      { id: "c1", household_id: "h3", first_name: "Rider1", last_name: "X" },
+      { id: "c2", household_id: "h3", first_name: "Rider2", last_name: "X" },
+    ],
+    vehicles: [
+      { id: "v1", household_id: "h1", label: "Car1", child_passenger_capacity: 4 },
+      { id: "v2", household_id: "h2", label: "Car2", child_passenger_capacity: 4 },
+    ],
+    profiles: [
+      { id: "p1", full_name: "Driver1", household_id: "h1" },
+      { id: "p2", full_name: "Driver2", household_id: "h2" },
+    ],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t2", child_id: "c2", needs_ride: true },
+    ],
+    availability: [
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t1", driver_profile_id: "p2", vehicle_id: "v2", preference: "prefer" },
+      { trip_id: "t2", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t2", driver_profile_id: "p2", vehicle_id: "v2", preference: "prefer" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 5], ["p2", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  const t2 = result.trips.find((t) => t.trip_id === "t2");
+
+  // t1: p1 wins by name sort (both at 0 assignments)
+  const p1OnT1 = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  const p2OnT1 = t1?.assignments.find((a) => a.driver_profile_id === "p2");
+  assert.ok(p1OnT1, "p1 should win t1 (name sort tiebreak)");
+  assert.equal(p2OnT1, undefined, "p2 should not be on t1 (only 1 rider)");
+
+  // t2: p2 wins (0 assignments vs p1's 1)
+  const p1OnT2 = t2?.assignments.find((a) => a.driver_profile_id === "p1");
+  const p2OnT2 = t2?.assignments.find((a) => a.driver_profile_id === "p2");
+  assert.ok(p2OnT2, "p2 should win t2 (fewest-assignments tiebreak)");
+  assert.equal(p1OnT2, undefined, "p1 should not be on t2 (load balanced away)");
+});
+
+test("capacity: multi-trip greedy — early trips consume driver, later trips uncovered", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // 5 trips (Mon-Fri), 1 driver (cap 2, max_drives 2), 1 rider per trip.
+  // Chronological greedy: t1, t2 get the driver; t3, t4, t5 uncovered (at max_drives).
+  const inputs = {
+    trips: [
+      { id: "t1", service_date: "2026-08-03", direction: "morning" },
+      { id: "t2", service_date: "2026-08-04", direction: "morning" },
+      { id: "t3", service_date: "2026-08-05", direction: "morning" },
+      { id: "t4", service_date: "2026-08-06", direction: "morning" },
+      { id: "t5", service_date: "2026-08-07", direction: "morning" },
+    ],
+    children: [
+      { id: "c1", household_id: "h2", first_name: "Kid1", last_name: "Rider" },
+      { id: "c2", household_id: "h2", first_name: "Kid2", last_name: "Rider" },
+      { id: "c3", household_id: "h2", first_name: "Kid3", last_name: "Rider" },
+      { id: "c4", household_id: "h2", first_name: "Kid4", last_name: "Rider" },
+      { id: "c5", household_id: "h2", first_name: "Kid5", last_name: "Rider" },
+    ],
+    vehicles: [{ id: "v1", household_id: "h1", label: "Car", child_passenger_capacity: 2 }],
+    profiles: [{ id: "p1", full_name: "Driver", household_id: "h1" }],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t2", child_id: "c2", needs_ride: true },
+      { trip_id: "t3", child_id: "c3", needs_ride: true },
+      { trip_id: "t4", child_id: "c4", needs_ride: true },
+      { trip_id: "t5", child_id: "c5", needs_ride: true },
+    ],
+    availability: [
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t2", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t3", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t4", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t5", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 2]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+
+  // p1 should have exactly 2 assignments (max_drives reached)
+  const p1Assignments = result.trips.flatMap((t) =>
+    t.assignments.filter((a) => a.driver_profile_id === "p1"),
+  );
+  assert.equal(p1Assignments.length, 2, "p1 should hit max_drives=2");
+
+  // t1, t2 covered; t3, t4, t5 uncovered
+  assert.equal(result.trips.find((t) => t.trip_id === "t1")?.uncovered, false, "t1 covered");
+  assert.equal(result.trips.find((t) => t.trip_id === "t2")?.uncovered, false, "t2 covered");
+  assert.equal(result.trips.find((t) => t.trip_id === "t3")?.uncovered, true, "t3 uncovered (at max)");
+  assert.equal(result.trips.find((t) => t.trip_id === "t4")?.uncovered, true, "t4 uncovered (at max)");
+  assert.equal(result.trips.find((t) => t.trip_id === "t5")?.uncovered, true, "t5 uncovered (at max)");
+});
+
+test("capacity: priority child lands in first-processed car, not deferred", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // 1 trip, 2 drivers (both cap 2, both prefer), 4 riders:
+  //   c1 (h1, own child of p1), c2 (h2, own child of p2),
+  //   c3 (h3, is_priority), c4 (h4, non-priority)
+  // p1 processed first (own children tiebreak + name sort).
+  // Car 1: c1 (own) + c3 (priority wins second seat over c4).
+  // Car 2: c2 (own) + c4 (remaining).
+  const inputs = {
+    trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
+    children: [
+      { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams" },
+      { id: "c2", household_id: "h2", first_name: "Ben", last_name: "Bennett" },
+      { id: "c3", household_id: "h3", first_name: "Sara", last_name: "Priority", is_priority: true },
+      { id: "c4", household_id: "h4", first_name: "Dan", last_name: "Other" },
+    ],
+    vehicles: [
+      { id: "v1", household_id: "h1", label: "Car1", child_passenger_capacity: 2 },
+      { id: "v2", household_id: "h2", label: "Car2", child_passenger_capacity: 2 },
+    ],
+    profiles: [
+      { id: "p1", full_name: "Driver1", household_id: "h1" },
+      { id: "p2", full_name: "Driver2", household_id: "h2" },
+    ],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t1", child_id: "c2", needs_ride: true },
+      { trip_id: "t1", child_id: "c3", needs_ride: true },
+      { trip_id: "t1", child_id: "c4", needs_ride: true },
+    ],
+    availability: [
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t1", driver_profile_id: "p2", vehicle_id: "v2", preference: "prefer" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 5], ["p2", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  assert.equal(t1?.uncovered_rider_count, 0, "all 4 riders covered across 2 cars");
+
+  const p1Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  const p2Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p2");
+  assert.ok(p1Assignment && p2Assignment, "both drivers assigned");
+
+  // Priority child c3 should be in car 1 (processed first), not deferred to car 2
+  assert.ok(p1Assignment?.assigned_child_ids.includes("c1"), "c1 (own) in car 1");
+  assert.ok(p1Assignment?.assigned_child_ids.includes("c3"), "c3 (priority) in car 1");
+  assert.ok(p2Assignment?.assigned_child_ids.includes("c2"), "c2 (own) in car 2");
+  assert.ok(p2Assignment?.assigned_child_ids.includes("c4"), "c4 (remaining) in car 2");
+});
+
+test("capacity: stability — mixed confirmed/tentative survives regeneration", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // 2 trips. Prior version had p1 confirmed on t1 (own child c1 riding).
+  // Regenerate: p1 must stay confirmed on t1; t2 gets p2 as tentative (new).
+  const inputs = {
+    trips: [
+      { id: "t1", service_date: "2026-08-03", direction: "morning" },
+      { id: "t2", service_date: "2026-08-04", direction: "morning" },
+    ],
+    children: [
+      { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams" },
+      { id: "c2", household_id: "h2", first_name: "Ben", last_name: "Bennett" },
+    ],
+    vehicles: [
+      { id: "v1", household_id: "h1", label: "Car1", child_passenger_capacity: 3 },
+      { id: "v2", household_id: "h2", label: "Car2", child_passenger_capacity: 3 },
+    ],
+    profiles: [
+      { id: "p1", full_name: "Driver1", household_id: "h1" },
+      { id: "p2", full_name: "Driver2", household_id: "h2" },
+    ],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t2", child_id: "c2", needs_ride: true },
+    ],
+    availability: [
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t2", driver_profile_id: "p2", vehicle_id: "v2", preference: "prefer" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 5], ["p2", 5]]),
+    // Prior version: p1 confirmed on t1
+    existingAssignments: [
+      { trip_id: "t1", driver_profile_id: "p1", household_id: "h1", vehicle_id: "v1", child_passenger_capacity: 3, confirmed: true },
+    ],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  const t2 = result.trips.find((t) => t.trip_id === "t2");
+
+  // t1: p1 preserved as confirmed, c1 still in car
+  const p1OnT1 = t1?.assignments.find((a) => a.driver_profile_id === "p1");
+  assert.ok(p1OnT1, "p1 should be preserved on t1");
+  assert.equal(p1OnT1?.confirmed, true, "p1 on t1 should remain confirmed");
+  assert.ok(p1OnT1?.assigned_child_ids.includes("c1"), "c1 should still be in p1's car");
+
+  // t2: p2 assigned as tentative (new, not confirmed)
+  const p2OnT2 = t2?.assignments.find((a) => a.driver_profile_id === "p2");
+  assert.ok(p2OnT2, "p2 should be assigned to t2");
+  assert.equal(p2OnT2?.confirmed, false, "p2 on t2 should be tentative (new assignment)");
+  assert.ok(p2OnT2?.assigned_child_ids.includes("c2"), "c2 should be in p2's car");
+});
