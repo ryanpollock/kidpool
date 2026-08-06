@@ -7,6 +7,10 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 const CRON_SECRET = Deno.env.get("CRON_SECRET");
+const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
+const RESEND_FROM_EMAIL = Deno.env.get("RESEND_FROM_EMAIL") ?? "Carpool Crew <rides@carpoolcrew.co>";
+const RESEND_REPLY_TO = Deno.env.get("RESEND_REPLY_TO");
+const APP_URL = Deno.env.get("APP_URL");
 
 let vapidInitialized = false;
 
@@ -36,9 +40,14 @@ function jsonResponse(data: Record<string, unknown>) {
   });
 }
 
-async function supaFetch(table: string, select: string, filters: Record<string, string>) {
+async function supaFetch(
+  table: string,
+  select: string,
+  filters: Record<string, string> | Array<[string, string]>,
+) {
   const params = new URLSearchParams({ select });
-  for (const [k, v] of Object.entries(filters)) params.append(k, v);
+  const entries = Array.isArray(filters) ? filters : Object.entries(filters);
+  for (const [k, v] of entries) params.append(k, v);
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
     headers: {
       "apikey": SERVICE_ROLE_KEY!,
@@ -64,6 +73,15 @@ async function supaDelete(table: string, filters: Record<string, string>) {
   } catch (e) {
     console.error("[send-push] Failed to delete stale subscription:", e);
   }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 async function verifyAuth(authHeader: string): Promise<boolean> {
@@ -111,17 +129,18 @@ Deno.serve(async (req) => {
     let title = "";
     let bodyText = "";
     let tag = "carpool";
+    let groupId: string | null = null;
 
     if (type === "declined" && assignment_id) {
-      const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: assignment_id });
+      const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: `eq.${assignment_id}` });
       const childIds = riderAssignments.map((ra: any) => ra.child_id);
       if (childIds.length === 0) return jsonError("No riders found", 404);
 
-      const children = await supaFetch("children", "household_id,id", { "id.in": `(${childIds.join(",")})` });
+      const children = await supaFetch("children", "household_id,id", { id: `in.(${childIds.join(",")})` });
       const householdIds = [...new Set(children.map((c: any) => c.household_id))];
 
       for (const hid of householdIds) {
-        const memberships = await supaFetch("memberships", "profile_id", { household_id: hid, status: "active" });
+        const memberships = await supaFetch("memberships", "profile_id", { household_id: `eq.${hid}`, status: "eq.active" });
         recipientProfileIds.push(...memberships.map((m: any) => m.profile_id));
       }
 
@@ -142,28 +161,29 @@ Deno.serve(async (req) => {
         }
       }
     } else if (type === "uncovered" && version_id) {
-      const driverAssignments = await supaFetch("driver_assignments", "*", { schedule_version_id: version_id, status: "in.(tentative,confirmed)" });
+      const driverAssignments = await supaFetch("driver_assignments", "*", { schedule_version_id: `eq.${version_id}`, status: "in.(tentative,confirmed)" });
       const coveredRiderIds = new Set<string>();
 
       for (const da of driverAssignments) {
-        const riders = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: da.id });
+        const riders = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${da.id}` });
         riders.forEach((r: any) => coveredRiderIds.add(r.child_id));
       }
 
       const versionData = await supaFetch("schedule_versions", "week_id,group_id", { id: `eq.${version_id}` });
       if (versionData.length === 0) return jsonError("Version not found", 404);
       const { group_id, week_id } = versionData[0];
+      groupId = group_id;
 
       // Scope ride_requests to this version's week only — not the whole group.
       // Without scoping, families get false "your child doesn't have a ride"
       // pushes for weeks they haven't checked in for yet.
-      const trips = await supaFetch("trips", "id", { group_id, week_id });
+      const trips = await supaFetch("trips", "id", { group_id: `eq.${group_id}`, week_id: `eq.${week_id}` });
       const tripIds = trips.map((t: any) => t.id);
       if (tripIds.length === 0) return jsonResponse({ sent: 0, failed: 0 });
 
       const rideRequests = await supaFetch("ride_requests", "*", {
         trip_id: `in.(${tripIds.join(",")})`,
-        needs_ride: "true",
+        needs_ride: "eq.true",
       });
       const uncoveredChildren = rideRequests
         .filter((rr: any) => !coveredRiderIds.has(rr.child_id))
@@ -171,7 +191,7 @@ Deno.serve(async (req) => {
 
       if (uncoveredChildren.length === 0) return jsonResponse({ sent: 0, failed: 0 });
 
-      const children = await supaFetch("children", "id,household_id", { "id.in": `(${uncoveredChildren.join(",")})` });
+      const children = await supaFetch("children", "id,household_id", { id: `in.(${uncoveredChildren.join(",")})` });
       const childMap = new Map(children.map((c: any) => [c.id, c.household_id]));
       const householdIds = new Set<string>();
       for (const cid of uncoveredChildren) {
@@ -180,7 +200,7 @@ Deno.serve(async (req) => {
       }
 
       for (const hid of householdIds) {
-        const memberships = await supaFetch("memberships", "profile_id", { household_id: hid, status: "active" });
+        const memberships = await supaFetch("memberships", "profile_id", { household_id: `eq.${hid}`, status: "eq.active" });
         recipientProfileIds.push(...memberships.map((m: any) => m.profile_id));
       }
 
@@ -191,8 +211,9 @@ Deno.serve(async (req) => {
       const versionData = await supaFetch("schedule_versions", "group_id", { id: `eq.${version_id}` });
       if (versionData.length === 0) return jsonError("Version not found", 404);
       const { group_id } = versionData[0];
+      groupId = group_id;
 
-      const memberships = await supaFetch("memberships", "profile_id", { group_id, status: "active" });
+      const memberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${group_id}`, status: "eq.active" });
       recipientProfileIds = memberships.map((m: any) => m.profile_id);
 
       title = "Schedule published";
@@ -204,13 +225,16 @@ Deno.serve(async (req) => {
       const nowStr = now.toISOString();
       const tomorrowStr = tomorrow.toISOString();
 
-      const weeks = await supaFetch("weeks", "*", { "checkin_deadline.gte": nowStr, "checkin_deadline.lte": tomorrowStr });
+      const weeks = await supaFetch("weeks", "*", [
+        ["checkin_deadline", `gte.${nowStr}`],
+        ["checkin_deadline", `lte.${tomorrowStr}`],
+      ]);
 
       for (const week of weeks) {
-        const checkins = await supaFetch("weekly_checkins", "household_id", { week_id: week.id, status: "eq.submitted" });
+        const checkins = await supaFetch("weekly_checkins", "household_id", { week_id: `eq.${week.id}`, status: "eq.submitted" });
         const submittedHouseholds = new Set(checkins.map((c: any) => c.household_id));
 
-        const allMemberships = await supaFetch("memberships", "profile_id,household_id", { group_id: week.group_id, status: "active" });
+        const allMemberships = await supaFetch("memberships", "profile_id,household_id", { group_id: `eq.${week.group_id}`, status: "eq.active" });
         const unsubmitted = allMemberships.filter((m: any) => !submittedHouseholds.has(m.household_id));
         recipientProfileIds.push(...unsubmitted.map((m: any) => m.profile_id));
       }
@@ -219,15 +243,15 @@ Deno.serve(async (req) => {
       bodyText = `Your check-in deadline is approaching. Submit your ride needs soon.`;
       tag = "deadline-reminder";
     } else if (type === "volunteered" && assignment_id) {
-      const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: assignment_id });
+      const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: `eq.${assignment_id}` });
       const childIds = riderAssignments.map((ra: any) => ra.child_id);
       if (childIds.length === 0) return jsonResponse({ sent: 0, failed: 0 });
 
-      const children = await supaFetch("children", "household_id,id", { "id.in": `(${childIds.join(",")})` });
+      const children = await supaFetch("children", "household_id,id", { id: `in.(${childIds.join(",")})` });
       const householdIds = [...new Set(children.map((c: any) => c.household_id))];
 
       for (const hid of householdIds) {
-        const memberships = await supaFetch("memberships", "profile_id", { household_id: hid, status: "active" });
+        const memberships = await supaFetch("memberships", "profile_id", { household_id: `eq.${hid}`, status: "eq.active" });
         recipientProfileIds.push(...memberships.map((m: any) => m.profile_id));
       }
 
@@ -265,13 +289,14 @@ Deno.serve(async (req) => {
       const versionData = await supaFetch("schedule_versions", "group_id", { id: `eq.${version_id}` });
       if (versionData.length === 0) return jsonError("Version not found", 404);
       const { group_id } = versionData[0];
+      groupId = group_id;
 
       // Find uncovered trips in this version
-      const driverAssignments = await supaFetch("driver_assignments", "*", { schedule_version_id: version_id, status: "in.(tentative,confirmed)" });
+      const driverAssignments = await supaFetch("driver_assignments", "*", { schedule_version_id: `eq.${version_id}`, status: "in.(tentative,confirmed)" });
       const coveredRiderIds = new Set<string>();
 
       for (const da of driverAssignments) {
-        const riders = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: da.id });
+        const riders = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${da.id}` });
         riders.forEach((r: any) => coveredRiderIds.add(r.child_id));
       }
 
@@ -279,19 +304,19 @@ Deno.serve(async (req) => {
       if (versionRow.length === 0) return jsonError("Version not found", 404);
       const { week_id } = versionRow[0];
 
-      const trips = await supaFetch("trips", "id", { group_id, week_id });
+      const trips = await supaFetch("trips", "id", { group_id: `eq.${group_id}`, week_id: `eq.${week_id}` });
       const tripIds = trips.map((t: any) => t.id);
 
       const rideRequests = await supaFetch("ride_requests", "*", {
         trip_id: `in.(${tripIds.join(",")})`,
-        needs_ride: "true",
+        needs_ride: "eq.true",
       });
       const uncoveredChildren = rideRequests.filter((rr: any) => !coveredRiderIds.has(rr.child_id));
 
       if (uncoveredChildren.length === 0) return jsonResponse({ sent: 0, failed: 0 });
 
       // Notify coordinators only
-      const memberships = await supaFetch("memberships", "profile_id", { group_id, status: "active", role: "eq.coordinator" });
+      const memberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${group_id}`, status: "eq.active", role: "eq.coordinator" });
       recipientProfileIds = memberships.map((m: any) => m.profile_id);
 
       title = "Schedule needs attention";
@@ -306,10 +331,11 @@ Deno.serve(async (req) => {
     recipientProfileIds = [...new Set(recipientProfileIds)];
 
     const profileIdsStr = `(${recipientProfileIds.join(",")})`;
-    const subscriptions = await supaFetch("push_subscriptions", "*", { "profile_id.in": profileIdsStr });
+    const subscriptions = await supaFetch("push_subscriptions", "*", { profile_id: `in.${profileIdsStr}` });
 
-    if (subscriptions.length === 0) return jsonResponse({ sent: 0, failed: 0, reason: "no_subscriptions" });
-
+    // No early return when subscriptions is empty — recipients without a push
+    // subscription still get an email. The push loop is a no-op in that case,
+    // and the email block below still runs.
     const payload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
 
     ensureVapid();
@@ -345,7 +371,65 @@ Deno.serve(async (req) => {
       }
     }
 
-    return jsonResponse({ sent, failed, removed });
+    // ── Send emails via Resend ──────────────────────────────
+    // Each recipient with an email gets a transactional email. Failures are
+    // logged, not thrown — email is best-effort, same pattern as push.
+    let emailSent = 0;
+    let emailFailed = 0;
+
+    if (RESEND_API_KEY) {
+      const profiles = await supaFetch("profiles", "id,email", { id: `in.${profileIdsStr}` });
+
+      const cta = APP_URL
+        ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
+        : "";
+      const htmlBody =
+        `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;">` +
+        `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1>` +
+        `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(bodyText)}</p>` +
+        `<p style="margin-top:24px;">${cta}</p>` +
+        `</body></html>`;
+
+      for (const profile of profiles) {
+        if (!profile.email) continue;
+        if (profile.email.endsWith("@seed.kidpool") || profile.email.endsWith("@test.kidpool") || profile.email.endsWith("@e2e.kidpool")) continue;
+        const idempotencyKey = `carpool-${tag}-${profile.id}`;
+        try {
+          const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKey,
+            },
+            body: JSON.stringify({
+              from: RESEND_FROM_EMAIL,
+              to: profile.email,
+              reply_to: RESEND_REPLY_TO,
+              subject: title,
+              html: htmlBody,
+              text: bodyText,
+              tags: [
+                { name: "type", value: type },
+                { name: "group", value: groupId ?? "unknown" },
+              ],
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.text();
+            console.error(`[send-push] Email to ${profile.email} failed:`, err);
+            emailFailed++;
+          } else {
+            emailSent++;
+          }
+        } catch (e) {
+          console.error(`[send-push] Email to ${profile.email} threw:`, e);
+          emailFailed++;
+        }
+      }
+    }
+
+    return jsonResponse({ sent, failed, removed, email_sent: emailSent, email_failed: emailFailed });
   } catch (error) {
     return jsonError(error.message ?? "Internal error", 500);
   }
