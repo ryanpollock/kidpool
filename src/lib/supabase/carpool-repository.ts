@@ -1475,7 +1475,7 @@ export class CarpoolRepository {
     groupId: string,
     weekId: string,
   ): Promise<UncoveredChildAlert[]> {
-    const [trips, rideRequests, children, driverAssignments, riderAssignments, memberships, vehicles] = await Promise.all([
+    const [trips, rideRequests, children, driverAssignments, riderAssignments, callerMemberships, allMemberships, vehicles] = await Promise.all([
       unwrapRequired(
         await this.client.from("trips").select("*").eq("group_id", groupId).eq("week_id", weekId),
       ),
@@ -1495,11 +1495,14 @@ export class CarpoolRepository {
         await this.client.from("memberships").select("*").eq("profile_id", profileId).eq("status", "active"),
       ),
       unwrapRequired(
+        await this.client.from("memberships").select("*").eq("group_id", groupId).eq("status", "active"),
+      ),
+      unwrapRequired(
         await this.client.from("vehicles").select("*").eq("group_id", groupId).eq("active", true),
       ),
     ]);
 
-    const householdIds = new Set(memberships.map((m) => m.household_id));
+    const householdIds = new Set(callerMemberships.map((m) => m.household_id));
     const myChildren = children.filter((c) => householdIds.has(c.household_id));
     const myChildIds = new Set(myChildren.map((c) => c.id));
     const childById = new Map(children.map((c) => [c.id, c]));
@@ -1510,6 +1513,16 @@ export class CarpoolRepository {
       ? Math.max(...volunteerVehicles.map((v) => v.child_passenger_capacity))
       : null;
 
+    // Map each driver_profile_id to their household_id(s) so we can detect
+    // when a declined driver's own children are the only riders — in that case
+    // no other parent sees a Flow A alert, so we must NOT suppress Flow B.
+    const driverHouseholdByProfile = new Map<string, string>();
+    for (const m of allMemberships) {
+      if (!driverHouseholdByProfile.has(m.profile_id)) {
+        driverHouseholdByProfile.set(m.profile_id, m.household_id);
+      }
+    }
+
     // A child is "handled" (not surfaced as uncovered) if they have a
     // rider_assignment on:
     //   - a tentative or confirmed driver (any family) — has a pending or locked driver
@@ -1519,16 +1532,41 @@ export class CarpoolRepository {
     //     rather than volunteer, which would create a duplicate confirmed assignment
     // Other families' kids on an expired driver are genuinely uncovered from
     // the server's perspective and use Flow B (volunteer_for_uncovered_trip).
-    const handledDriverAssignments = new Set(
-      driverAssignments
-        .filter((da) =>
-          da.status === "tentative"
-          || da.status === "confirmed"
-          || da.status === "declined"
-          || (da.status === "expired" && da.driver_profile_id === profileId),
-        )
-        .map((da) => da.id),
-    );
+    //
+    // Exception: a declined assignment is only "handled" if at least one rider
+    // belongs to a DIFFERENT household than the driver's. If the driver's own
+    // children are the only riders, no other parent sees a Flow A alert
+    // (getAffectedDeclinedDrives skips the driver, and no other parent has kids
+    // on that trip). In that case, we must surface Flow B so other parents can
+    // volunteer — otherwise the children are silently stranded.
+    const ridersByAssignment = new Map<string, Tables<"children">[]>();
+    for (const ra of riderAssignments) {
+      const child = childById.get(ra.child_id);
+      if (!child) continue;
+      const existing = ridersByAssignment.get(ra.driver_assignment_id) ?? [];
+      existing.push(child);
+      ridersByAssignment.set(ra.driver_assignment_id, existing);
+    }
+
+    const handledDriverAssignments = new Set<string>();
+    for (const da of driverAssignments) {
+      if (da.status === "tentative" || da.status === "confirmed") {
+        handledDriverAssignments.add(da.id);
+      } else if (da.status === "declined") {
+        // Only suppress Flow B if at least one rider is from a different
+        // household than the driver — that parent will see the Flow A alert.
+        const riders = ridersByAssignment.get(da.id) ?? [];
+        const driverHousehold = driverHouseholdByProfile.get(da.driver_profile_id);
+        const hasOtherHouseholdRider = riders.some(
+          (r) => r.household_id !== driverHousehold,
+        );
+        if (hasOtherHouseholdRider) {
+          handledDriverAssignments.add(da.id);
+        }
+      } else if (da.status === "expired" && da.driver_profile_id === profileId) {
+        handledDriverAssignments.add(da.id);
+      }
+    }
 
     const coveredChildrenByTrip = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {

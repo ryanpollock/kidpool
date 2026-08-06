@@ -107,6 +107,7 @@ function readableError(error: unknown) {
   if (/network|fetch/i.test(message)) return "We couldn't reach the carpool service. Check your connection and try again.";
   if (/can no longer be responded to/i.test(message)) return "Another parent has already taken over this drive.";
   if (/not declined/i.test(message)) return "This drive has already been re-accepted or taken over — your child is covered.";
+  if (/already happened/i.test(message)) return "This trip has already happened — you can no longer change it.";
   return message;
 }
 
