@@ -210,6 +210,21 @@ test("send-push: sends transactional email via Resend alongside push", async () 
   assert.match(ts, /email_failed: emailFailed/);
 });
 
+test("send-push: PostgREST filters use proper operator syntax (eq., in.)", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // supaFetch accepts array tuples for range queries (same column, two filters)
+  assert.match(ts, /Array<\[string, string\]>/);
+
+  // No bare "column.in" key patterns — should be column key with in.() value
+  assert.doesNotMatch(ts, /"id\.in"/);
+  assert.doesNotMatch(ts, /"profile_id\.in"/);
+
+  // No bare UUID/string filter values — all use eq. prefix
+  assert.doesNotMatch(ts, /status: "active"/);
+  assert.doesNotMatch(ts, /needs_ride: "true"/);
+});
+
 // ─── CarpoolRepository ───────────────────────────────────────
 
 test("repository: manuallyAssignDriver and getDeclinedWithoutVolunteer methods", async () => {
