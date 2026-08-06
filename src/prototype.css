@@ -2813,3 +2813,146 @@ a.directory-contact-item:hover {
   background: var(--muted);
   border-radius: 10px;
 }
+
+.admin-status-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.admin-status-line svg {
+  flex-shrink: 0;
+}
+
+.admin-triage {
+  margin-bottom: 20px;
+}
+
+.admin-triage .section-heading-row {
+  margin-bottom: 12px;
+}
+
+.admin-triage .decline-alert {
+  margin-bottom: 12px;
+}
+
+.triage-list {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.triage-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+}
+
+.triage-item--uncovered {
+  border-color: var(--red-pale);
+}
+
+.triage-item--declined {
+  border-color: var(--amber-pale);
+}
+
+.triage-item--not-started {
+  border-color: var(--line);
+}
+
+.triage-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.triage-item-info strong {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.triage-item-info span {
+  font-size: 12px;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.triage-action {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 7px 12px;
+}
+
+.on-track-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--green-pale);
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+
+.admin-override {
+  border-color: var(--line);
+}
+
+.admin-override .section-heading-row .helper-copy {
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.assign-driver-list {
+  display: grid;
+  gap: 8px;
+}
+
+.assign-driver-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  text-align: left;
+}
+
+.assign-driver-row:hover:not(:disabled) {
+  border-color: var(--teal);
+  background: var(--teal-pale);
+}
+
+.assign-driver-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.assign-driver-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.assign-driver-vehicle {
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}

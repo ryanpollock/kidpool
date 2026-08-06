@@ -68,6 +68,7 @@ export type GenerateScheduleResult = {
   success: boolean;
   version?: { id: string; version_number: number };
   algorithm?: string;
+  auto_published?: boolean;
   uncovered_trips?: number;
   warning?: string | null;
   trips?: Array<{
@@ -1180,6 +1181,140 @@ export class CarpoolRepository {
     );
   }
 
+  async manuallyAssignDriver(
+    tripId: string,
+    scheduleVersionId: string,
+    driverProfileId: string,
+    vehicleId: string,
+  ) {
+    return unwrap(
+      await this.client.rpc("manually_assign_driver", {
+        p_trip_id: tripId,
+        p_schedule_version_id: scheduleVersionId,
+        p_driver_profile_id: driverProfileId,
+        p_vehicle_id: vehicleId,
+      }),
+    );
+  }
+
+  async getDeclinedWithoutVolunteer(
+    scheduleVersionId: string,
+    groupId: string,
+  ): Promise<DeclinedDriveAlert[]> {
+    // Admin-scoped: finds declined driver_assignments where the trip is still
+    // uncovered (no subsequent volunteer or manual assignment covered it).
+    const [driverAssignments, riderAssignments, children, trips, vehicles, memberships] = await Promise.all([
+      unwrapRequired(
+        await this.client
+          .from("driver_assignments")
+          .select("*")
+          .eq("schedule_version_id", scheduleVersionId)
+          .eq("group_id", groupId)
+          .eq("status", "declined"),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("rider_assignments")
+          .select("*")
+          .eq("schedule_version_id", scheduleVersionId)
+          .eq("group_id", groupId),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("children")
+          .select("*")
+          .eq("group_id", groupId)
+          .eq("active", true),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("trips")
+          .select("*")
+          .eq("group_id", groupId),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("vehicles")
+          .select("*")
+          .eq("group_id", groupId)
+          .eq("active", true),
+      ),
+      unwrapRequired(
+        await this.client
+          .from("memberships")
+          .select("*")
+          .eq("group_id", groupId)
+          .eq("status", "active"),
+      ),
+    ]);
+
+    const profiles = await this.fetchGroupProfiles(groupId);
+
+    const childById = new Map(children.map((c) => [c.id, c]));
+    const tripById = new Map(trips.map((t) => [t.id, t]));
+    const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
+    const profileById = new Map(profiles.map((p) => [p.id, p]));
+
+    // All driver assignments (not just declined) to check if children are covered
+    const allDriverAssignments = await unwrapRequired(
+      await this.client
+        .from("driver_assignments")
+        .select("*")
+        .eq("schedule_version_id", scheduleVersionId)
+        .eq("group_id", groupId)
+        .in("status", ["tentative", "confirmed", "declined"]),
+    );
+
+    const ridersByAssignment = new Map<string, Tables<"children">[]>();
+    for (const ra of riderAssignments) {
+      const existing = ridersByAssignment.get(ra.driver_assignment_id) ?? [];
+      const child = childById.get(ra.child_id);
+      if (child) existing.push(child);
+      ridersByAssignment.set(ra.driver_assignment_id, existing);
+    }
+
+    const alerts: DeclinedDriveAlert[] = [];
+    for (const da of driverAssignments) {
+      const riders = ridersByAssignment.get(da.id) ?? [];
+      if (riders.length === 0) continue;
+
+      // Check if ALL children from this declined assignment have been
+      // re-covered by a tentative or confirmed driver (volunteer/manual assign)
+      const childIds = riders.map((r) => r.id);
+      const allCovered = childIds.every((childId) =>
+        riderAssignments.some((ra) =>
+          ra.child_id === childId &&
+          ra.driver_assignment_id !== da.id &&
+          allDriverAssignments.some((otherDa) =>
+            otherDa.id === ra.driver_assignment_id &&
+            (otherDa.status === "tentative" || otherDa.status === "confirmed"),
+          ),
+        ),
+      );
+
+      if (allCovered) continue;
+
+      const trip = tripById.get(da.trip_id);
+      if (!trip) continue;
+
+      const vehicle = vehicleById.get(da.vehicle_id) ?? null;
+      const driverProfile = profileById.get(da.driver_profile_id) ?? null;
+
+      alerts.push({
+        assignment: da,
+        trip,
+        vehicle,
+        driverProfile,
+        children: riders,
+        myChildren: [],
+        volunteerVehicleCapacity: null,
+      });
+    }
+
+    alerts.sort((a, b) => tripSortKey(a.trip).localeCompare(tripSortKey(b.trip)));
+    return alerts;
+  }
+
   async getAffectedDeclinedDrives(
     scheduleVersionId: string,
     profileId: string,
@@ -1420,7 +1555,7 @@ export class CarpoolRepository {
   async sendPushNotification(
     assignmentId: string | null,
     versionId: string | null,
-    type: "declined" | "uncovered" | "published" | "volunteered",
+    type: "declined" | "uncovered" | "published" | "volunteered" | "admin_escalation" | "manually_assigned",
   ): Promise<void> {
     try {
       await this.client.functions.invoke("send-push", {

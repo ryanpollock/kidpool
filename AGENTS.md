@@ -11,6 +11,9 @@ In ChatGPT Work Mode, run `sites-preview start "$PWD"`, open `http://terminal.lo
 - A driver confirmation request must dominate the home screen until explicitly resolved.
 - Offered, tentative, confirmed, and uncovered states must never be visually interchangeable.
 - Build the Saturday household check-in, Sunday driver confirmation, weekly roster, and coordinator coverage recovery as the core interactive prototype flows.
+- The Admin tab (formerly Status) is coordinator-only and acts as a triage board: "Needs your attention" (uncovered trips, declined drives, not-started households) → "On track" summary → "The week" (trip demand + household responses) → "Overrides" (de-emphasized generate/publish with automation copy).
+- Schedule generation and publication are automated via pg_cron (Sat 3 PM PD generates the draft, Sun 8 PM PD regenerates and auto-publishes). The coordinator's manual generate/publish buttons are overrides, not required steps.
+- The admin can manually assign any active member with a vehicle to an uncovered trip via the `manually_assign_driver` RPC, regardless of the driver's stated availability.
 
 Before planning or implementing any mobile-app change, read this `AGENTS.md` in full. It is the source of truth for the template's runtime and component guidance.
 
@@ -83,7 +86,7 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 Run these before considering any change complete:
 
 ```bash
-npm test                    # 75 foundation + 49 scheduling + 4 sites = 128 tests (no live DB)
+npm test                    # 82 foundation + 7 admin-automation + 49 scheduling + 4 sites = 142 tests (no live DB)
 npm run test:integration   # 22 tests against live Supabase (needs service key in macOS keychain)
 npm run test:runtime       # Playwright: 8 mobile-runtime + 22 E2E + 5 journeys + 4 exploratory = 39 tests
 npx tsc --noEmit           # TypeScript check
@@ -91,7 +94,7 @@ npm run check:runtime      # Mobile runtime integrity (28 protected files)
 npm run build              # Full production build (uploads source maps to Sentry if SENTRY_AUTH_TOKEN is set)
 ```
 
-All 189 tests must pass before pushing to `main`.
+All 203 tests must pass before pushing to `main`.
 
 ### Dev test-auth bypass
 
