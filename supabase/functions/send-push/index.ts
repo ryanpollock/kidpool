@@ -151,21 +151,21 @@ Deno.serve(async (req) => {
         `<h1 style="font-size:22px;margin:0 0 16px;">Welcome to Carpool Crew, ${escapeHtml(firstName)}</h1>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 24px;">Carpool Crew coordinates shared rides to Presidio Middle School for Clarendon families. Here's what to know to get started.</p>` +
 
-        `<h2 style="font-size:16px;margin:24px 0 8px;">1. Your household and join code</h2>` +
-        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">During setup you created a <strong>household</strong> — your family's group in the carpool. Your household shares one set of children and one vehicle. To add a co-parent or caregiver, open the app, tap your avatar (top right), and tap <strong>Get join code</strong>. Share that code with them — they'll sign in with their own Google account and enter it during setup.</p>` +
-
-        `<h2 style="font-size:16px;margin:24px 0 8px;">2. The three tabs</h2>` +
+        `<h2 style="font-size:16px;margin:24px 0 8px;">1. The three tabs</h2>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 8px;"><strong>Home</strong> — Your week at a glance: drives you're assigned, alerts if a ride is cancelled, and a quick link to the parent directory.</p>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 8px;"><strong>This Week</strong> — The published schedule, day by day. Tap any drive to see who's in the car.</p>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>Next Week</strong> — Where you check in for next week's rides (see below). Tap <strong>Earlier</strong> or <strong>Later</strong> to browse other weeks.</p>` +
 
-        `<h2 style="font-size:16px;margin:24px 0 8px;">3. Check in by Saturday 3 PM</h2>` +
+        `<h2 style="font-size:16px;margin:24px 0 8px;">2. Check in by Saturday 3 PM</h2>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Every week, open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Submit by <strong>Saturday 3 PM Pacific</strong> — the scheduler builds the week's carpool from your check-in. Missed check-ins mean your child might not get a ride. You can reopen your check-in any time before the schedule is published.</p>` +
 
-        `<h2 style="font-size:16px;margin:24px 0 8px;">4. Set your standard week</h2>` +
+        `<h2 style="font-size:16px;margin:24px 0 8px;">3. Set your standard week</h2>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">You set this during setup. It pre-fills your weekly check-in with your family's typical ride needs and driving availability, so you only need to adjust for the unusual days. To change it later, tap your avatar, then edit the <strong>Standard week</strong> section. Morning pickup is 8:40 AM from Midtown Terrace; afternoon pickup is 5:15 PM from Presidio.</p>` +
+        `<div style="background:#f0f9f9;border-left:4px solid #118b8c;padding:12px 16px;margin:16px 0;border-radius:4px;">` +
+        `<p style="font-size:15px;line-height:1.6;margin:0;"><strong>Setting a standard week does not check you in automatically.</strong> You still need to open the Next Week tab and tap Submit each week.</p>` +
+        `</div>` +
 
-        `<h2 style="font-size:16px;margin:24px 0 8px;">5. Install the app on your phone</h2>` +
+        `<h2 style="font-size:16px;margin:24px 0 8px;">4. Install the app on your phone</h2>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 8px;"><strong>iPhone:</strong> Open carpoolcrew.co in Safari, tap the Share button, then <strong>Add to Home Screen</strong>. Launch from the home screen icon to get push notifications when your child's drive changes.</p>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>Android:</strong> Open carpoolcrew.co in Chrome, tap the menu (three dots), then <strong>Add to Home Screen</strong> or <strong>Install app</strong>. Allow notifications when prompted.</p>` +
 
@@ -176,17 +176,15 @@ Deno.serve(async (req) => {
       const textBody =
         `Welcome to Carpool Crew, ${firstName}!\n\n` +
         `Carpool Crew coordinates shared rides to Presidio Middle School for Clarendon families. Here's what to know to get started.\n\n` +
-        `1. YOUR HOUSEHOLD AND JOIN CODE\n` +
-        `During setup you created a household — your family's group in the carpool. To add a co-parent, tap your avatar (top right) in the app, then tap "Get join code" and share it with them.\n\n` +
-        `2. THE THREE TABS\n` +
+        `1. THE THREE TABS\n` +
         `Home: Your week at a glance — drives, alerts, parent directory.\n` +
         `This Week: The published schedule, day by day.\n` +
         `Next Week: Where you check in for next week's rides.\n\n` +
-        `3. CHECK IN BY SATURDAY 3 PM\n` +
+        `2. CHECK IN BY SATURDAY 3 PM\n` +
         `Every week, open the Next Week tab and tell us which days your child needs rides and which days you can drive. Submit by Saturday 3 PM Pacific.\n\n` +
-        `4. SET YOUR STANDARD WEEK\n` +
-        `Your standard week defaults pre-fill your weekly check-in. Edit them any time from the Account screen (tap your avatar).\n\n` +
-        `5. INSTALL THE APP\n` +
+        `3. SET YOUR STANDARD WEEK\n` +
+        `Your standard week defaults pre-fill your weekly check-in — but they don't check you in automatically. You still need to open the Next Week tab and tap Submit each week. Edit your standard week any time from the Account screen (tap your avatar).\n\n` +
+        `4. INSTALL THE APP\n` +
         `iPhone: Open carpoolcrew.co in Safari, tap Share, then Add to Home Screen.\n` +
         `Android: Open carpoolcrew.co in Chrome, tap menu, then Add to Home Screen.\n\n` +
         `Questions? Reply to this email, or open the app and tap FAQ on the Home tab.`;
