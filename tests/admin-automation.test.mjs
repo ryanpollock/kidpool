@@ -18,6 +18,10 @@ const deadlineCronMigrationUrl = new URL(
   "../supabase/migrations/202608070003_reenable_deadline_cron.sql",
   import.meta.url,
 );
+const welcomeEmailMigrationUrl = new URL(
+  "../supabase/migrations/202608070004_welcome_email_trigger.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -262,6 +266,66 @@ test("send-push: deadline_reminder tag includes date for idempotency", async () 
   // Tag includes the current date so the email idempotency key changes daily
   // (at most one reminder email per family per day, even if cron fires hourly)
   assert.match(ts, /deadline-reminder-\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}/);
+});
+
+// ─── Welcome email ─────────────────────────────────────────
+
+test("welcome email: DB trigger fires on auth.users INSERT", async () => {
+  const sql = await readFile(welcomeEmailMigrationUrl, "utf8");
+
+  // Trigger function uses vault secrets, environment-aware
+  assert.match(sql, /create or replace function public\.send_welcome_email\(\)/);
+  assert.match(sql, /security definer/);
+  assert.match(sql, /cron_edge_base_url/);
+  assert.match(sql, /cron_secret/);
+  assert.doesNotMatch(sql, /ujcrnrcgbvzyqosykkjy/);
+
+  // Fires on INSERT only, not update
+  assert.match(sql, /tg_op <> 'INSERT'/);
+  assert.match(sql, /after insert on auth\.users/);
+  assert.match(sql, /on_auth_user_welcome_email/);
+
+  // Revoked from public/authenticated
+  assert.match(sql, /revoke all on function public\.send_welcome_email\(\) from public, authenticated/);
+
+  // POSTs to send-push with type=welcome
+  assert.match(sql, /'type', 'welcome'/);
+  assert.match(sql, /'email'/);
+  assert.match(sql, /'user_id'/);
+});
+
+test("send-push: welcome type sends email-only onboarding welcome", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Welcome branch handled before the regular recipient-resolution block
+  assert.match(ts, /type === "welcome"/);
+
+  // Email-only: no push subscriptions, no profile lookup
+  assert.match(ts, /email-only, no push, no profile lookup/);
+
+  // Idempotency key uses user_id to prevent duplicate sends
+  assert.match(ts, /welcome-\$\{userId\}/);
+
+  // Skips fake seed/test/e2e emails (same as all other types)
+  assert.match(ts, /@seed\.kidpool/);
+
+  // Subject is the welcome subject
+  assert.match(ts, /subject: "Welcome to Carpool Crew"/);
+
+  // HTML covers the 5 key topics
+  assert.match(ts, /Your household and join code/);
+  assert.match(ts, /The three tabs/);
+  assert.match(ts, /Check in by Saturday 3 PM/);
+  assert.match(ts, /Set your standard week/);
+  assert.match(ts, /Install the app on your phone/);
+
+  // Install instructions for both platforms
+  assert.match(ts, /Add to Home Screen/);
+  assert.match(ts, /iPhone/);
+  assert.match(ts, /Android/);
+
+  // Has plain-text fallback body
+  assert.match(ts, /textBody/);
 });
 
 // ─── CarpoolRepository ───────────────────────────────────────
