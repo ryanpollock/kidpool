@@ -1,9 +1,16 @@
 // Edge Function: generate-schedule
-// Invoked by a coordinator to produce a versioned draft schedule for a week.
-// Reads the week's trips, check-ins, ride requests, driver availability,
-// vehicles, children, and existing assignments; runs the pure greedy-v1
-// algorithm; writes a new schedule_version with tentative driver and rider
-// assignments.
+// Invoked by a coordinator OR by the cron automation to produce a versioned
+// draft schedule for a week. Reads the week's trips, check-ins, ride requests,
+// driver availability, vehicles, children, and existing assignments; runs the
+// pure greedy-v1 algorithm; writes a new schedule_version with tentative driver
+// and rider assignments. Auto-publishes when the confirmation deadline has
+// passed and no prior published version exists (or the new draft is clean).
+//
+// Auth paths:
+//   - User JWT (manual): coordinator check via memberships table.
+//   - Cron/Service role (automated): CRON_SECRET or SERVICE_ROLE_KEY accepted
+//     directly, coordinator check skipped. Uses a service-role client for
+//     writes so publish_schedule_internal (which checks no auth.uid()) works.
 //
 // Error handling: every data load and write is error-checked. A failure at
 // any point returns a 500 with a descriptive message rather than silently
@@ -31,9 +38,11 @@ Deno.serve(async (req: Request) => {
   try {
     // ── Parse and validate request body ──────────────────────────
     let weekId: unknown;
+    let source: string | undefined;
     try {
       const body = await req.json();
       weekId = body?.weekId;
+      source = body?.source;
     } catch {
       return jsonError("Missing or invalid request body.", 400);
     }
@@ -44,43 +53,76 @@ Deno.serve(async (req: Request) => {
     // ── Validate server configuration ─────────────────────────────
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
     const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const cronSecret = Deno.env.get("CRON_SECRET") ?? "";
     if (!supabaseUrl || !supabaseAnonKey) {
       return jsonError("Server configuration error.", 500);
     }
 
     const authHeader = req.headers.get("Authorization") ?? "";
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
+    const token = authHeader.replace("Bearer ", "");
 
-    // ── Authenticate ──────────────────────────────────────────────
-    const { data: userData, error: userError } = await supabase.auth.getUser();
-    if (userError || !userData.user) {
-      return jsonError("Authentication required.", 401);
+    // ── Determine auth path ───────────────────────────────────────
+    // System calls (source === "cron") accept CRON_SECRET or SERVICE_ROLE_KEY
+    // directly, mirroring the send-push verifyAuth pattern. User calls go
+    // through the standard JWT path.
+    const isSystemCall = source === "cron";
+    let isSystemAuthed = false;
+    if (isSystemCall) {
+      if (cronSecret && token === cronSecret) isSystemAuthed = true;
+      if (serviceRoleKey && token === serviceRoleKey) isSystemAuthed = true;
+      if (!isSystemAuthed) return jsonError("Invalid system credentials.", 401);
     }
-    const userId = userData.user.id;
 
-    // ── Load week ─────────────────────────────────────────────────
+    // For system calls, use the service-role client (bypasses RLS, auth.uid()
+    // is null). For user calls, use the anon key + user JWT as before.
+    const writeClient = isSystemCall && serviceRoleKey
+      ? createClient(supabaseUrl, serviceRoleKey)
+      : createClient(supabaseUrl, supabaseAnonKey, {
+          global: { headers: { Authorization: authHeader } },
+        });
+
+    // For reads, system calls can use the service client too; user calls use
+    // their JWT client (so RLS filters to their group).
+    const supabase = writeClient;
+
+    // ── Authenticate (user path only) ────────────────────────────
+    let userId: string | null = null;
+    if (!isSystemCall) {
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError || !userData.user) {
+        return jsonError("Authentication required.", 401);
+      }
+      userId = userData.user.id;
+    }
+
+    // ── Load week (with deadlines for auto-publish decision) ──────
     const { data: weekRow, error: weekError } = await supabase
       .from("weeks")
-      .select("id, group_id")
+      .select("id, group_id, checkin_deadline, confirmation_deadline")
       .eq("id", weekId as string)
       .maybeSingle();
     if (weekError || !weekRow) {
       return jsonError("Week not found.", 404);
     }
     const groupId = weekRow.group_id;
+    const confirmationDeadline = weekRow.confirmation_deadline as string | null;
+    const deadlinePassed = confirmationDeadline
+      ? new Date() >= new Date(confirmationDeadline)
+      : true; // no deadline = treat as passed (edge case)
 
-    // ── Verify coordinator ────────────────────────────────────────
-    const { data: membership, error: membershipError } = await supabase
-      .from("memberships")
-      .select("role")
-      .eq("group_id", groupId)
-      .eq("profile_id", userId)
-      .eq("status", "active")
-      .maybeSingle();
-    if (membershipError || !membership || membership.role !== "coordinator") {
-      return jsonError("Only coordinators can generate schedules.", 403);
+    // ── Verify coordinator (user path only) ──────────────────────
+    if (!isSystemCall && userId) {
+      const { data: membership, error: membershipError } = await supabase
+        .from("memberships")
+        .select("role")
+        .eq("group_id", groupId)
+        .eq("profile_id", userId)
+        .eq("status", "active")
+        .maybeSingle();
+      if (membershipError || !membership || membership.role !== "coordinator") {
+        return jsonError("Only coordinators can generate schedules.", 403);
+      }
     }
 
     // ── Load data (phase 1: trips first, then trip-dependent queries) ──
@@ -327,31 +369,56 @@ Deno.serve(async (req: Request) => {
     }
 
     // ── Auto-publish + supersede ────────────────────────────────
-// Auto-publish only if the prior was published AND no uncovered trips
-// AND no tentative assignments (all drivers confirmed). If there are
-// uncovered trips or unconfirmed drivers, keep as draft so the
-// coordinator can review and manually publish.
+// Two auto-publish triggers:
+//   1. Clean re-publish (pre-deadline): prior was published AND new draft has
+//      no uncovered trips and no tentative assignments → publish immediately.
+//   2. Deadline auto-publish: confirmation deadline has passed AND no prior
+//      published version exists → publish regardless of uncovered/tentative.
+//      Remaining tentative assignments expire → those trips become uncovered.
+//      This removes the coordinator as a blocker for the final publish step.
 //
-// Critical: only supersede the prior version when the new version
-// replaces it (auto-publish) or the prior was itself a draft.
-// Never supersede a published version when the new version stays
-// as draft — the published schedule must remain live for families.
+// Guard: if the prior was published but the new draft has uncovered/tentative,
+// keep the new draft and DON'T supersede the published version. The published
+// schedule stays live; the admin can manually "Replace published schedule."
 //
-// Auto-publish routes through the publish_schedule RPC for atomicity
-// (supersede + publish in one transaction), published_at timestamp,
-// and the confirmation deadline gate.
+// System calls route through publish_schedule_internal (no auth.uid() check).
+// User calls route through publish_schedule (checks coordinator via auth.uid()).
 const hasTentative = outputs.trips.some((t) =>
   t.assignments.some((a) => !a.confirmed)
 );
-const newVersionPublished = wasPublished && !hasUncovered && !hasTentative;
-if (newVersionPublished) {
-  const { data: publishResult, error: publishError } = await supabase
-    .rpc("publish_schedule", { p_group_id: groupId, p_version_id: newVersion.id });
+const cleanRepublish = wasPublished && !hasUncovered && !hasTentative;
+const deadlineAutoPublish = deadlinePassed && !wasPublished;
+const shouldAutoPublish = cleanRepublish || deadlineAutoPublish;
+let autoPublished = false;
+if (shouldAutoPublish) {
+  const rpcName = isSystemCall ? "publish_schedule_internal" : "publish_schedule";
+  const rpcParams = isSystemCall
+    ? { p_group_id: groupId, p_version_id: newVersion.id, p_actor_id: userId }
+    : { p_group_id: groupId, p_version_id: newVersion.id };
+  const { data: publishResult, error: publishError } = await writeClient
+    .rpc(rpcName, rpcParams);
   if (publishError || (publishResult && publishResult.error)) {
-    // RPC failed atomically — no partial state. Keep as draft so
-    // the coordinator can retry manually. Don't return an error;
-    // the schedule was still generated successfully as a draft.
     console.warn("Auto-publish failed, keeping as draft:", publishError?.message ?? publishResult?.error);
+  } else {
+    autoPublished = true;
+    // Send push notifications for the published schedule.
+    // 'published' goes to all members; 'uncovered' goes to affected families;
+    // 'admin_escalation' goes to coordinators if there are uncovered trips.
+    try {
+      await writeClient.functions.invoke("send-push", {
+        body: { type: "published", version_id: newVersion.id },
+      });
+      if (hasUncovered) {
+        await writeClient.functions.invoke("send-push", {
+          body: { type: "uncovered", version_id: newVersion.id },
+        });
+        await writeClient.functions.invoke("send-push", {
+          body: { type: "admin_escalation", version_id: newVersion.id },
+        });
+      }
+    } catch (pushError) {
+      console.warn("Push notification failed (non-blocking):", pushError instanceof Error ? pushError.message : "unknown");
+    }
   }
 } else if (latestVersion && latestVersion.id && latestVersion.status === "draft") {
   // New version is a draft; only supersede if the prior was also a draft
@@ -390,8 +457,13 @@ if (newVersionPublished) {
         success: true,
         version: newVersion,
         algorithm: ALGORITHM_VERSION,
+        auto_published: autoPublished,
         uncovered_trips: outputs.trips.filter((t) => t.uncovered).length,
-        warning: hasUncovered ? `${outputs.trips.filter((t) => t.uncovered).length} trip(s) have uncovered children. Schedule saved as draft — review before publishing.` : null,
+        warning: hasUncovered
+          ? autoPublished
+            ? `${outputs.trips.filter((t) => t.uncovered).length} trip(s) have uncovered children. Schedule published — affected families and the admin have been notified.`
+            : `${outputs.trips.filter((t) => t.uncovered).length} trip(s) have uncovered children. Schedule saved as draft — review before publishing.`
+          : null,
         trips: outputs.trips.map((t) => ({
           trip_id: t.trip_id,
           rider_count: t.rider_count,

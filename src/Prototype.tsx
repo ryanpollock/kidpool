@@ -2441,6 +2441,8 @@ function CoordinatorScreen({
   generating,
   generateError,
   scheduleStatus,
+  scheduleGeneratedAt,
+  schedulePublishedAt,
   onPublish,
   publishing,
   onReloadWeek,
@@ -2452,6 +2454,15 @@ function CoordinatorScreen({
   generateWarning,
   avatarUrl,
   onAccount,
+  onAssignDriver,
+  adminAssignTarget,
+  adminRoster,
+  adminDeclinedAlerts,
+  onManuallyAssign,
+  manualAssignWorking,
+  manualAssignError,
+  onCloseAssignSheet,
+  onContactHousehold,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -2467,6 +2478,8 @@ function CoordinatorScreen({
   generating: boolean;
   generateError: string | null;
   scheduleStatus: "draft" | "published" | null;
+  scheduleGeneratedAt: string | null;
+  schedulePublishedAt: string | null;
   onPublish: () => void;
   publishing: boolean;
   onReloadWeek: () => void;
@@ -2478,6 +2491,15 @@ function CoordinatorScreen({
   generateWarning: string | null;
   avatarUrl: string | null;
   onAccount: () => void;
+  onAssignDriver: (tripId: string, versionId: string) => void;
+  adminAssignTarget: { tripId: string; versionId: string } | null;
+  adminRoster: { children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null;
+  adminDeclinedAlerts: DeclinedDriveAlert[];
+  onManuallyAssign: (tripId: string, versionId: string, driverProfileId: string, vehicleId: string) => void;
+  manualAssignWorking: boolean;
+  manualAssignError: string | null;
+  onCloseAssignSheet: () => void;
+  onContactHousehold: () => void;
 }) {
   const [confirmRegenerate, setConfirmRegenerate] = useState(false);
 
@@ -2486,7 +2508,7 @@ function CoordinatorScreen({
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
+          <span className="eyebrow">Admin</span>
           <h1>Weekly coverage</h1>
         </header>
         <p className="helper-copy">Loading…</p>
@@ -2499,7 +2521,7 @@ function CoordinatorScreen({
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
+          <span className="eyebrow">Admin</span>
           <h1>Weekly coverage</h1>
         </header>
         <div className="auth-error" role="alert">{weekError}</div>
@@ -2513,7 +2535,7 @@ function CoordinatorScreen({
       <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
         <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
         <header className="page-title">
-          <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
+          <span className="eyebrow">Admin</span>
           <h1>Weekly coverage</h1>
         </header>
         <div className="empty-state">
@@ -2538,17 +2560,155 @@ function CoordinatorScreen({
   const submittedCount = overview?.households.filter((h) => h.status === "submitted").length ?? 0;
   const draftCount = overview?.households.filter((h) => h.status === "draft").length ?? 0;
   const notStartedCount = overview?.households.filter((h) => h.status === "not_started").length ?? 0;
+  const notStartedHouseholds = overview?.households.filter((h) => h.status === "not_started") ?? [];
+  const uncoveredTripEntries = Array.from(uncoveredRidersByTrip.entries()).filter(([, children]) => children.length > 0);
+
+  const hasAttentionItems = uncoveredTripEntries.length > 0 || adminDeclinedAlerts.length > 0 || notStartedHouseholds.length > 0;
+
+  const scheduleVersionId = adminAssignTarget?.versionId ?? "";
+  const scheduleTrips = week?.trips ?? [];
+  const assignTrip = adminAssignTarget ? scheduleTrips.find((t) => t.id === adminAssignTarget.tripId) : null;
+  const eligibleDrivers = adminRoster ? adminRoster.memberships
+    .filter((m) => m.status === "active")
+    .map((m) => {
+      const profile = adminRoster.profiles.find((p) => p.id === m.profile_id);
+      const vehicle = adminRoster.vehicles.find((v) => v.household_id === m.household_id && v.active);
+      return { membership: m, profile, vehicle };
+    })
+    .filter((d) => d.profile && d.vehicle) : [];
 
   return (
     <div className="screen-content coordinator-screen" data-testid="coordinator-screen">
       <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
       <header className="page-title">
-        <span className="eyebrow">{isCoordinator ? "Admin view" : "Status"}</span>
+        <span className="eyebrow">Admin</span>
         <h1>Weekly coverage</h1>
         <p>{weekLabel(week.week.starts_on)}</p>
       </header>
 
       {createWeekError ? <div className="auth-error" role="alert">{createWeekError}</div> : null}
+
+      {scheduleStatus ? (
+        <div className="admin-status-line">
+          {scheduleStatus === "published" && schedulePublishedAt
+            ? <><ClockIcon width="14" height="14" /> Published {new Date(schedulePublishedAt).toLocaleDateString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })}</>
+            : scheduleGeneratedAt
+              ? <><ClockIcon width="14" height="14" /> Last generated {new Date(scheduleGeneratedAt).toLocaleDateString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })} · Auto-publishes {week?.week.confirmation_deadline ? new Date(week.week.confirmation_deadline).toLocaleDateString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }) : "Sun 8 PM"}</>
+              : null}
+        </div>
+      ) : null}
+
+      {hasAttentionItems ? (
+        <section className="admin-triage">
+          <div className="section-heading-row"><h2>Needs your attention</h2></div>
+
+          {uncoveredTripEntries.length > 0 ? (
+            <div className="decline-alert decline-alert--admin" data-testid="uncovered-alert-admin">
+              <div className="decline-alert-header">
+                <ExclamationTriangleIcon width="20" height="20" />
+                <h2>{uncoveredTripEntries.length} trip{uncoveredTripEntries.length !== 1 ? "s" : ""} with uncovered children</h2>
+              </div>
+              <p className="decline-alert-body">
+                Some children don't have a driver assigned. Assign a driver or wait for families to volunteer.
+              </p>
+              <div className="triage-list">
+                {uncoveredTripEntries.map(([tripId, children]) => {
+                  const trip = scheduleTrips.find((t) => t.id === tripId);
+                  if (!trip) return null;
+                  const tripDate = formatTripDate(trip.service_date);
+                  const direction = trip.direction === "morning" ? "AM" : "PM";
+                  return (
+                    <div className="triage-item triage-item--uncovered" key={tripId}>
+                      <div className="triage-item-info">
+                        <strong>{tripDate.weekday} · {direction}</strong>
+                        <span>Needs ride: {children.map((c) => c.first_name).join(", ")}</span>
+                      </div>
+                      {scheduleVersionId ? (
+                        <button className="secondary-button triage-action" onClick={() => onAssignDriver(tripId, scheduleVersionId)}>
+                          Assign driver
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {adminDeclinedAlerts.length > 0 ? (
+            <div className="decline-alert decline-alert--admin" data-testid="decline-alert-admin">
+              <div className="decline-alert-header">
+                <ExclamationTriangleIcon width="20" height="20" />
+                <h2>{adminDeclinedAlerts.length} drive{adminDeclinedAlerts.length !== 1 ? "s" : ""} declined, no volunteer yet</h2>
+              </div>
+              <p className="decline-alert-body">
+                Affected parents can volunteer from their home screen, or you can assign a driver directly.
+              </p>
+              <div className="triage-list">
+                {adminDeclinedAlerts.map((alert) => {
+                  const tripDate = formatTripDate(alert.trip.service_date);
+                  const direction = alert.trip.direction === "morning" ? "AM" : "PM";
+                  const driverName = alert.driverProfile?.full_name ?? "Unknown";
+                  return (
+                    <div className="triage-item triage-item--declined" key={alert.assignment.id}>
+                      <div className="triage-item-info">
+                        <strong>{tripDate.weekday} · {direction}</strong>
+                        <span>{driverName} declined · {alert.children.map((c) => c.first_name).join(", ")}</span>
+                      </div>
+                      {scheduleVersionId ? (
+                        <button className="secondary-button triage-action" onClick={() => onAssignDriver(alert.trip.id, scheduleVersionId)}>
+                          Assign driver
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {notStartedHouseholds.length > 0 ? (
+            <div className="decline-alert decline-alert--admin">
+              <div className="decline-alert-header">
+                <ExclamationTriangleIcon width="20" height="20" />
+                <h2>{notStartedHouseholds.length} household{notStartedHouseholds.length !== 1 ? "s" : ""} haven't checked in</h2>
+              </div>
+              <p className="decline-alert-body">
+                Their children aren't in the schedule. Contact them to find out their ride needs.
+              </p>
+              <div className="triage-list">
+                {notStartedHouseholds.map((h) => (
+                  <div className="triage-item triage-item--not-started" key={h.household.id}>
+                    <div className="triage-item-info">
+                      <strong>{h.household.name}</strong>
+                      <span>Not checked in</span>
+                    </div>
+                    <button className="secondary-button triage-action" onClick={onContactHousehold}>
+                      Contact
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : scheduleStatus === "published" ? (
+        <div className="on-track-notice">
+          <CheckCircledIcon width="20" height="20" />
+          <span>Schedule published — nothing needs your attention.</span>
+        </div>
+      ) : (
+        <div className="on-track-notice">
+          <CheckCircledIcon width="20" height="20" />
+          <span>On track — nothing needs your attention.</span>
+        </div>
+      )}
+
+      {generateWarning ? (
+        <div className="auth-error" role="alert" data-testid="generate-warning">
+          {generateWarning}
+        </div>
+      ) : null}
 
       {overviewError ? (
         <section className="coverage-summary coverage-summary--error">
@@ -2562,109 +2722,6 @@ function CoordinatorScreen({
           <div className="coverage-summary--alert"><strong>{notStartedCount}</strong><span>Not started</span></div>
         </section>
       )}
-
-      {declinedCount > 0 ? (
-        <div className="decline-alert decline-alert--admin" data-testid="decline-alert-admin">
-          <div className="decline-alert-header">
-            <ExclamationTriangleIcon width="20" height="20" />
-            <h2>{declinedCount} drive{declinedCount !== 1 ? "s" : ""} declined</h2>
-          </div>
-          <p className="decline-alert-body">
-            Affected parents can volunteer to cover these from their home screen. If no one steps up, regenerate the draft to reassign.
-          </p>
-        </div>
-      ) : null}
-
-      {uncoveredCount > 0 ? (
-        <div className="decline-alert decline-alert--admin" data-testid="uncovered-alert-admin">
-          <div className="decline-alert-header">
-            <ExclamationTriangleIcon width="20" height="20" />
-            <h2>{uncoveredCount} trip{uncoveredCount !== 1 ? "s" : ""} with uncovered children</h2>
-          </div>
-          <p className="decline-alert-body">
-            Some children don't have a driver assigned. Review the trip demand below for details before publishing.
-          </p>
-        </div>
-      ) : null}
-
-      {generateWarning ? (
-        <div className="auth-error" role="alert" data-testid="generate-warning">
-          {generateWarning}
-        </div>
-      ) : null}
-
-      {isCoordinator && week ? (
-        <div className="coordinator-generate">
-          {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
-{scheduleStatus === "draft" ? (
-            <>
-              <button className="secondary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
-                {generating ? "Generating…" : "Regenerate draft"}
-              </button>
-              {(() => {
-                const deadlinePassed = week?.week.confirmation_deadline
-                  ? new Date() > new Date(week.week.confirmation_deadline)
-                  : true;
-                const canPublish = tentativeCount === 0 || deadlinePassed;
-                return (
-                  <button
-                    className="primary-button"
-                    data-testid="publish-schedule"
-                    disabled={publishing || !canPublish}
-                    onClick={onPublish}
-                  >
-                    {publishing
-                      ? "Publishing…"
-                      : tentativeCount > 0 && !deadlinePassed
-                        ? `${tentativeCount} awaiting confirmation`
-                        : tentativeCount > 0 && deadlinePassed
-                          ? `Publish (${tentativeCount} unconfirmed will expire)`
-                          : "Publish schedule"}
-                  </button>
-                );
-              })()}
-              <small className="helper-copy">
-                {tentativeCount > 0
-                  ? new Date() > new Date(week?.week.confirmation_deadline ?? 0)
-                    ? `${tentativeCount} driver${tentativeCount !== 1 ? "s" : ""} haven't confirmed. Publishing will expire their assignments and flag those trips as uncovered.`
-                    : `${tentativeCount} driver${tentativeCount !== 1 ? "s" : ""} haven't confirmed yet. Wait for confirmations or the confirmation deadline.`
-                  : uncoveredCount > 0
-                    ? "Publishing will lock this schedule. Uncovered trips will be flagged for families."
-                    : "Publishing locks this schedule for all families."}
-              </small>
-            </>
-          ) : scheduleStatus === "published" ? (
-              <>
-                <div className="publish-notice">
-                  <CheckCircledIcon width="18" height="18" />
-                  <span><strong>Schedule published</strong><small>Families can see the final roster.</small></span>
-                </div>
-                {confirmRegenerate ? (
-                  <div className="confirm-code-block" data-testid="confirm-regenerate">
-                    <p className="confirm-code-warning">This will replace the published schedule. The new schedule goes live immediately. Continue?</p>
-                    <div className="confirm-code-actions">
-                      <button className="primary-button" data-testid="regenerate-schedule-coord" disabled={generating} onClick={() => { onGenerate(); setConfirmRegenerate(false); }}>
-                        {generating ? "Generating…" : "Yes, replace schedule"}
-                      </button>
-                      <button className="text-button" disabled={generating} onClick={() => setConfirmRegenerate(false)}>Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <button className="secondary-button" disabled={generating} onClick={() => setConfirmRegenerate(true)}>
-                    {generating ? "Generating…" : "Replace published schedule"}
-                  </button>
-                )}
-              </>
-            ) : (
-              <>
-                <button className="primary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
-                  {generating ? "Generating…" : "Generate draft schedule"}
-                </button>
-                <small className="helper-copy">Creates a new draft version using {`greedy-v1`}.</small>
-              </>
-            )}
-        </div>
-      ) : null}
 
       <section className="coordinator-section">
         <div className="section-heading-row"><h2>Household responses</h2></div>
@@ -2715,6 +2772,113 @@ function CoordinatorScreen({
           )}
         </div>
       </section>
+
+      {isCoordinator && week ? (
+        <section className="coordinator-section admin-override">
+          <div className="section-heading-row"><h2>Overrides</h2><span className="helper-copy">Automated at Sat 3 PM &amp; Sun 8 PM</span></div>
+          <div className="coordinator-generate">
+            {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
+            {scheduleStatus === "draft" ? (
+              <>
+                <button className="secondary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
+                  {generating ? "Generating…" : "Regenerate draft"}
+                </button>
+                {(() => {
+                  const deadlinePassed = week?.week.confirmation_deadline
+                    ? new Date() > new Date(week.week.confirmation_deadline)
+                    : true;
+                  const canPublish = tentativeCount === 0 || deadlinePassed;
+                  return (
+                    <button
+                      className="primary-button"
+                      data-testid="publish-schedule"
+                      disabled={publishing || !canPublish}
+                      onClick={onPublish}
+                    >
+                      {publishing
+                        ? "Publishing…"
+                        : tentativeCount > 0 && !deadlinePassed
+                          ? `${tentativeCount} awaiting confirmation`
+                          : tentativeCount > 0 && deadlinePassed
+                            ? `Publish (${tentativeCount} unconfirmed will expire)`
+                            : "Publish schedule"}
+                    </button>
+                  );
+                })()}
+                <small className="helper-copy">
+                  {tentativeCount > 0
+                    ? new Date() > new Date(week?.week.confirmation_deadline ?? 0)
+                      ? `${tentativeCount} driver${tentativeCount !== 1 ? "s" : ""} haven't confirmed. Publishing will expire their assignments and flag those trips as uncovered.`
+                      : `${tentativeCount} driver${tentativeCount !== 1 ? "s" : ""} haven't confirmed yet. Wait for confirmations or the confirmation deadline.`
+                    : uncoveredCount > 0
+                      ? "Publishing will lock this schedule. Uncovered trips will be flagged for families."
+                      : "Publishing locks this schedule for all families."}
+                </small>
+              </>
+            ) : scheduleStatus === "published" ? (
+                <>
+                  <div className="publish-notice">
+                    <CheckCircledIcon width="18" height="18" />
+                    <span><strong>Schedule published</strong><small>Families can see the final roster.</small></span>
+                  </div>
+                  {confirmRegenerate ? (
+                    <div className="confirm-code-block" data-testid="confirm-regenerate">
+                      <p className="confirm-code-warning">This will replace the published schedule. The new schedule goes live immediately. Continue?</p>
+                      <div className="confirm-code-actions">
+                        <button className="primary-button" data-testid="regenerate-schedule-coord" disabled={generating} onClick={() => { onGenerate(); setConfirmRegenerate(false); }}>
+                          {generating ? "Generating…" : "Yes, replace schedule"}
+                        </button>
+                        <button className="text-button" disabled={generating} onClick={() => setConfirmRegenerate(false)}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button className="secondary-button" disabled={generating} onClick={() => setConfirmRegenerate(true)}>
+                      {generating ? "Generating…" : "Replace published schedule"}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <button className="primary-button" data-testid="generate-schedule-coord" disabled={generating} onClick={onGenerate}>
+                    {generating ? "Generating…" : "Generate draft schedule"}
+                  </button>
+                  <small className="helper-copy">Creates a new draft version using {`greedy-v1`}. A draft is generated automatically after the check-in deadline.</small>
+                </>
+              )}
+          </div>
+        </section>
+      ) : null}
+
+      <BottomSheet
+        open={adminAssignTarget !== null}
+        onOpenChange={(open) => { if (!open) onCloseAssignSheet(); }}
+        title="Assign a driver"
+        description={assignTrip ? `${formatTripDate(assignTrip.service_date).weekday} · ${assignTrip.direction === "morning" ? "AM" : "PM"}` : undefined}
+      >
+        {manualAssignError ? <div className="auth-error" role="alert" style={{ marginBottom: 12 }}>{manualAssignError}</div> : null}
+        <div className="assign-driver-list">
+          {eligibleDrivers.length === 0 ? (
+            <p className="helper-copy">No active members with vehicles found.</p>
+          ) : (
+            eligibleDrivers.map(({ membership, profile, vehicle }) => (
+              <button
+                key={`${profile!.id}-${vehicle!.id}`}
+                className="assign-driver-row"
+                disabled={manualAssignWorking}
+                onClick={() => {
+                  if (adminAssignTarget) {
+                    onManuallyAssign(adminAssignTarget.tripId, adminAssignTarget.versionId, profile!.id, vehicle!.id);
+                  }
+                }}
+              >
+                <span className="assign-driver-name">{profile!.full_name}</span>
+                <span className="assign-driver-vehicle">{vehicle!.label} · {vehicle!.child_passenger_capacity} seats</span>
+              </button>
+            ))
+          )}
+        </div>
+        {manualAssignWorking ? <p className="helper-copy" style={{ marginTop: 12 }}>Assigning…</p> : null}
+      </BottomSheet>
     </div>
   );
 }
@@ -3923,6 +4087,11 @@ export default function Prototype() {
   const [driveDetailId, setDriveDetailId] = useState<string | null>(null);
   const [faqOpen, setFaqOpen] = useState(false);
   const [pushPermissionShown, setPushPermissionShown] = useState(false);
+  const [adminDeclinedAlerts, setAdminDeclinedAlerts] = useState<DeclinedDriveAlert[]>([]);
+  const [adminRoster, setAdminRoster] = useState<{ children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null>(null);
+  const [adminAssignTarget, setAdminAssignTarget] = useState<{ tripId: string; versionId: string } | null>(null);
+  const [manualAssignWorking, setManualAssignWorking] = useState(false);
+  const [manualAssignError, setManualAssignError] = useState<string | null>(null);
 
   // Register service worker for PWA push notifications
   useEffect(() => {
@@ -4192,6 +4361,56 @@ export default function Prototype() {
     })();
   }, [allWeeks, identity?.group, repository]);
 
+  const loadAdminAlerts = useCallback(async () => {
+    if (!schedule || !identity?.group) return;
+    try {
+      const alerts = await repository.getDeclinedWithoutVolunteer(
+        schedule.version.id,
+        identity.group.id,
+      );
+      setAdminDeclinedAlerts(alerts);
+    } catch {
+      setAdminDeclinedAlerts([]);
+    }
+  }, [schedule, identity?.group, repository]);
+
+  const loadAdminRoster = useCallback(async () => {
+    if (!identity?.group) return;
+    try {
+      const roster = await repository.getGroupRoster(identity.group.id);
+      setAdminRoster(roster);
+    } catch {
+      setAdminRoster(null);
+    }
+  }, [identity?.group, repository]);
+
+  const manuallyAssignDriver = useCallback(async (
+    tripId: string,
+    versionId: string,
+    driverProfileId: string,
+    vehicleId: string,
+  ) => {
+    setManualAssignWorking(true);
+    setManualAssignError(null);
+    try {
+      const newAssignment = await repository.manuallyAssignDriver(
+        tripId, versionId, driverProfileId, vehicleId,
+      );
+      if (newAssignment) {
+        void repository.sendPushNotification(newAssignment.id, null, "manually_assigned");
+      }
+      setAdminAssignTarget(null);
+      await loadSchedule();
+      await loadHomeSchedule();
+      await loadPublishedSchedule();
+      await loadAdminAlerts();
+    } catch (error) {
+      setManualAssignError(readableError(error));
+    } finally {
+      setManualAssignWorking(false);
+    }
+  }, [repository, loadSchedule, loadHomeSchedule, loadPublishedSchedule, loadAdminAlerts]);
+
   useEffect(() => {
     if (weekData && identity?.membership?.role === "coordinator") void loadSchedule();
   }, [weekData, loadSchedule, identity?.membership?.role]);
@@ -4201,8 +4420,17 @@ export default function Prototype() {
   }, [activeTab, weekData, loadSchedule, identity?.membership?.role]);
 
   useEffect(() => {
-    if (activeTab === "coordinate" && weekData && identity?.membership?.role === "coordinator") void loadSchedule();
-  }, [activeTab, weekData, loadSchedule, identity?.membership?.role]);
+    if (activeTab === "coordinate" && weekData && identity?.membership?.role === "coordinator") {
+      void loadSchedule();
+      void loadAdminRoster();
+    }
+  }, [activeTab, weekData, loadSchedule, loadAdminRoster, identity?.membership?.role]);
+
+  useEffect(() => {
+    if (activeTab === "coordinate" && schedule && identity?.membership?.role === "coordinator") {
+      void loadAdminAlerts();
+    }
+  }, [activeTab, schedule, loadAdminAlerts, identity?.membership?.role]);
 
   const generateSchedule = useCallback(async () => {
     if (!weekData) return;
@@ -4580,7 +4808,7 @@ const navItems = useMemo(() => {
       { id: "plan" as const, label: "Next Week", icon: BackpackIcon },
     ];
     if (identity?.membership?.role === "coordinator") {
-      items.push({ id: "coordinate" as const, label: "Status", icon: GroupIcon });
+      items.push({ id: "coordinate" as const, label: "Admin", icon: GroupIcon });
     }
     return items;
   }, [identity?.membership?.role]);
@@ -4730,6 +4958,8 @@ const navItems = useMemo(() => {
           generating={generating}
           generateError={generateError}
           scheduleStatus={schedule?.version.status === "published" ? "published" : schedule?.version.status === "draft" ? "draft" : null}
+          scheduleGeneratedAt={schedule?.version.generated_at ?? null}
+          schedulePublishedAt={schedule?.version.published_at ?? null}
           onPublish={() => void publishSchedule()}
           publishing={publishing}
           onReloadWeek={() => void loadWeek()}
@@ -4741,6 +4971,15 @@ const navItems = useMemo(() => {
           generateWarning={generateWarning}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
+          onAssignDriver={(tripId, versionId) => { void loadAdminRoster(); setAdminAssignTarget({ tripId, versionId }); }}
+          adminAssignTarget={adminAssignTarget}
+          adminRoster={adminRoster}
+          adminDeclinedAlerts={adminDeclinedAlerts}
+          onManuallyAssign={manuallyAssignDriver}
+          manualAssignWorking={manualAssignWorking}
+          manualAssignError={manualAssignError}
+          onCloseAssignSheet={() => setAdminAssignTarget(null)}
+          onContactHousehold={() => setDirectoryOpen(true)}
         />
       );
     }

@@ -245,6 +245,58 @@ Deno.serve(async (req) => {
           tag = `volunteered-${assignment_id}`;
         }
       }
+    } else if (type === "manually_assigned" && assignment_id) {
+      const assignment = await supaFetch("driver_assignments", "*", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      // Notify the assigned driver only
+      recipientProfileIds = [da.driver_profile_id];
+
+      const trip = await supaFetch("trips", "*", { id: `eq.${da.trip_id}` });
+      if (trip.length > 0) {
+        const t = trip[0];
+        const period = t.direction === "morning" ? "morning" : "afternoon";
+        title = "You've been assigned";
+        bodyText = `The coordinator assigned you to drive the ${period} trip on ${t.service_date}. Open the app to confirm.`;
+        tag = `manually-assigned-${assignment_id}`;
+      }
+    } else if (type === "admin_escalation" && version_id) {
+      const versionData = await supaFetch("schedule_versions", "group_id", { id: `eq.${version_id}` });
+      if (versionData.length === 0) return jsonError("Version not found", 404);
+      const { group_id } = versionData[0];
+
+      // Find uncovered trips in this version
+      const driverAssignments = await supaFetch("driver_assignments", "*", { schedule_version_id: version_id, status: "in.(tentative,confirmed)" });
+      const coveredRiderIds = new Set<string>();
+
+      for (const da of driverAssignments) {
+        const riders = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: da.id });
+        riders.forEach((r: any) => coveredRiderIds.add(r.child_id));
+      }
+
+      const versionRow = await supaFetch("schedule_versions", "week_id", { id: `eq.${version_id}` });
+      if (versionRow.length === 0) return jsonError("Version not found", 404);
+      const { week_id } = versionRow[0];
+
+      const trips = await supaFetch("trips", "id", { group_id, week_id });
+      const tripIds = trips.map((t: any) => t.id);
+
+      const rideRequests = await supaFetch("ride_requests", "*", {
+        trip_id: `in.(${tripIds.join(",")})`,
+        needs_ride: "true",
+      });
+      const uncoveredChildren = rideRequests.filter((rr: any) => !coveredRiderIds.has(rr.child_id));
+
+      if (uncoveredChildren.length === 0) return jsonResponse({ sent: 0, failed: 0 });
+
+      // Notify coordinators only
+      const memberships = await supaFetch("memberships", "profile_id", { group_id, status: "active", role: "eq.coordinator" });
+      recipientProfileIds = memberships.map((m: any) => m.profile_id);
+
+      title = "Schedule needs attention";
+      bodyText = `${uncoveredChildren.length} child${uncoveredChildren.length !== 1 ? "ren" : ""} still need${uncoveredChildren.length === 1 ? "s" : ""} a ride this week. Open the app to assign a driver.`;
+      tag = `admin-escalation-${version_id}`;
     } else {
       return jsonError(`Invalid type or missing parameters: ${type}`, 400);
     }

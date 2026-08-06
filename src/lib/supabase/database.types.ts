@@ -558,6 +558,19 @@ export type Database = {
         Args: { p_group_id: string; p_version_id: string };
         Returns: Record<string, unknown>;
       };
+      publish_schedule_internal: {
+        Args: { p_group_id: string; p_version_id: string; p_actor_id: string | null };
+        Returns: Record<string, unknown>;
+      };
+      manually_assign_driver: {
+        Args: {
+          p_trip_id: string;
+          p_schedule_version_id: string;
+          p_driver_profile_id: string;
+          p_vehicle_id: string;
+        };
+        Returns: DriverAssignmentRow;
+      };
     };
     Enums: {
       app_role: AppRole;
