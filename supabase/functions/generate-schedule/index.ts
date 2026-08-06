@@ -168,16 +168,25 @@ Deno.serve(async (req: Request) => {
     if (profilesRes.error) return jsonError("Failed to load profiles.", 500);
 
     // ── Build algorithm inputs ───────────────────────────────────
+    // Build profileHouseholdMap from memberships (not subject to profiles RLS)
     const profileHouseholdMap = new Map<string, string>();
     for (const m of (membershipsRes.data ?? []) as Array<{ profile_id: string; household_id: string }>) {
       profileHouseholdMap.set(m.profile_id, m.household_id);
     }
 
-    const profiles: SchedulingProfile[] = (profilesRes.data ?? []).map((p: { id: string; full_name: string }) => ({
-      id: p.id,
-      full_name: p.full_name,
-      household_id: profileHouseholdMap.get(p.id) ?? "",
-    }));
+    // Build profiles from profileHouseholdMap so all members are included
+    // even when the profiles table RLS restricts the query to the caller's
+    // own row. Enrich with full_name from profilesRes (best-effort).
+    const fullNameById = new Map(
+      (profilesRes.data ?? []).map((p: { id: string; full_name: string }) => [p.id, p.full_name]),
+    );
+    const profiles: SchedulingProfile[] = Array.from(profileHouseholdMap.entries()).map(
+      ([id, household_id]) => ({
+        id,
+        full_name: fullNameById.get(id) ?? "",
+        household_id,
+      }),
+    );
 
     const trips: SchedulingTrip[] = (tripsRes.data ?? []).map((t) => ({
       id: t.id,
