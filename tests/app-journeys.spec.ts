@@ -207,7 +207,9 @@ function setupWeekWithTrips() {
   const weekId = UID(900);
   const tripIds: string[] = [];
   const dates = ["2028-01-03", "2028-01-04", "2028-01-05", "2028-01-06", "2028-01-07"];
-  let sql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '2028-01-03', 'open', '2028-01-02T15:00:00-08:00', '2028-01-02T15:00:00-08:00') ON CONFLICT DO NOTHING;\n`;
+  // Production deadlines: Saturday 3 PM Pacific (check-in), Sunday 8 PM Pacific (confirmation).
+  // starts_on = 2028-01-03 (Monday), so check-in = 2028-01-01 (Sat), confirmation = 2028-01-02 (Sun).
+  let sql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '2028-01-03', 'open', '2028-01-01T15:00:00-08:00', '2028-01-02T20:00:00-08:00') ON CONFLICT DO NOTHING;\n`;
   for (let d = 0; d < 5; d++) {
     for (const dir of ["morning", "afternoon"]) {
       const tId = UID(400 + d * 2 + (dir === "morning" ? 0 : 1));
@@ -227,8 +229,8 @@ async function signInWithTestAuth(page: Page, email: string) {
   ).toBeVisible({ timeout: 15000 });
 }
 
-async function generateSchedule(coordUserId: string, weekId: string) {
-  const tokenBody = JSON.stringify({ email: `${"coordjourney"}@e2e.kidpool`, password: TEST_PASSWORD });
+async function generateSchedule(coordEmail: string, weekId: string) {
+  const tokenBody = JSON.stringify({ email: coordEmail, password: TEST_PASSWORD });
   const tokenResult = execSync(
     `curl -s -X POST -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '${tokenBody}' "${SUPABASE_URL}/auth/v1/token?grant_type=password"`,
     { encoding: "utf8" },
@@ -314,7 +316,7 @@ test.describe("User Journeys", () => {
       INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(521)}', '${morningTripId}', '${driver.userId}', '${UID(321)}', 'prefer') ON CONFLICT DO NOTHING;
     `);
 
-    await generateSchedule(coord.userId, weekId);
+    await generateSchedule(coord.email, weekId);
     await page.waitForTimeout(1000);
 
     await signInWithTestAuth(page, driver.email);
@@ -354,7 +356,7 @@ test.describe("User Journeys", () => {
       INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(531)}', '${morningTripId}', '${driver.userId}', '${UID(331)}', 'prefer') ON CONFLICT DO NOTHING;
     `);
 
-    await generateSchedule(coord.userId, weekId);
+    await generateSchedule(coord.email, weekId);
     await page.waitForTimeout(1000);
 
     await signInWithTestAuth(page, driver.email);
@@ -407,7 +409,7 @@ test.describe("User Journeys", () => {
       INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(541)}', '${morningTripId}', '${driver.userId}', '${UID(341)}', 'prefer') ON CONFLICT DO NOTHING;
     `);
 
-    await generateSchedule(coord.userId, weekId);
+    await generateSchedule(coord.email, weekId);
     await page.waitForTimeout(1000);
 
     await signInWithTestAuth(page, coord.email);
@@ -447,7 +449,7 @@ test.describe("User Journeys", () => {
       INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(551)}', '${morningTripId}', '${driver.userId}', '${UID(351)}', 'prefer') ON CONFLICT DO NOTHING;
     `);
 
-    await generateSchedule(coord.userId, weekId);
+    await generateSchedule(coord.email, weekId);
     await page.waitForTimeout(1000);
 
     const versionResult = execSync(

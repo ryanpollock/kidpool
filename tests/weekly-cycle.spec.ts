@@ -90,6 +90,29 @@ function getAnonKey(): string {
 
 const ANON_KEY = getAnonKey();
 
+function generateScheduleViaEdgeFunction(coordEmail: string, weekId: string) {
+  const tokenBody = JSON.stringify({ email: coordEmail, password: TEST_PASSWORD });
+  const tokenResult = execSync(
+    `curl -s -X POST -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '${tokenBody}' "${SUPABASE_URL}/auth/v1/token?grant_type=password"`,
+    { encoding: "utf8" },
+  );
+  const tokenData = JSON.parse(tokenResult);
+  if (!tokenData.access_token) {
+    console.error(`[weekly-cycle] Failed to get JWT for ${coordEmail}: ${JSON.stringify(tokenData)}`);
+  }
+  const jwt = tokenData.access_token;
+  if (!jwt) throw new Error(`Failed to authenticate ${coordEmail}: ${JSON.stringify(tokenData)}`);
+  const fnResult = execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${jwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  );
+  const parsed = JSON.parse(fnResult);
+  if (!parsed.success) {
+    console.error(`[weekly-cycle] generateSchedule FAILED: ${JSON.stringify(parsed)}`);
+  }
+  return parsed;
+}
+
 function runSql(sql: string): { rows?: Array<Record<string, unknown>>; error?: { message: string } } {
   const tmpFile = `/tmp/kidpool-cycle-query.sql`;
   execSync(`cat > "${tmpFile}" << 'ENDSQL'\n${sql}\nENDSQL`, { shell: "/bin/bash" });
@@ -216,18 +239,33 @@ function setupWeekStartingOn(monday: Date) {
   const weekId = UID(950);
   const tripIds: string[] = [];
   const dates: string[] = [];
+  // Trip dates start from today (not Monday) so they're never in the past.
+  // The respond_to_driver_assignment RPC blocks responses for past trips.
+  const today = new Date();
   for (let d = 0; d < 5; d++) {
-    const date = new Date(monday);
-    date.setDate(monday.getDate() + d);
+    const date = new Date(today);
+    date.setDate(today.getDate() + d);
     dates.push(date.toISOString().slice(0, 10));
   }
 
-  const checkinDeadline = `${weekStart}T15:00:00-07:00`;
-  const confirmationDeadline = `${weekStart}T20:00:00-07:00`;
+  // Check-in deadline is in the recent past (Saturday before this week).
+  // Confirmation deadline is 7 days from now so it hasn't passed —
+  // the Edge Function keeps the schedule as draft with tentative assignments.
+  const saturday = new Date(monday);
+  saturday.setDate(monday.getDate() - 2);
+  const futureConfirmation = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const checkinDeadline = `${saturday.toISOString().slice(0, 10)}T15:00:00-08:00`;
+  const confirmationDeadline = `${futureConfirmation.toISOString().slice(0, 10)}T20:00:00-08:00`;
 
-  let sql = `DELETE FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}' AND id::text LIKE 'deadbeef-%');\n`;
-  sql += `DELETE FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}' AND id::text LIKE 'deadbeef-%');\n`;
-  sql += `DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}' AND id::text LIKE 'deadbeef-%';\n`;
+  let sql = `DELETE FROM public.rider_assignments WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
+  sql += `DELETE FROM public.driver_confirmations WHERE driver_assignment_id IN (SELECT id FROM public.driver_assignments WHERE schedule_version_id IN (SELECT id FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}')));\n`;
+  sql += `DELETE FROM public.driver_assignments WHERE schedule_version_id IN (SELECT id FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
+  sql += `DELETE FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}');\n`;
+  sql += `DELETE FROM public.driver_availability WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
+  sql += `DELETE FROM public.ride_requests WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
+  sql += `DELETE FROM public.weekly_checkins WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}') AND household_id::text LIKE 'deadbeef-%';\n`;
+  sql += `DELETE FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}');\n`;
+  sql += `DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}';\n`;
   sql += `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${weekStart}', 'open', '${checkinDeadline}', '${confirmationDeadline}') ON CONFLICT DO NOTHING;\n`;
   for (let d = 0; d < 5; d++) {
     for (const dir of ["morning", "afternoon"]) {
@@ -300,17 +338,12 @@ test.describe.serial("Weekly Cycle", () => {
       INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(121)}', '${morningTrip}', '${UID(112)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
     `);
 
-    // Step 1: Coordinator generates draft schedule via UI button
-    await signInWithTestAuth(page, coord.email);
-    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
-    await page.getByTestId("nav-coordinate").click();
-    await expect(page.getByTestId("coordinator-screen")).toBeVisible({ timeout: 10000 });
-    await page.waitForTimeout(1000);
-
-    const generateBtn = page.getByTestId("generate-schedule-coord");
-    await expect(generateBtn).toBeVisible({ timeout: 5000 });
-    await generateBtn.click();
-    await page.waitForTimeout(5000);
+    // Step 1: Generate draft schedule via Edge Function (direct call ensures
+    // the test's weekId is used, not the app's getCurrentWeek selection)
+    const genResult = generateScheduleViaEdgeFunction(coord.email, weekId);
+    if (!genResult.success) {
+      throw new Error(`Generate failed: ${JSON.stringify(genResult)}`);
+    }
 
     const draftStatus = getLatestVersionStatus(weekId);
     expect(draftStatus).toBe("draft");
