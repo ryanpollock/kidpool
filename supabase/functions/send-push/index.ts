@@ -125,6 +125,110 @@ Deno.serve(async (req) => {
     if (!SERVICE_ROLE_KEY) return jsonError("Service role key not configured", 500);
     if (!type) return jsonError("Missing notification type", 400);
 
+    // ── welcome: email-only, no push, no profile lookup ─────
+    // Triggered by the on_auth_user_welcome_email DB trigger on new signup.
+    // The email address and name come directly from the request body
+    // (sourced from auth.users by the trigger), so no DB lookup is needed.
+    if (type === "welcome") {
+      const email: string | undefined = body.email;
+      const fullName: string | undefined = body.full_name;
+      const userId: string | undefined = body.user_id;
+      if (!email) return jsonError("Missing email for welcome", 400);
+      if (!userId) return jsonError("Missing user_id for welcome", 400);
+      if (email.endsWith("@seed.kidpool") || email.endsWith("@test.kidpool") || email.endsWith("@e2e.kidpool")) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
+      }
+      if (!RESEND_API_KEY) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_resend_key" });
+      }
+
+      const firstName = (fullName ?? "there").split(" ")[0];
+      const cta = APP_URL
+        ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
+        : "";
+      const htmlBody =
+        `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+        `<h1 style="font-size:22px;margin:0 0 16px;">Welcome to Carpool Crew, ${escapeHtml(firstName)}</h1>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 24px;">Carpool Crew coordinates shared rides to Presidio Middle School for Clarendon families. Here's what to know to get started.</p>` +
+
+        `<h2 style="font-size:16px;margin:24px 0 8px;">1. Your household and join code</h2>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">During setup you created a <strong>household</strong> — your family's group in the carpool. Your household shares one set of children and one vehicle. To add a co-parent or caregiver, open the app, tap your avatar (top right), and tap <strong>Get join code</strong>. Share that code with them — they'll sign in with their own Google account and enter it during setup.</p>` +
+
+        `<h2 style="font-size:16px;margin:24px 0 8px;">2. The three tabs</h2>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 8px;"><strong>Home</strong> — Your week at a glance: drives you're assigned, alerts if a ride is cancelled, and a quick link to the parent directory.</p>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 8px;"><strong>This Week</strong> — The published schedule, day by day. Tap any drive to see who's in the car.</p>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>Next Week</strong> — Where you check in for next week's rides (see below). Tap <strong>Earlier</strong> or <strong>Later</strong> to browse other weeks.</p>` +
+
+        `<h2 style="font-size:16px;margin:24px 0 8px;">3. Check in by Saturday 3 PM</h2>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Every week, open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Submit by <strong>Saturday 3 PM Pacific</strong> — the scheduler builds the week's carpool from your check-in. Missed check-ins mean your child might not get a ride. You can reopen your check-in any time before the schedule is published.</p>` +
+
+        `<h2 style="font-size:16px;margin:24px 0 8px;">4. Set your standard week</h2>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">You set this during setup. It pre-fills your weekly check-in with your family's typical ride needs and driving availability, so you only need to adjust for the unusual days. To change it later, tap your avatar, then edit the <strong>Standard week</strong> section. Morning pickup is 8:40 AM from Midtown Terrace; afternoon pickup is 5:15 PM from Presidio.</p>` +
+
+        `<h2 style="font-size:16px;margin:24px 0 8px;">5. Install the app on your phone</h2>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 8px;"><strong>iPhone:</strong> Open carpoolcrew.co in Safari, tap the Share button, then <strong>Add to Home Screen</strong>. Launch from the home screen icon to get push notifications when your child's drive changes.</p>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>Android:</strong> Open carpoolcrew.co in Chrome, tap the menu (three dots), then <strong>Add to Home Screen</strong> or <strong>Install app</strong>. Allow notifications when prompted.</p>` +
+
+        `<p style="font-size:13px;line-height:1.5;color:#4f6278;margin-top:32px;border-top:1px solid #e0e0e0;padding-top:16px;">Questions? Reply to this email, or open the app and tap <strong>FAQ — How the carpool works</strong> on the Home tab.</p>` +
+        `<p style="margin-top:24px;">${cta}</p>` +
+        `</body></html>`;
+
+      const textBody =
+        `Welcome to Carpool Crew, ${firstName}!\n\n` +
+        `Carpool Crew coordinates shared rides to Presidio Middle School for Clarendon families. Here's what to know to get started.\n\n` +
+        `1. YOUR HOUSEHOLD AND JOIN CODE\n` +
+        `During setup you created a household — your family's group in the carpool. To add a co-parent, tap your avatar (top right) in the app, then tap "Get join code" and share it with them.\n\n` +
+        `2. THE THREE TABS\n` +
+        `Home: Your week at a glance — drives, alerts, parent directory.\n` +
+        `This Week: The published schedule, day by day.\n` +
+        `Next Week: Where you check in for next week's rides.\n\n` +
+        `3. CHECK IN BY SATURDAY 3 PM\n` +
+        `Every week, open the Next Week tab and tell us which days your child needs rides and which days you can drive. Submit by Saturday 3 PM Pacific.\n\n` +
+        `4. SET YOUR STANDARD WEEK\n` +
+        `Your standard week defaults pre-fill your weekly check-in. Edit them any time from the Account screen (tap your avatar).\n\n` +
+        `5. INSTALL THE APP\n` +
+        `iPhone: Open carpoolcrew.co in Safari, tap Share, then Add to Home Screen.\n` +
+        `Android: Open carpoolcrew.co in Chrome, tap menu, then Add to Home Screen.\n\n` +
+        `Questions? Reply to this email, or open the app and tap FAQ on the Home tab.`;
+
+      const idempotencyKey = `welcome-${userId}`;
+      let emailSent = 0;
+      let emailFailed = 0;
+      try {
+        const res = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: email,
+            reply_to: RESEND_REPLY_TO,
+            subject: "Welcome to Carpool Crew",
+            html: htmlBody,
+            text: textBody,
+            tags: [
+              { name: "type", value: "welcome" },
+              { name: "group", value: "unknown" },
+            ],
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.text();
+          console.error(`[send-push] Welcome email to ${email} failed:`, err);
+          emailFailed++;
+        } else {
+          emailSent++;
+        }
+      } catch (e) {
+        console.error(`[send-push] Welcome email to ${email} threw:`, e);
+        emailFailed++;
+      }
+      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
+    }
+
     let recipientProfileIds: string[] = [];
     let title = "";
     let bodyText = "";
