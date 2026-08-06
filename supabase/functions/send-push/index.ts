@@ -241,7 +241,7 @@ Deno.serve(async (req) => {
 
       title = "Check-in deadline";
       bodyText = `Your check-in deadline is approaching. Submit your ride needs soon.`;
-      tag = "deadline-reminder";
+      tag = `deadline-reminder-${new Date().toISOString().slice(0, 10)}`;
     } else if (type === "volunteered" && assignment_id) {
       const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: `eq.${assignment_id}` });
       const childIds = riderAssignments.map((ra: any) => ra.child_id);

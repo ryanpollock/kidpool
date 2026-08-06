@@ -14,6 +14,10 @@ const manualAssignMigrationUrl = new URL(
   "../supabase/migrations/202608070002_manually_assign_driver.sql",
   import.meta.url,
 );
+const deadlineCronMigrationUrl = new URL(
+  "../supabase/migrations/202608070003_reenable_deadline_cron.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -228,6 +232,36 @@ test("send-push: PostgREST filters use proper operator syntax (eq., in.)", async
   // No bare UUID/string filter values — all use eq. prefix
   assert.doesNotMatch(ts, /status: "active"/);
   assert.doesNotMatch(ts, /needs_ride: "true"/);
+});
+
+// ─── Deadline reminder cron re-enablement ───────────────────
+
+test("deadline cron: re-enabled with environment-aware vault pattern", async () => {
+  const sql = await readFile(deadlineCronMigrationUrl, "utf8");
+
+  // Rewrites the function to use cron_edge_base_url (not supabase_url or hardcoded URL)
+  assert.match(sql, /create or replace function public\.send_deadline_reminders\(\)/);
+  assert.match(sql, /cron_edge_base_url/);
+  assert.doesNotMatch(sql, /ujcrnrcgbvzyqosykkjy/);
+  // No hardcoded fallback URL in the function body — only vault secrets
+  assert.doesNotMatch(sql, /v_supabase_url/);
+
+  // Security definer, revoked from public/authenticated
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_deadline_reminders\(\) from public, authenticated/);
+
+  // Re-schedules the hourly cron
+  assert.match(sql, /cron\.schedule/);
+  assert.match(sql, /checkin-deadline-reminder/);
+  assert.match(sql, /0 \* \* \* \*/);
+});
+
+test("send-push: deadline_reminder tag includes date for idempotency", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Tag includes the current date so the email idempotency key changes daily
+  // (at most one reminder email per family per day, even if cron fires hourly)
+  assert.match(ts, /deadline-reminder-\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}/);
 });
 
 // ─── CarpoolRepository ───────────────────────────────────────
