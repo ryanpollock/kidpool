@@ -208,6 +208,11 @@ test("send-push: sends transactional email via Resend alongside push", async () 
   // Reports email stats in the response alongside push stats
   assert.match(ts, /email_sent: emailSent/);
   assert.match(ts, /email_failed: emailFailed/);
+
+  // Skips fake seed/test/e2e emails to avoid bounces polluting Resend
+  assert.match(ts, /@seed\.kidpool/);
+  assert.match(ts, /@test\.kidpool/);
+  assert.match(ts, /@e2e\.kidpool/);
 });
 
 test("send-push: PostgREST filters use proper operator syntax (eq., in.)", async () => {

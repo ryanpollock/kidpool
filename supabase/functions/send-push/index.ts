@@ -392,6 +392,7 @@ Deno.serve(async (req) => {
 
       for (const profile of profiles) {
         if (!profile.email) continue;
+        if (profile.email.endsWith("@seed.kidpool") || profile.email.endsWith("@test.kidpool") || profile.email.endsWith("@e2e.kidpool")) continue;
         const idempotencyKey = `carpool-${tag}-${profile.id}`;
         try {
           const res = await fetch("https://api.resend.com/emails", {
