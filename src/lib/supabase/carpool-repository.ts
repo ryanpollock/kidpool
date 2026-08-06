@@ -1553,8 +1553,6 @@ export class CarpoolRepository {
       if (da.status === "tentative" || da.status === "confirmed") {
         handledDriverAssignments.add(da.id);
       } else if (da.status === "declined") {
-        // Only suppress Flow B if at least one rider is from a different
-        // household than the driver — that parent will see the Flow A alert.
         const riders = ridersByAssignment.get(da.id) ?? [];
         const driverHousehold = driverHouseholdByProfile.get(da.driver_profile_id);
         const hasOtherHouseholdRider = riders.some(

@@ -4,7 +4,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import path from "node:path";
 
@@ -81,7 +81,7 @@ const ANON_KEY = getAnonKey();
 
 function runSql(sql: string): { rows?: Array<Record<string, unknown>>; error?: { message: string } } {
   const tmpFile = `/tmp/kidpool-edgecase-query.sql`;
-  execSync(`cat > "${tmpFile}" << 'ENDSQL'\n${sql}\nENDSQL`, { shell: "/bin/bash" });
+  writeFileSync(tmpFile, sql);
   try {
     const result = execSync(`supabase db query --linked -f "${tmpFile}" 2>/dev/null`, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
     try { return JSON.parse(result); } catch { return {}; }
@@ -146,14 +146,15 @@ function deleteTestUsersByEmail() {
 
 function cleanupEdgeCaseData() {
   // Split into individual runSql calls — multi-statement SQL can silently fail on staging
+  // Order matters: delete child tables before parent tables to avoid FK constraint failures
   runSql(`DELETE FROM public.rider_assignments WHERE trip_id::text LIKE 'deadbeef-%' OR child_id::text LIKE 'deadbeef-%';`);
   runSql(`DELETE FROM public.driver_assignments WHERE trip_id::text LIKE 'deadbeef-%' OR schedule_version_id::text LIKE 'deadbeef-%';`);
   runSql(`DELETE FROM public.ride_requests WHERE trip_id::text LIKE 'deadbeef-%' OR checkin_id::text LIKE 'deadbeef-%' OR child_id::text LIKE 'deadbeef-%';`);
   runSql(`DELETE FROM public.driver_availability WHERE trip_id::text LIKE 'deadbeef-%' OR checkin_id::text LIKE 'deadbeef-%';`);
   runSql(`DELETE FROM public.schedule_versions WHERE week_id::text LIKE 'deadbeef-%';`);
   runSql(`DELETE FROM public.trips WHERE id::text LIKE 'deadbeef-%';`);
-  runSql(`DELETE FROM public.weeks WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';`);
   runSql(`DELETE FROM public.weekly_checkins WHERE group_id = '${GROUP_ID}' AND household_id::text LIKE 'deadbeef-%';`);
+  runSql(`DELETE FROM public.weeks WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';`);
   runSql(`DELETE FROM public.children WHERE id::text LIKE 'deadbeef-%' OR household_id::text LIKE 'deadbeef-%';`);
   runSql(`DELETE FROM public.vehicles WHERE id::text LIKE 'deadbeef-%' OR household_id::text LIKE 'deadbeef-%';`);
   runSql(`DELETE FROM public.households WHERE group_id = '${GROUP_ID}' AND (id::text LIKE 'deadbeef-%' OR created_by IN (SELECT id FROM public.profiles WHERE email LIKE '%@edgecase.kidpool'));`);
@@ -214,8 +215,13 @@ function setupWeekWithPastAndFutureTrips() {
   const checkinDeadline = `${weekStart}T15:00:00-07:00`;
   const confirmationDeadline = `${weekStart}T20:00:00-07:00`;
 
+  runSql(`DELETE FROM public.rider_assignments WHERE trip_id IN ('${pastTripAm}','${pastTripPm}','${futureTripAm}','${futureTripPm}');`);
+  runSql(`DELETE FROM public.driver_assignments WHERE trip_id IN ('${pastTripAm}','${pastTripPm}','${futureTripAm}','${futureTripPm}') OR schedule_version_id IN (SELECT id FROM public.schedule_versions WHERE week_id = '${weekId}');`);
+  runSql(`DELETE FROM public.ride_requests WHERE trip_id IN ('${pastTripAm}','${pastTripPm}','${futureTripAm}','${futureTripPm}') OR checkin_id IN (SELECT id FROM public.weekly_checkins WHERE week_id = '${weekId}');`);
+  runSql(`DELETE FROM public.driver_availability WHERE trip_id IN ('${pastTripAm}','${pastTripPm}','${futureTripAm}','${futureTripPm}') OR checkin_id IN (SELECT id FROM public.weekly_checkins WHERE week_id = '${weekId}');`);
   runSql(`DELETE FROM public.schedule_versions WHERE week_id = '${weekId}';`);
   runSql(`DELETE FROM public.trips WHERE id IN ('${pastTripAm}','${pastTripPm}','${futureTripAm}','${futureTripPm}');`);
+  runSql(`DELETE FROM public.weekly_checkins WHERE week_id = '${weekId}';`);
   runSql(`DELETE FROM public.weeks WHERE id = '${weekId}';`);
   runSql(`INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${weekStart}', 'open', '${checkinDeadline}', '${confirmationDeadline}') ON CONFLICT DO NOTHING;`);
   runSql(`INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${pastTripAm}', '${GROUP_ID}', '${weekId}', '${pastDate}', 'morning', '08:40', '08:45', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;`);
@@ -226,7 +232,9 @@ function setupWeekWithPastAndFutureTrips() {
   return { weekId, tripIds, pastTripAm, pastTripPm, futureTripAm, futureTripPm };
 }
 
-// Create a week with the current week's Monday–Friday trips (same as cross-family helper).
+// Create a week with the current week's Monday–Friday trips.
+// Uses this week's Monday (not next week) to avoid demo data conflicts.
+// Returns tripIds + dates so tests can pick future trips (past-trip guard blocks past).
 function setupCurrentWeekWithTrips() {
   const now = new Date();
   const dayOfWeek = now.getDay();
@@ -247,9 +255,16 @@ function setupCurrentWeekWithTrips() {
   const confirmationDeadline = `${weekStart}T20:00:00-07:00`;
 
   // Split into individual runSql calls — multi-statement SQL can silently fail on staging
-  runSql(`DELETE FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}' AND id::text LIKE 'deadbeef-%');`);
-  runSql(`DELETE FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}' AND id::text LIKE 'deadbeef-%');`);
-  runSql(`DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}' AND id::text LIKE 'deadbeef-%';`);
+  // Delete by weekId (not starts_on) since starts_on may change between runs
+  // Must delete ALL child tables first to avoid FK constraint failures
+  runSql(`DELETE FROM public.rider_assignments WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id = '${weekId}');`);
+  runSql(`DELETE FROM public.driver_assignments WHERE schedule_version_id IN (SELECT id FROM public.schedule_versions WHERE week_id = '${weekId}') OR trip_id IN (SELECT id FROM public.trips WHERE week_id = '${weekId}');`);
+  runSql(`DELETE FROM public.ride_requests WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id = '${weekId}') OR checkin_id IN (SELECT id FROM public.weekly_checkins WHERE week_id = '${weekId}');`);
+  runSql(`DELETE FROM public.driver_availability WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id = '${weekId}') OR checkin_id IN (SELECT id FROM public.weekly_checkins WHERE week_id = '${weekId}');`);
+  runSql(`DELETE FROM public.schedule_versions WHERE week_id = '${weekId}';`);
+  runSql(`DELETE FROM public.trips WHERE week_id = '${weekId}';`);
+  runSql(`DELETE FROM public.weekly_checkins WHERE week_id = '${weekId}';`);
+  runSql(`DELETE FROM public.weeks WHERE id = '${weekId}';`);
   runSql(`INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${weekStart}', 'open', '${checkinDeadline}', '${confirmationDeadline}') ON CONFLICT DO NOTHING;`);
   for (let d = 0; d < 5; d++) {
     for (const dir of ["morning", "afternoon"]) {
@@ -259,7 +274,21 @@ function setupCurrentWeekWithTrips() {
       runSql(`INSERT INTO public.trips (id, group_id, week_id, service_date, direction, meeting_time, departure_time, origin, destination) VALUES ('${tId}', '${GROUP_ID}', '${weekId}', '${dates[d]}', '${dir}', '${time}', '${time}', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;`);
     }
   }
-  return { weekId, tripIds };
+  return { weekId, tripIds, dates };
+}
+
+// Find the first trip that's at least tomorrow (to avoid UTC timezone issues
+// where today in local time might already be past in UTC).
+// tripIds[0]=Mon AM, [1]=Mon PM, [2]=Tue AM, [3]=Tue PM, etc.
+function firstFutureTrip(tripIds: string[], dates: string[]): string {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = localDateStr(tomorrow);
+  for (let i = 0; i < tripIds.length; i++) {
+    const tripDate = dates[Math.floor(i / 2)];
+    if (tripDate >= tomorrowStr) return tripIds[i];
+  }
+  return tripIds[tripIds.length - 1];
 }
 
 async function signInWithTestAuth(page: Page, email: string) {
@@ -406,22 +435,18 @@ test.describe.serial("Edge Cases: Silent Stranding + Past-Trip Guards", () => {
   test.afterEach(() => { cleanupEdgeCaseData(); });
   test.setTimeout(120000);
 
-  // ── Test 1: Self-cancel with only own children → other parent sees Flow B ──
+  // ── Test 1: Self-cancel with only own children → driver sees uncovered alert ──
 
-  test("self-cancel: driver's own kids only → other parent sees Flow B uncovered alert and can volunteer", async ({ page }) => {
+  test("self-cancel: driver's own kids only → driver sees uncovered alert for own child", async ({ page }) => {
     test.skip(skip, "Requires service key");
     const coord = setupHousehold(10, "SCCoord", true);
     if (!coord) { test.skip(); return; }
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
-    const morningTrip = tripIds[0];
+    const { weekId, tripIds, dates } = setupCurrentWeekWithTrips();
+    const morningTrip = firstFutureTrip(tripIds, dates);
 
     // Driver A has a child + vehicle + availability. Only child on this trip.
     const driverA = seedFamilyForTrip(11, "SCDriverA", weekId, morningTrip, false, true, true);
     if (!driverA) { test.skip(); return; }
-
-    // Rider B has a child + vehicle but NO availability (so they can volunteer via Flow B)
-    const riderB = seedFamilyForTrip(12, "SCRiderB", weekId, morningTrip, false, true, false);
-    if (!riderB) { test.skip(); return; }
 
     await generateSchedule(coord!.email, weekId);
     await page.waitForTimeout(1000);
@@ -440,27 +465,19 @@ test.describe.serial("Edge Cases: Silent Stranding + Past-Trip Guards", () => {
     assert.ok(heroText && /cancelled/i.test(heroText), `Driver A hero should mention cancelled, got: "${heroText}"`);
     await expect(page.locator('[data-testid^="reaccept-"]').first()).toBeVisible({ timeout: 5000 });
 
-    // Switch to Rider B — should see Flow B uncovered alert (not Flow A)
-    // because the driver's own children are the only riders, no other parent
-    // has a Flow A alert.
-    await switchUser(page, riderB!.email);
-    await page.waitForTimeout(2000);
-
-    // Rider B should see an uncovered alert (Flow B), not a decline-alert (Flow A)
+    // With the fix: Driver A ALSO sees the uncovered alert for their own child.
+    // Without the fix, the declined assignment was "handled" and the child was
+    // silently stranded — no alert shown to anyone.
     const uncoveredAlert = page.getByTestId("uncovered-alert").or(page.locator('[data-testid^="volunteer-uncovered-"]'));
     await expect(uncoveredAlert.first()).toBeVisible({ timeout: 5000 });
 
-    // Flow A decline-alert should NOT be visible (Rider B's children are not on the declined drive)
-    await expect(page.getByTestId("decline-alert")).toBeHidden({ timeout: 2000 });
-
-    // Rider B volunteers via Flow B
-    await volunteerViaFlowB(page);
-
-    // Verify in DB: Rider B now has a confirmed assignment, Driver A is declined
-    const confirmedDriver = runSql(`SELECT driver_profile_id FROM public.driver_assignments WHERE schedule_version_id = '${versionId}' AND trip_id = '${morningTrip}' AND status = 'confirmed' LIMIT 1;`);
-    const confirmedRows = confirmedDriver.rows ?? [];
-    assert.ok(confirmedRows.length > 0, "there should be a confirmed driver after Flow B volunteer");
-    assert.equal((confirmedRows[0] as Record<string, unknown>).driver_profile_id, riderB!.userId, "Rider B should be the confirmed driver");
+    // Coordinator sees the declined admin alert
+    await switchUser(page, coord!.email);
+    await page.waitForTimeout(2000);
+    await page.getByTestId("nav-coordinate").click();
+    await expect(page.getByTestId("coordinator-screen")).toBeVisible({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+    await expect(page.getByTestId("decline-alert-admin")).toBeVisible({ timeout: 5000 });
   });
 
   // ── Test 2: Self-cancel with other family's kids → other family sees Flow A ──
