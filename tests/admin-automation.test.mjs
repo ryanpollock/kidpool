@@ -312,12 +312,14 @@ test("send-push: welcome type sends email-only onboarding welcome", async () => 
   // Subject is the welcome subject
   assert.match(ts, /subject: "Welcome to Carpool Crew"/);
 
-  // HTML covers the 5 key topics
-  assert.match(ts, /Your household and join code/);
+  // HTML covers the 4 key topics (household section removed — app teaches it inline)
   assert.match(ts, /The three tabs/);
   assert.match(ts, /Check in by Saturday 3 PM/);
   assert.match(ts, /Set your standard week/);
   assert.match(ts, /Install the app on your phone/);
+
+  // Standard week ≠ auto check-in — highlighted callout
+  assert.match(ts, /does not check you in automatically/);
 
   // Install instructions for both platforms
   assert.match(ts, /Add to Home Screen/);
