@@ -217,18 +217,32 @@ function setupCurrentWeekWithTrips() {
   const weekId = UID(950);
   const tripIds: string[] = [];
   const dates: string[] = [];
+  // Trip dates start from today (not Monday) so they're never in the past.
+  // The respond_to_driver_assignment RPC blocks responses for past trips.
   for (let d = 0; d < 5; d++) {
-    const date = new Date(monday);
-    date.setDate(monday.getDate() + d);
+    const date = new Date(now);
+    date.setDate(now.getDate() + d);
     dates.push(date.toISOString().slice(0, 10));
   }
 
-  const checkinDeadline = `${weekStart}T15:00:00-07:00`;
-  const confirmationDeadline = `${weekStart}T20:00:00-07:00`;
+  // Check-in deadline is in the recent past (Saturday before this week).
+  // Confirmation deadline is 7 days from now so it hasn't passed —
+  // the Edge Function keeps the schedule as draft with tentative assignments.
+  const saturday = new Date(monday);
+  saturday.setDate(monday.getDate() - 2);
+  const futureConfirmation = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const checkinDeadline = `${saturday.toISOString().slice(0, 10)}T15:00:00-08:00`;
+  const confirmationDeadline = `${futureConfirmation.toISOString().slice(0, 10)}T20:00:00-08:00`;
 
-  let sql = `DELETE FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}' AND id::text LIKE 'deadbeef-%');\n`;
-  sql += `DELETE FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}' AND id::text LIKE 'deadbeef-%');\n`;
-  sql += `DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}' AND id::text LIKE 'deadbeef-%';\n`;
+  let sql = `DELETE FROM public.rider_assignments WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
+  sql += `DELETE FROM public.driver_confirmations WHERE driver_assignment_id IN (SELECT id FROM public.driver_assignments WHERE schedule_version_id IN (SELECT id FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}')));\n`;
+  sql += `DELETE FROM public.driver_assignments WHERE schedule_version_id IN (SELECT id FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
+  sql += `DELETE FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}');\n`;
+  sql += `DELETE FROM public.driver_availability WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
+  sql += `DELETE FROM public.ride_requests WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
+  sql += `DELETE FROM public.weekly_checkins WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}') AND household_id::text LIKE 'deadbeef-%';\n`;
+  sql += `DELETE FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}');\n`;
+  sql += `DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}';\n`;
   sql += `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${weekStart}', 'open', '${checkinDeadline}', '${confirmationDeadline}') ON CONFLICT DO NOTHING;\n`;
   for (let d = 0; d < 5; d++) {
     for (const dir of ["morning", "afternoon"]) {

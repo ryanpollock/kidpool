@@ -258,7 +258,9 @@ function setupWeekWithTrips() {
   const weekId = UID(900);
   const tripIds: string[] = [];
   const dates = ["2028-01-03", "2028-01-04", "2028-01-05", "2028-01-06", "2028-01-07"];
-  let sql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '2028-01-03', 'open', '2028-01-02T15:00:00-08:00', '2028-01-02T15:00:00-08:00') ON CONFLICT DO NOTHING;\n`;
+  // Production deadlines: Saturday 3 PM Pacific (check-in), Sunday 8 PM Pacific (confirmation).
+  // starts_on = 2028-01-03 (Monday), so check-in = 2028-01-01 (Sat), confirmation = 2028-01-02 (Sun).
+  let sql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '2028-01-03', 'open', '2028-01-01T15:00:00-08:00', '2028-01-02T20:00:00-08:00') ON CONFLICT DO NOTHING;\n`;
   for (let d = 0; d < 5; d++) {
     for (const dir of ["morning", "afternoon"]) {
       const tId = UID(400 + d * 2 + (dir === "morning" ? 0 : 1));
@@ -283,7 +285,7 @@ function setupCurrentWeekWithTrips() {
     dates.push(date.toISOString().slice(0, 10));
   }
   let sql = `DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${todayStr}';\n`;
-  sql += `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${todayStr}', 'open', '${todayStr}T15:00:00-08:00', '${todayStr}T15:00:00-08:00');\n`;
+  sql += `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${todayStr}', 'open', '${todayStr}T15:00:00-08:00', '${todayStr}T20:00:00-08:00');\n`;
   for (let d = 0; d < 5; d++) {
     for (const dir of ["morning", "afternoon"]) {
       const tId = UID(413 + d * 2 + (dir === "morning" ? 0 : 1));
@@ -881,7 +883,7 @@ test.describe("App E2E", () => {
       tripIds = existingTrips.map((t: { id: string }) => t.id);
     } else {
       weekId = UID(912);
-      let weekSql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${todayStr}', 'open', '${todayStr}T15:00:00-08:00', '${todayStr}T15:00:00-08:00');\n`;
+      let weekSql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${todayStr}', 'open', '${todayStr}T15:00:00-08:00', '${todayStr}T20:00:00-08:00');\n`;
       for (let d = 0; d < 5; d++) {
         for (const dir of ["morning", "afternoon"]) {
           const tId = UID(412 + d * 2 + (dir === "morning" ? 0 : 1));
