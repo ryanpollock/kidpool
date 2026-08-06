@@ -171,7 +171,7 @@ Deno.serve(async (req) => {
 
       const versionData = await supaFetch("schedule_versions", "week_id,group_id", { id: `eq.${version_id}` });
       if (versionData.length === 0) return jsonError("Version not found", 404);
-      const { group_id: `eq.${group_id}`, week_id: `eq.${week_id}` } = versionData[0];
+      const { group_id, week_id } = versionData[0];
       groupId = group_id;
 
       // Scope ride_requests to this version's week only — not the whole group.
