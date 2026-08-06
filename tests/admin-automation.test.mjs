@@ -180,6 +180,36 @@ test("send-push: supports admin_escalation and manually_assigned types", async (
   assert.match(ts, /You've been assigned/);
 });
 
+test("send-push: sends transactional email via Resend alongside push", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Reads Resend config from env (email is skipped when RESEND_API_KEY unset)
+  assert.match(ts, /RESEND_API_KEY/);
+  assert.match(ts, /RESEND_FROM_EMAIL/);
+  assert.match(ts, /RESEND_REPLY_TO/);
+
+  // Reads APP_URL env var for the email CTA
+  assert.match(ts, /APP_URL/);
+
+  // POSTs to Resend with an idempotency key per recipient
+  assert.match(ts, /api\.resend\.com\/emails/);
+  assert.match(ts, /Idempotency-Key/);
+  assert.match(ts, /carpool-\$\{tag\}-\$\{profile\.id\}/);
+
+  // HTML body wraps the same bodyText, escaped; subject reuses push title
+  assert.match(ts, /escapeHtml\(bodyText\)/);
+  assert.match(ts, /Carpool Crew/);
+  assert.match(ts, /subject: title/);
+
+  // Recipients without a push subscription still get an email — no early
+  // return on empty subscriptions
+  assert.match(ts, /No early return when subscriptions is empty/);
+
+  // Reports email stats in the response alongside push stats
+  assert.match(ts, /email_sent: emailSent/);
+  assert.match(ts, /email_failed: emailFailed/);
+});
+
 // ─── CarpoolRepository ───────────────────────────────────────
 
 test("repository: manuallyAssignDriver and getDeclinedWithoutVolunteer methods", async () => {

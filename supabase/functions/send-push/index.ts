@@ -7,6 +7,10 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
 const CRON_SECRET = Deno.env.get("CRON_SECRET");
+const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
+const RESEND_FROM_EMAIL = Deno.env.get("RESEND_FROM_EMAIL") ?? "Carpool Crew <rides@carpoolcrew.co>";
+const RESEND_REPLY_TO = Deno.env.get("RESEND_REPLY_TO");
+const APP_URL = Deno.env.get("APP_URL");
 
 let vapidInitialized = false;
 
@@ -66,6 +70,15 @@ async function supaDelete(table: string, filters: Record<string, string>) {
   }
 }
 
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 async function verifyAuth(authHeader: string): Promise<boolean> {
   if (!authHeader || !authHeader.startsWith("Bearer ")) return false;
   const token = authHeader.replace("Bearer ", "");
@@ -111,6 +124,7 @@ Deno.serve(async (req) => {
     let title = "";
     let bodyText = "";
     let tag = "carpool";
+    let groupId: string | null = null;
 
     if (type === "declined" && assignment_id) {
       const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: assignment_id });
@@ -153,6 +167,7 @@ Deno.serve(async (req) => {
       const versionData = await supaFetch("schedule_versions", "week_id,group_id", { id: `eq.${version_id}` });
       if (versionData.length === 0) return jsonError("Version not found", 404);
       const { group_id, week_id } = versionData[0];
+      groupId = group_id;
 
       // Scope ride_requests to this version's week only — not the whole group.
       // Without scoping, families get false "your child doesn't have a ride"
@@ -191,6 +206,7 @@ Deno.serve(async (req) => {
       const versionData = await supaFetch("schedule_versions", "group_id", { id: `eq.${version_id}` });
       if (versionData.length === 0) return jsonError("Version not found", 404);
       const { group_id } = versionData[0];
+      groupId = group_id;
 
       const memberships = await supaFetch("memberships", "profile_id", { group_id, status: "active" });
       recipientProfileIds = memberships.map((m: any) => m.profile_id);
@@ -265,6 +281,7 @@ Deno.serve(async (req) => {
       const versionData = await supaFetch("schedule_versions", "group_id", { id: `eq.${version_id}` });
       if (versionData.length === 0) return jsonError("Version not found", 404);
       const { group_id } = versionData[0];
+      groupId = group_id;
 
       // Find uncovered trips in this version
       const driverAssignments = await supaFetch("driver_assignments", "*", { schedule_version_id: version_id, status: "in.(tentative,confirmed)" });
@@ -308,8 +325,9 @@ Deno.serve(async (req) => {
     const profileIdsStr = `(${recipientProfileIds.join(",")})`;
     const subscriptions = await supaFetch("push_subscriptions", "*", { "profile_id.in": profileIdsStr });
 
-    if (subscriptions.length === 0) return jsonResponse({ sent: 0, failed: 0, reason: "no_subscriptions" });
-
+    // No early return when subscriptions is empty — recipients without a push
+    // subscription still get an email. The push loop is a no-op in that case,
+    // and the email block below still runs.
     const payload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
 
     ensureVapid();
@@ -345,7 +363,64 @@ Deno.serve(async (req) => {
       }
     }
 
-    return jsonResponse({ sent, failed, removed });
+    // ── Send emails via Resend ──────────────────────────────
+    // Each recipient with an email gets a transactional email. Failures are
+    // logged, not thrown — email is best-effort, same pattern as push.
+    let emailSent = 0;
+    let emailFailed = 0;
+
+    if (RESEND_API_KEY) {
+      const profiles = await supaFetch("profiles", "id,email", { "id.in": profileIdsStr });
+
+      const cta = APP_URL
+        ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
+        : "";
+      const htmlBody =
+        `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;">` +
+        `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1>` +
+        `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(bodyText)}</p>` +
+        `<p style="margin-top:24px;">${cta}</p>` +
+        `</body></html>`;
+
+      for (const profile of profiles) {
+        if (!profile.email) continue;
+        const idempotencyKey = `carpool-${tag}-${profile.id}`;
+        try {
+          const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKey,
+            },
+            body: JSON.stringify({
+              from: RESEND_FROM_EMAIL,
+              to: profile.email,
+              reply_to: RESEND_REPLY_TO,
+              subject: title,
+              html: htmlBody,
+              text: bodyText,
+              tags: [
+                { name: "type", value: type },
+                { name: "group", value: groupId ?? "unknown" },
+              ],
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.text();
+            console.error(`[send-push] Email to ${profile.email} failed:`, err);
+            emailFailed++;
+          } else {
+            emailSent++;
+          }
+        } catch (e) {
+          console.error(`[send-push] Email to ${profile.email} threw:`, e);
+          emailFailed++;
+        }
+      }
+    }
+
+    return jsonResponse({ sent, failed, removed, email_sent: emailSent, email_failed: emailFailed });
   } catch (error) {
     return jsonError(error.message ?? "Internal error", 500);
   }
