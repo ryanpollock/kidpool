@@ -402,3 +402,80 @@ test("Adversarial: fairness — least-loaded driver gets priority", async () => 
   assert.ok(trip2Driver);
   assert.notEqual(trip1Driver, trip2Driver, "Different drivers should be chosen for fairness");
 });
+
+test("Adversarial: driver's own children are in their car, not another driver's", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // Two driver households, each with 2 children. Both drivers available.
+  // Sean (h1) has 3 seats, Williams (h2) has 4 seats. 4 children total.
+  // Without reservation: the first-processed driver fills their car with
+  // the other household's children, leaving the second driver's own
+  // children uncovered or in the wrong car.
+  const trips = [makeTrip("t1", "2026-08-03", "morning")];
+  const children = [
+    makeChild("c1", "h1", "Finn", "OBrien"),
+    makeChild("c2", "h1", "Maeve", "OBrien"),
+    makeChild("c3", "h2", "W1", "Williams"),
+    makeChild("c4", "h2", "W2", "Williams"),
+    makeChild("c5", "h2", "W3", "Williams"),
+  ];
+  const vehicles = [
+    makeVehicle("v1", "h1", 3),
+    makeVehicle("v2", "h2", 4),
+  ];
+  const profiles = [
+    makeProfile("p1", "h1", "Sean OBrien"),
+    makeProfile("p2", "h2", "Williams Parent"),
+  ];
+  const result = generateSchedule({
+    trips,
+    children,
+    vehicles,
+    profiles,
+    rideRequests: children.map((c) => makeRideRequest("t1", c.id)),
+    availability: [
+      makeAvail("t1", "p1", "v1", "prefer"),
+      makeAvail("t1", "p2", "v2", "prefer"),
+    ],
+    maxDrivesByDriver: makeMaxDrives({ p1: 5, p2: 5 }),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  });
+
+  const trip = result.trips[0];
+  // Both drivers should be selected (3+4=7 seats for 5 riders)
+  assert.equal(trip.driver_count, 2, "Both drivers should be used");
+
+  // Find each driver's assignment
+  const seanAssignment = trip.assignments.find((a) => a.driver_profile_id === "p1");
+  const williamsAssignment = trip.assignments.find((a) => a.driver_profile_id === "p2");
+  assert.ok(seanAssignment, "Sean should have an assignment");
+  assert.ok(williamsAssignment, "Williams should have an assignment");
+
+  // Sean's own children (c1, c2) must be in Sean's car
+  assert.ok(
+    seanAssignment.assigned_child_ids.includes("c1"),
+    "Sean's child c1 (Finn) must be in Sean's car",
+  );
+  assert.ok(
+    seanAssignment.assigned_child_ids.includes("c2"),
+    "Sean's child c2 (Maeve) must be in Sean's car",
+  );
+
+  // Williams' own children (c3, c4, c5) must be in Williams' car
+  assert.ok(
+    williamsAssignment.assigned_child_ids.includes("c3"),
+    "Williams' child c3 must be in Williams' car",
+  );
+  assert.ok(
+    williamsAssignment.assigned_child_ids.includes("c4"),
+    "Williams' child c4 must be in Williams' car",
+  );
+  assert.ok(
+    williamsAssignment.assigned_child_ids.includes("c5"),
+    "Williams' child c5 must be in Williams' car",
+  );
+
+  // All children covered
+  assert.equal(trip.uncovered_rider_count, 0, "No children should be uncovered");
+});

@@ -110,6 +110,45 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
         return a.driver_profile_id.localeCompare(b.driver_profile_id);
       });
 
+    // Pre-select the minimum number of candidate drivers needed to seat all
+    // riders. Only pre-selected (and confirmed) drivers' households get
+    // own-child reservation — this prevents earlier-processed drivers from
+    // filling their car with a later driver's own children while still
+    // keeping the driver count minimal.
+    let accumulatedCapacity = 0;
+    for (const confirmed of confirmedForTrip) {
+      const vehicle = vehicleById.get(confirmed.vehicle_id);
+      accumulatedCapacity +=
+        vehicle?.child_passenger_capacity ?? confirmed.child_passenger_capacity ?? 0;
+    }
+    const preSelectedDrivers: (SchedulingAvailability & { vehicle_id: string })[] = [];
+    for (const avail of candidateDrivers) {
+      if (accumulatedCapacity >= riders.length) break;
+      if (confirmedDriverIds.has(avail.driver_profile_id)) continue;
+      const vehicle = vehicleById.get(avail.vehicle_id);
+      accumulatedCapacity += vehicle?.child_passenger_capacity ?? 0;
+      preSelectedDrivers.push(avail);
+    }
+
+    // Households with a selected or confirmed driver for this trip.
+    // Their children are reserved for their own parent's car.
+    const reservedDriverHouseholds = new Set<string>();
+    for (const confirmed of confirmedForTrip) {
+      reservedDriverHouseholds.add(
+        householdByProfileId.get(confirmed.driver_profile_id) ?? "",
+      );
+    }
+    for (const avail of preSelectedDrivers) {
+      reservedDriverHouseholds.add(
+        householdByProfileId.get(avail.driver_profile_id) ?? "",
+      );
+    }
+
+    // Tracks which reserved households have been processed. Once a driver
+    // is processed, their leftover children (car was full) become available
+    // to subsequent drivers.
+    const processedDriverHouseholds = new Set<string>();
+
     const remainingRiders = new Set(riders.map((r) => r.id));
     const tripAssignments: SchedulingDriverAssignment[] = [];
 
@@ -136,12 +175,21 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
         assignedSet.add(child.id);
         remainingRiders.delete(child.id);
       }
+      // Mark this household as processed so that leftover own children
+      // (car was full) become available to subsequent drivers.
+      processedDriverHouseholds.add(driverHouseholdId);
       // Pick best remaining other child each iteration.
+      // Exclude children from reserved households that haven't been
+      // processed yet — they're reserved for their own parent's car.
       // Priority: child whose preferred buddy is already in the car,
       // then deterministic name/ID tiebreak.
       // Capacity check runs every iteration so we never overfill.
       const otherPool = riders
         .filter((r) => r.household_id !== driverHouseholdId)
+        .filter((r) =>
+          !reservedDriverHouseholds.has(r.household_id) ||
+          processedDriverHouseholds.has(r.household_id)
+        )
         .sort((a, b) => childSortKey(a).localeCompare(childSortKey(b)));
       while (assigned.length < capacity && otherPool.length > 0) {
         let bestIdx = 0;
@@ -209,7 +257,7 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
       tripAssignments.push(assignment);
     }
 
-    for (const avail of candidateDrivers) {
+    for (const avail of preSelectedDrivers) {
       if (remainingRiders.size === 0) break;
       if (confirmedDriverIds.has(avail.driver_profile_id)) continue;
       const assignment = buildAssignment(avail, false);
