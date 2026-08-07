@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const greedyUrl = new URL(
-  "../supabase/functions/_shared/scheduling/greedy-v1.ts",
+  "../supabase/functions/_shared/scheduling/balanced-greedy-v2.ts",
   import.meta.url,
 );
 const typesUrl = new URL(
@@ -171,9 +171,9 @@ test("greedy-v1 respects weekly drive limits", async () => {
   assert.equal(p1Assignments.length, 1, "p1 should only get 1 assignment due to weekly limit");
 });
 
-test("Exchange 5 algorithm version is greedy-v1", async () => {
+test("Exchange 5 algorithm version is balanced-greedy-v2", async () => {
   const source = await readFile(greedyUrl, "utf8");
-  assert.match(source, /ALGORITHM_VERSION = "greedy-v1"/);
+  assert.match(source, /ALGORITHM_VERSION = "balanced-greedy-v2"/);
 });
 
 test("Exchange 5 scheduling types module has zero imports", async () => {
@@ -283,6 +283,8 @@ test("regression: confirmed driver with trip_id is correctly keyed", async () =>
   const inputs = buildInputs();
   // Two confirmed assignments for different trips, same driver
   inputs.maxDrivesByDriver = new Map([["p1", 5], ["p2", 5], ["p3", 5]]);
+  // Add c5 (Chen, h3) needing a ride on t2 so p3 is a natural driver for t2
+  inputs.rideRequests.push({ trip_id: "t2", child_id: "c5", needs_ride: true });
   inputs.existingAssignments = [
     { trip_id: "t1", driver_profile_id: "p1", household_id: "h1", vehicle_id: "v1", child_passenger_capacity: 3, confirmed: true },
     { trip_id: "t2", driver_profile_id: "p3", household_id: "h3", vehicle_id: "v3", child_passenger_capacity: 2, confirmed: true },
@@ -429,14 +431,14 @@ test("buddy: buddy not riding this trip — no buddy advantage, falls back to na
       { id: "c2", household_id: "h2", first_name: "Ben", last_name: "Bennett", preferred_buddy_child_id: null },
       { id: "c3", household_id: "h3", first_name: "Cleo", last_name: "Chen", preferred_buddy_child_id: "c1" },
     ],
-    vehicles: [{ id: "v1", household_id: "h1", label: "Adams car", child_passenger_capacity: 2 }],
-    profiles: [{ id: "p1", full_name: "Adams Parent", household_id: "h1" }],
+    vehicles: [{ id: "v2", household_id: "h2", label: "Bennett car", child_passenger_capacity: 2 }],
+    profiles: [{ id: "p1", full_name: "Bennett Parent", household_id: "h2" }],
     rideRequests: [
       // c1 NOT requesting — buddy not in car
       { trip_id: "t1", child_id: "c2", needs_ride: true },
       { trip_id: "t1", child_id: "c3", needs_ride: true },
     ],
-    availability: [{ trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" }],
+    availability: [{ trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v2", preference: "prefer" }],
     maxDrivesByDriver: new Map([["p1", 5]]),
     existingAssignments: [],
     declinedTripsByDriver: new Map(),
@@ -445,7 +447,7 @@ test("buddy: buddy not riding this trip — no buddy advantage, falls back to na
   const result = generateSchedule(inputs);
   const t1 = result.trips.find((t) => t.trip_id === "t1");
   const p1Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p1");
-  // Both c2 and c3 fit (capacity 2, no own children riding)
+  // c2 (own child) + c3 (1 remaining seat, no buddy advantage since c1 not in car)
   assert.deepEqual(
     p1Assignment?.assigned_child_ids.sort(),
     ["c2", "c3"].sort(),
@@ -489,25 +491,24 @@ test("buddy: own children always assigned first even when buddy points to non-ow
 
 test("buddy: third-party driver carries both buddy-paired children when capacity allows", async () => {
   const { generateSchedule } = await loadGreedyModule();
-  // Third-party driver from h3. c1 (h1) and c2 (h2) both need rides.
-  // c2 has buddy=c1. When the algorithm picks the first "other" child for h3's car,
-  // c1 has no buddy-in-car (nothing in car yet). c2 has no buddy-in-car either (c1 not yet picked).
-  // So initial pick is by name sort. Once c1 is in the car, c2's buddy=c1 is now in car
-  // and c2 should win any subsequent tiebreak. With capacity 2, both fit regardless.
-  // This test confirms no crash and both are assigned.
+  // Natural driver from h3 with own child c5. c1 (h1) and c2 (h2) both need rides.
+  // c2 has buddy=c1. With capacity 3 (own + 2 others), after placing c5,
+  // first other pick is c1 (name sort), then c2 wins next slot (buddy c1 in car).
   const inputs = {
     trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
     children: [
       { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams", preferred_buddy_child_id: null },
       { id: "c2", household_id: "h2", first_name: "Ben", last_name: "Bennett", preferred_buddy_child_id: "c1" },
       { id: "c4", household_id: "h2", first_name: "Dana", last_name: "Bennett", preferred_buddy_child_id: null },
+      { id: "c5", household_id: "h3", first_name: "Eve", last_name: "Chen", preferred_buddy_child_id: null },
     ],
-    vehicles: [{ id: "v3", household_id: "h3", label: "Chen car", child_passenger_capacity: 2 }],
+    vehicles: [{ id: "v3", household_id: "h3", label: "Chen car", child_passenger_capacity: 3 }],
     profiles: [{ id: "p3", full_name: "Chen Parent", household_id: "h3" }],
     rideRequests: [
       { trip_id: "t1", child_id: "c1", needs_ride: true },
       { trip_id: "t1", child_id: "c2", needs_ride: true },
       { trip_id: "t1", child_id: "c4", needs_ride: true },
+      { trip_id: "t1", child_id: "c5", needs_ride: true },
     ],
     availability: [{ trip_id: "t1", driver_profile_id: "p3", vehicle_id: "v3", preference: "prefer" }],
     maxDrivesByDriver: new Map([["p3", 5]]),
@@ -519,9 +520,8 @@ test("buddy: third-party driver carries both buddy-paired children when capacity
   const t1 = result.trips.find((t) => t.trip_id === "t1");
   const p3Assignment = t1?.assignments.find((a) => a.driver_profile_id === "p3");
   assert.ok(p3Assignment, "p3 should be assigned");
-  // First pick: c1 (no buddy in car, but sorts first by name "Ava Adams").
-  // Second pick: c2 now has buddy c1 in car — wins over c4.
-  assert.deepEqual(p3Assignment?.assigned_child_ids, ["c1", "c2"], "c2 should win second slot because buddy c1 is in car");
+  // Own child c5 first. Then c1 (name sort). Then c2 (buddy c1 in car) wins over c4.
+  assert.deepEqual(p3Assignment?.assigned_child_ids, ["c5", "c1", "c2"], "c2 should win third slot because buddy c1 is in car");
   assert.equal(t1?.uncovered_rider_count, 1, "c4 uncovered");
 });
 
@@ -730,17 +730,18 @@ test("capacity: both drivers used when one can't fit everyone", async () => {
 
 test("capacity: load balancing — fewer-assignments driver wins next trip", async () => {
   const { generateSchedule } = await loadGreedyModule();
-  // 2 trips, 2 drivers both prefer both trips, 1 rider per trip (no own children).
-  // t1 processed first: p1 wins by name sort ("Driver1" < "Driver2").
-  // t2 processed: p2 has 0 assignments, p1 has 1 → p2 wins by fewest-assignments tiebreak.
+  // 2 trips, 2 drivers both prefer both trips. Each driver's household has
+  // a child needing a ride on both trips. t1 processed first: p1 wins by
+  // name sort (both at 0 assignments). t2 processed: p2 has 0 assignments,
+  // p1 has 1 → p2 wins by fewest-assignments (load balance).
   const inputs = {
     trips: [
       { id: "t1", service_date: "2026-08-03", direction: "morning" },
       { id: "t2", service_date: "2026-08-04", direction: "morning" },
     ],
     children: [
-      { id: "c1", household_id: "h3", first_name: "Rider1", last_name: "X" },
-      { id: "c2", household_id: "h3", first_name: "Rider2", last_name: "X" },
+      { id: "c1", household_id: "h1", first_name: "Rider1", last_name: "X" },
+      { id: "c2", household_id: "h2", first_name: "Rider2", last_name: "X" },
     ],
     vehicles: [
       { id: "v1", household_id: "h1", label: "Car1", child_passenger_capacity: 4 },
@@ -752,6 +753,8 @@ test("capacity: load balancing — fewer-assignments driver wins next trip", asy
     ],
     rideRequests: [
       { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t1", child_id: "c2", needs_ride: true },
+      { trip_id: "t2", child_id: "c1", needs_ride: true },
       { trip_id: "t2", child_id: "c2", needs_ride: true },
     ],
     availability: [
@@ -769,13 +772,13 @@ test("capacity: load balancing — fewer-assignments driver wins next trip", asy
   const t1 = result.trips.find((t) => t.trip_id === "t1");
   const t2 = result.trips.find((t) => t.trip_id === "t2");
 
-  // t1: p1 wins by name sort (both at 0 assignments)
+  // t1: p1 wins by name sort (both at 0 assignments). Only 1 driver needed (cap 4 >= 2 riders).
   const p1OnT1 = t1?.assignments.find((a) => a.driver_profile_id === "p1");
   const p2OnT1 = t1?.assignments.find((a) => a.driver_profile_id === "p2");
   assert.ok(p1OnT1, "p1 should win t1 (name sort tiebreak)");
-  assert.equal(p2OnT1, undefined, "p2 should not be on t1 (only 1 rider)");
+  assert.equal(p2OnT1, undefined, "p2 should not be on t1 (only 1 driver needed)");
 
-  // t2: p2 wins (0 assignments vs p1's 1)
+  // t2: p2 wins (0 assignments vs p1's 1) — load balanced
   const p1OnT2 = t2?.assignments.find((a) => a.driver_profile_id === "p1");
   const p2OnT2 = t2?.assignments.find((a) => a.driver_profile_id === "p2");
   assert.ok(p2OnT2, "p2 should win t2 (fewest-assignments tiebreak)");
@@ -785,6 +788,7 @@ test("capacity: load balancing — fewer-assignments driver wins next trip", asy
 test("capacity: multi-trip greedy — early trips consume driver, later trips uncovered", async () => {
   const { generateSchedule } = await loadGreedyModule();
   // 5 trips (Mon-Fri), 1 driver (cap 2, max_drives 2), 1 rider per trip.
+  // All riders are from the driver's household so the driver is a natural driver.
   // Chronological greedy: t1, t2 get the driver; t3, t4, t5 uncovered (at max_drives).
   const inputs = {
     trips: [
@@ -795,11 +799,11 @@ test("capacity: multi-trip greedy — early trips consume driver, later trips un
       { id: "t5", service_date: "2026-08-07", direction: "morning" },
     ],
     children: [
-      { id: "c1", household_id: "h2", first_name: "Kid1", last_name: "Rider" },
-      { id: "c2", household_id: "h2", first_name: "Kid2", last_name: "Rider" },
-      { id: "c3", household_id: "h2", first_name: "Kid3", last_name: "Rider" },
-      { id: "c4", household_id: "h2", first_name: "Kid4", last_name: "Rider" },
-      { id: "c5", household_id: "h2", first_name: "Kid5", last_name: "Rider" },
+      { id: "c1", household_id: "h1", first_name: "Kid1", last_name: "Rider" },
+      { id: "c2", household_id: "h1", first_name: "Kid2", last_name: "Rider" },
+      { id: "c3", household_id: "h1", first_name: "Kid3", last_name: "Rider" },
+      { id: "c4", household_id: "h1", first_name: "Kid4", last_name: "Rider" },
+      { id: "c5", household_id: "h1", first_name: "Kid5", last_name: "Rider" },
     ],
     vehicles: [{ id: "v1", household_id: "h1", label: "Car", child_passenger_capacity: 2 }],
     profiles: [{ id: "p1", full_name: "Driver", household_id: "h1" }],
@@ -944,4 +948,96 @@ test("capacity: stability — mixed confirmed/tentative survives regeneration", 
   assert.ok(p2OnT2, "p2 should be assigned to t2");
   assert.equal(p2OnT2?.confirmed, false, "p2 on t2 should be tentative (new assignment)");
   assert.ok(p2OnT2?.assigned_child_ids.includes("c2"), "c2 should be in p2's car");
+});
+
+// ── Shared-car rule (balanced-greedy-v2) ───────────────────────────
+// A household may have multiple adults who can drive but only one car.
+// At most one driver per household per trip is selected, even when that
+// leaves riders uncovered.
+
+test("shared-car: two co-parents same household — only one selected even if it uncovers riders", async () => {
+  const { generateSchedule, ALGORITHM_VERSION } = await loadGreedyModule();
+  assert.equal(ALGORITHM_VERSION, "balanced-greedy-v2");
+  // h1 has 2 co-parents (p1, p2) each with their own vehicle row, and 3
+  // children riding. Both co-parents prefer to drive. Without the shared-
+  // car rule, p1 (cap 2) + p2 (cap 2) = 4 >= 3 riders → both selected, all
+  // covered. With the rule, p2 is skipped because h1 is already driving.
+  const inputs = {
+    trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
+    children: [
+      { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams" },
+      { id: "c2", household_id: "h1", first_name: "Ben", last_name: "Adams" },
+      { id: "c3", household_id: "h1", first_name: "Cleo", last_name: "Adams" },
+    ],
+    vehicles: [
+      { id: "v1", household_id: "h1", label: "Adams car 1", child_passenger_capacity: 2 },
+      { id: "v2", household_id: "h1", label: "Adams car 2", child_passenger_capacity: 2 },
+    ],
+    profiles: [
+      { id: "p1", full_name: "Adams Parent A", household_id: "h1" },
+      { id: "p2", full_name: "Adams Parent B", household_id: "h1" },
+    ],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t1", child_id: "c2", needs_ride: true },
+      { trip_id: "t1", child_id: "c3", needs_ride: true },
+    ],
+    availability: [
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t1", driver_profile_id: "p2", vehicle_id: "v2", preference: "prefer" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 5], ["p2", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  assert.ok(t1);
+
+  // Exactly one driver from h1 — not both co-parents
+  assert.equal(t1.driver_count, 1, "only one co-parent should drive (shared-car rule)");
+  const p1Assignment = t1.assignments.find((a) => a.driver_profile_id === "p1");
+  const p2Assignment = t1.assignments.find((a) => a.driver_profile_id === "p2");
+  assert.ok(p1Assignment, "p1 should be the selected driver (name-sort tiebreak)");
+  assert.equal(p2Assignment, undefined, "p2 must NOT be selected — same household as p1");
+
+  // p1's car fills with 2 own children; the 3rd is uncovered (not handed to p2)
+  assert.equal(p1Assignment.assigned_child_ids.length, 2, "p1 car fills to capacity 2");
+  assert.equal(t1.uncovered_rider_count, 1, "one rider uncovered rather than using the second co-parent");
+  assert.equal(t1.uncovered, true);
+});
+
+test("shared-car: co-parent from different household still selectable on same trip", async () => {
+  // Two co-parents in h1, but only p1 is a natural driver (h1 has a rider).
+  // p2 is in h2 which has no rider on t1 — p2 should already be filtered
+  // by the natural-driver rule. This guards that the shared-car rule does
+  // not interfere with the existing natural-driver filter.
+  const { generateSchedule } = await loadGreedyModule();
+  const inputs = {
+    trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
+    children: [{ id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams" }],
+    vehicles: [
+      { id: "v1", household_id: "h1", label: "Adams car", child_passenger_capacity: 2 },
+      { id: "v2", household_id: "h2", label: "Other car", child_passenger_capacity: 2 },
+    ],
+    profiles: [
+      { id: "p1", full_name: "Adams Parent", household_id: "h1" },
+      { id: "p2", full_name: "Other Parent", household_id: "h2" },
+    ],
+    rideRequests: [{ trip_id: "t1", child_id: "c1", needs_ride: true }],
+    availability: [
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t1", driver_profile_id: "p2", vehicle_id: "v2", preference: "prefer" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 5], ["p2", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  assert.ok(t1.assignments.find((a) => a.driver_profile_id === "p1"), "p1 (natural driver) selected");
+  assert.equal(t1.assignments.find((a) => a.driver_profile_id === "p2"), undefined, "p2 not natural driver — not selected");
+  assert.equal(t1.uncovered_rider_count, 0);
 });
