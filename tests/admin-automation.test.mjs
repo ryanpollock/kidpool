@@ -26,6 +26,14 @@ const volunteerAlreadyDrivingMigrationUrl = new URL(
   "../supabase/migrations/202608070005_volunteer_already_driving.sql",
   import.meta.url,
 );
+const nightBeforeSummaryMigrationUrl = new URL(
+  "../supabase/migrations/202608070006_night_before_summary_cron.sql",
+  import.meta.url,
+);
+const driveReminderMigrationUrl = new URL(
+  "../supabase/migrations/202608070007_drive_reminder_cron.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -267,9 +275,11 @@ test("deadline cron: re-enabled with environment-aware vault pattern", async () 
 test("send-push: deadline_reminder tag includes date for idempotency", async () => {
   const ts = await readFile(sendPushUrl, "utf8");
 
-  // Tag includes the current date so the email idempotency key changes daily
-  // (at most one reminder email per family per day, even if cron fires hourly)
-  assert.match(ts, /deadline-reminder-\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}/);
+  // Tag includes the current date in the pilot timezone (America/Los_Angeles)
+  // so the email idempotency key changes daily (at most one reminder email
+  // per family per day, even if cron fires hourly). Using SF time instead of
+  // UTC prevents duplicate reminders when cron fires around midnight UTC.
+  assert.match(ts, /deadline-reminder-\$\{new Intl\.DateTimeFormat\("en-CA", \{ timeZone: "America\/Los_Angeles"/);
 });
 
 // ─── Welcome email ─────────────────────────────────────────
@@ -423,4 +433,108 @@ test("volunteer_uncovered: reuses existing assignment when caller is already dri
 
   // Audits whether it reused an existing assignment
   assert.match(sql, /reused_existing_assignment/);
+});
+
+// ─── Night-before summary cron ──────────────────────────────
+
+test("night-before summary: cron wrapper uses environment-aware vault pattern", async () => {
+  const sql = await readFile(nightBeforeSummaryMigrationUrl, "utf8");
+
+  // Creates the wrapper function
+  assert.match(sql, /create or replace function public\.send_night_before_summary\(\)/);
+  assert.match(sql, /cron_edge_base_url/);
+  assert.match(sql, /cron_secret/);
+  assert.doesNotMatch(sql, /ujcrnrcgbvzyqosykkjy/);
+
+  // Security definer, revoked from public/authenticated
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_night_before_summary\(\) from public, authenticated/);
+
+  // POSTs to send-push with type=night_before_summary
+  assert.match(sql, /'type', 'night_before_summary'/);
+
+  // Schedules hourly — the Edge Function gates to 8 PM Pacific
+  assert.match(sql, /cron\.schedule/);
+  assert.match(sql, /night-before-summary/);
+  assert.match(sql, /0 \* \* \* \*/);
+});
+
+test("send-push: night_before_summary branch sends personalized emails", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Branch handled with its own early-return (per-recipient custom content)
+  assert.match(ts, /type === "night_before_summary"/);
+  assert.match(ts, /night_before_summary: "who's driving tomorrow" email/);
+
+  // Gates to 8 PM Pacific
+  assert.match(ts, /pacificHour !== 20/);
+
+  // Idempotency key is date-stamped per recipient
+  assert.match(ts, /night-before-\$\{tomorrow\}-\$\{profile\.id\}/);
+
+  // Skips fake seed/test/e2e emails
+  assert.match(ts, /@seed\.kidpool/);
+
+  // Personalized driving status section + full roster
+  assert.match(ts, /Tomorrow's carpool/);
+  assert.match(ts, /You're driving tomorrow/);
+  assert.match(ts, /You're not driving tomorrow/);
+  assert.match(ts, /Tomorrow's drivers/);
+
+  // Resend tags include the type
+  assert.match(ts, /value: "night_before_summary"/);
+});
+
+// ─── Drive reminder cron ─────────────────────────────────────
+
+test("drive reminder: cron wrapper uses environment-aware vault pattern", async () => {
+  const sql = await readFile(driveReminderMigrationUrl, "utf8");
+
+  // Creates the wrapper function
+  assert.match(sql, /create or replace function public\.send_drive_reminders\(\)/);
+  assert.match(sql, /cron_edge_base_url/);
+  assert.match(sql, /cron_secret/);
+  assert.doesNotMatch(sql, /ujcrnrcgbvzyqosykkjy/);
+
+  // Security definer, revoked from public/authenticated
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_drive_reminders\(\) from public, authenticated/);
+
+  // POSTs to send-push with type=drive_reminder
+  assert.match(sql, /'type', 'drive_reminder'/);
+
+  // Schedules at :00 and :25 every hour
+  assert.match(sql, /cron\.schedule/);
+  assert.match(sql, /drive-reminder/);
+  assert.match(sql, /0,25 \* \* \* \*/);
+});
+
+test("send-push: drive_reminder branch sends push + email to confirmed drivers", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Branch handled with its own early-return (per-driver custom content)
+  assert.match(ts, /type === "drive_reminder"/);
+  assert.match(ts, /75-min pre-drive email \+ push to confirmed drivers/);
+
+  // Gates to exact Pacific minute (7:25 AM for morning, 4:00 PM for afternoon)
+  assert.match(ts, /pacificHour === 7 && pacificMinute >= 25/);
+  assert.match(ts, /pacificHour === 16 && pacificMinute >= 0/);
+
+  // Only confirmed drivers (not tentative)
+  assert.match(ts, /status: "eq.confirmed"/);
+
+  // Idempotency key is per-trip-per-driver
+  assert.match(ts, /drive-reminder-\$\{trip\.id\}-\$\{da\.driver_profile_id\}/);
+
+  // Push title + email subject
+  assert.match(ts, /Drive in 75 minutes/);
+
+  // Lists kids in the car
+  assert.match(ts, /Kids in your car/);
+
+  // Skips fake seed/test/e2e emails
+  assert.match(ts, /@seed\.kidpool/);
+
+  // Resend tags include the type
+  assert.match(ts, /value: "drive_reminder"/);
 });
