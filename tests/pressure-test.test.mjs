@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const greedyUrl = new URL(
-  "../supabase/functions/_shared/scheduling/balanced-greedy-v1.ts",
+  "../supabase/functions/_shared/scheduling/balanced-greedy-v2.ts",
   import.meta.url,
 );
 

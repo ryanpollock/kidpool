@@ -1,7 +1,8 @@
-// Phase 3: Adversarial algorithm tests for balanced-greedy-v1.
+// Phase 3: Adversarial algorithm tests for balanced-greedy-v2.
 // Tests edge cases: empty weeks, everyone declines, zero capacity,
 // 50-household scale, single-driver bottleneck, all-same-household,
-// capacity-exactly-matches, re-generation determinism, confirmed vs tentative.
+// capacity-exactly-matches, re-generation determinism, confirmed vs tentative,
+// shared-car rule (no two same-household drivers on one trip).
 //
 // Pure TS — runs under --experimental-strip-types, no DB needed.
 
@@ -9,7 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const greedyUrl = new URL(
-  "../supabase/functions/_shared/scheduling/balanced-greedy-v1.ts",
+  "../supabase/functions/_shared/scheduling/balanced-greedy-v2.ts",
   import.meta.url,
 );
 
@@ -76,7 +77,7 @@ test("Adversarial: empty week (no trips, no riders) returns empty result", async
   assert.equal(result.trips.length, 0);
   assert.equal(totalAssigned(result), 0);
   assert.equal(totalUncovered(result), 0);
-  assert.equal(result.algorithm_version, "balanced-greedy-v1");
+  assert.equal(result.algorithm_version, "balanced-greedy-v2");
 });
 
 test("Adversarial: trips exist but no riders — zero assignments, zero uncovered", async () => {
@@ -406,7 +407,7 @@ test("Adversarial: fairness — least-loaded driver gets priority", async () => 
   assert.notEqual(trip1Driver, trip2Driver, "Different drivers should be chosen for fairness");
 });
 
-// ── balanced-greedy-v1 specific tests ─────────────────────────────
+// ── balanced-greedy-v2 specific tests ─────────────────────────────
 
 test("balanced-greedy: non-natural driver (kids don't need ride) is never selected", async () => {
   const { generateSchedule } = await loadGreedyModule();
@@ -544,4 +545,152 @@ test("balanced-greedy: overflow kid placed after parent's car is full", async ()
   assert.ok(other, "Other driver should cover overflow");
   assert.equal(other.assigned_child_ids.length, 2, "Other driver has overflow kid + own child");
   assert.equal(t1.uncovered_rider_count, 0, "All 5 riders covered");
+});
+
+// ── Shared-car rule (balanced-greedy-v2) ─────────────────────────────
+// At most one driver per household per trip. A household often has multiple
+// adults who can drive but only one car. The rule is enforced strictly:
+// if the second same-household driver is the ONLY path to full coverage,
+// the algorithm leaves riders uncovered rather than relaxing the rule.
+
+test("shared-car: second co-parent is the only path to coverage — strictly enforced, riders uncovered", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  // h1 has 2 co-parents (p1, p2) each with a 2-seat vehicle, and 3 children
+  // riding. No other household has a driver available on this trip. Without
+  // the shared-car rule: p1 (cap 2) + p2 (cap 2) = 4 >= 3 → both selected,
+  // all 3 covered. With the rule: p1 selected, p2 skipped (same household),
+  // 1 rider uncovered.
+  const result = generateSchedule({
+    trips: [makeTrip("t1", "2026-08-03", "morning")],
+    children: [
+      makeChild("c1", "h1", "Ava", "Adams"),
+      makeChild("c2", "h1", "Ben", "Adams"),
+      makeChild("c3", "h1", "Cleo", "Adams"),
+    ],
+    vehicles: [
+      makeVehicle("v1", "h1", 2, "Adams car 1"),
+      makeVehicle("v2", "h1", 2, "Adams car 2"),
+    ],
+    profiles: [
+      makeProfile("p1", "h1", "Adams Parent A"),
+      makeProfile("p2", "h1", "Adams Parent B"),
+    ],
+    rideRequests: [
+      makeRideRequest("t1", "c1"),
+      makeRideRequest("t1", "c2"),
+      makeRideRequest("t1", "c3"),
+    ],
+    availability: [
+      makeAvail("t1", "p1", "v1", "prefer"),
+      makeAvail("t1", "p2", "v2", "prefer"),
+    ],
+    maxDrivesByDriver: makeMaxDrives({ p1: 5, p2: 5 }),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  });
+  const t1 = result.trips[0];
+  assert.equal(t1.driver_count, 1, "only one co-parent should drive (shared-car rule)");
+  assert.equal(t1.assigned_rider_count, 2, "only 2 of 3 riders fit in the one car");
+  assert.equal(t1.uncovered_rider_count, 1, "1 rider strictly uncovered rather than reusing the household's second driver");
+  assert.equal(t1.uncovered, true);
+  assert.ok(t1.assignments.find((a) => a.driver_profile_id === "p1"), "p1 selected (name-sort tiebreak)");
+  assert.equal(t1.assignments.find((a) => a.driver_profile_id === "p2"), undefined, "p2 must NOT be selected — same household as p1");
+});
+
+test("shared-car: two co-parents both available but second household also has a driver — second co-parent skipped, coverage maintained", async () => {
+  // h1: 2 co-parents (p1, p2), 3 children, two 2-seat cars. h2: 1 driver (p3),
+  // 1 child, 2-seat car. All 4 riding. p1 selected (h1, cap 2). p2 SKIPPED
+  // (h1 already driving). p3 selected (h2, cap 2). Total cap 4 >= 4 → all
+  // covered. The rule fired (p2 skipped) but coverage was preserved by p3.
+  const { generateSchedule } = await loadGreedyModule();
+  const result = generateSchedule({
+    trips: [makeTrip("t1", "2026-08-03", "morning")],
+    children: [
+      makeChild("c1", "h1", "Ava", "Adams"),
+      makeChild("c2", "h1", "Ben", "Adams"),
+      makeChild("c3", "h1", "Cleo", "Adams"),
+      makeChild("c4", "h2", "Dan", "Bennett"),
+    ],
+    vehicles: [
+      makeVehicle("v1", "h1", 2, "Adams car 1"),
+      makeVehicle("v2", "h1", 2, "Adams car 2"),
+      makeVehicle("v3", "h2", 2, "Bennett car"),
+    ],
+    profiles: [
+      makeProfile("p1", "h1", "Adams Parent A"),
+      makeProfile("p2", "h1", "Adams Parent B"),
+      makeProfile("p3", "h2", "Bennett Parent"),
+    ],
+    rideRequests: [
+      makeRideRequest("t1", "c1"),
+      makeRideRequest("t1", "c2"),
+      makeRideRequest("t1", "c3"),
+      makeRideRequest("t1", "c4"),
+    ],
+    availability: [
+      makeAvail("t1", "p1", "v1", "prefer"),
+      makeAvail("t1", "p2", "v2", "prefer"),
+      makeAvail("t1", "p3", "v3", "prefer"),
+    ],
+    maxDrivesByDriver: makeMaxDrives({ p1: 5, p2: 5, p3: 5 }),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  });
+  const t1 = result.trips[0];
+  assert.equal(t1.driver_count, 2, "two drivers (p1 from h1, p3 from h2)");
+  assert.equal(t1.assigned_rider_count, 4, "all 4 riders covered");
+  assert.equal(t1.uncovered_rider_count, 0, "coverage preserved by the second household's driver");
+  assert.ok(t1.assignments.find((a) => a.driver_profile_id === "p1"), "p1 selected");
+  assert.ok(t1.assignments.find((a) => a.driver_profile_id === "p3"), "p3 selected (different household)");
+  assert.equal(t1.assignments.find((a) => a.driver_profile_id === "p2"), undefined, "p2 skipped — same household as p1");
+});
+
+test("shared-car: co-parents split across the week — one per trip, both can drive", async () => {
+  // h1 has 2 co-parents (p1, p2) and 1 child riding each day across 2 trips.
+  // Both co-parents prefer both trips. The shared-car rule applies per-trip,
+  // so p1 can drive t1 and p2 can drive t2 (different trips, no conflict).
+  // This confirms the rule is per-trip, not per-week.
+  const { generateSchedule } = await loadGreedyModule();
+  const result = generateSchedule({
+    trips: [
+      makeTrip("t1", "2026-08-03", "morning"),
+      makeTrip("t2", "2026-08-04", "morning"),
+    ],
+    children: [makeChild("c1", "h1", "Ava", "Adams")],
+    vehicles: [
+      makeVehicle("v1", "h1", 2, "Adams car 1"),
+      makeVehicle("v2", "h1", 2, "Adams car 2"),
+    ],
+    profiles: [
+      makeProfile("p1", "h1", "Adams Parent A"),
+      makeProfile("p2", "h1", "Adams Parent B"),
+    ],
+    rideRequests: [
+      makeRideRequest("t1", "c1"),
+      makeRideRequest("t2", "c1"),
+    ],
+    availability: [
+      makeAvail("t1", "p1", "v1", "prefer"),
+      makeAvail("t1", "p2", "v2", "prefer"),
+      makeAvail("t2", "p1", "v1", "prefer"),
+      makeAvail("t2", "p2", "v2", "prefer"),
+    ],
+    maxDrivesByDriver: makeMaxDrives({ p1: 5, p2: 5 }),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  });
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  const t2 = result.trips.find((t) => t.trip_id === "t2");
+  // Each trip: exactly one driver (single rider, cap 2, loop breaks after first).
+  // t1: p1 wins by name sort (both 0 assignments). t2: p2 wins (0 vs p1's 1) —
+  // load-balanced AND the shared-car rule is per-trip so p2 is allowed on t2.
+  assert.equal(t1.driver_count, 1, "one driver on t1");
+  assert.equal(t2.driver_count, 1, "one driver on t2");
+  assert.ok(t1.assignments.find((a) => a.driver_profile_id === "p1"), "p1 drives t1 (name-sort)");
+  assert.ok(t2.assignments.find((a) => a.driver_profile_id === "p2"), "p2 drives t2 (load-balanced, different trip)");
+  assert.equal(t1.uncovered_rider_count, 0, "t1 covered");
+  assert.equal(t2.uncovered_rider_count, 0, "t2 covered");
 });

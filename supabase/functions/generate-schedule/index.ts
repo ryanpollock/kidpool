@@ -2,9 +2,13 @@
 // Invoked by a coordinator OR by the cron automation to produce a versioned
 // draft schedule for a week. Reads the week's trips, check-ins, ride requests,
 // driver availability, vehicles, children, and existing assignments; runs the
-// pure greedy-v1 algorithm; writes a new schedule_version with tentative driver
+// pure balanced-greedy-v2 algorithm; writes a new schedule_version with tentative driver
 // and rider assignments. Auto-publishes when the confirmation deadline has
 // passed and no prior published version exists (or the new draft is clean).
+//
+// Algorithm: balanced-greedy-v2 — adds the shared-car rule over v1: at most
+// one driver per household per trip (a household may have multiple adults
+// who can drive but only one car).
 //
 // Auth paths:
 //   - User JWT (manual): coordinator check via memberships table.
@@ -18,7 +22,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
-import { generateSchedule, ALGORITHM_VERSION } from "../_shared/scheduling/balanced-greedy-v1.ts";
+import { generateSchedule, ALGORITHM_VERSION } from "../_shared/scheduling/balanced-greedy-v2.ts";
 import type {
   SchedulingAssignment,
   SchedulingAvailability,

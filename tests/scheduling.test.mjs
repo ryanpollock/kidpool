@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const greedyUrl = new URL(
-  "../supabase/functions/_shared/scheduling/balanced-greedy-v1.ts",
+  "../supabase/functions/_shared/scheduling/balanced-greedy-v2.ts",
   import.meta.url,
 );
 const typesUrl = new URL(
@@ -171,9 +171,9 @@ test("greedy-v1 respects weekly drive limits", async () => {
   assert.equal(p1Assignments.length, 1, "p1 should only get 1 assignment due to weekly limit");
 });
 
-test("Exchange 5 algorithm version is balanced-greedy-v1", async () => {
+test("Exchange 5 algorithm version is balanced-greedy-v2", async () => {
   const source = await readFile(greedyUrl, "utf8");
-  assert.match(source, /ALGORITHM_VERSION = "balanced-greedy-v1"/);
+  assert.match(source, /ALGORITHM_VERSION = "balanced-greedy-v2"/);
 });
 
 test("Exchange 5 scheduling types module has zero imports", async () => {
@@ -948,4 +948,96 @@ test("capacity: stability — mixed confirmed/tentative survives regeneration", 
   assert.ok(p2OnT2, "p2 should be assigned to t2");
   assert.equal(p2OnT2?.confirmed, false, "p2 on t2 should be tentative (new assignment)");
   assert.ok(p2OnT2?.assigned_child_ids.includes("c2"), "c2 should be in p2's car");
+});
+
+// ── Shared-car rule (balanced-greedy-v2) ───────────────────────────
+// A household may have multiple adults who can drive but only one car.
+// At most one driver per household per trip is selected, even when that
+// leaves riders uncovered.
+
+test("shared-car: two co-parents same household — only one selected even if it uncovers riders", async () => {
+  const { generateSchedule, ALGORITHM_VERSION } = await loadGreedyModule();
+  assert.equal(ALGORITHM_VERSION, "balanced-greedy-v2");
+  // h1 has 2 co-parents (p1, p2) each with their own vehicle row, and 3
+  // children riding. Both co-parents prefer to drive. Without the shared-
+  // car rule, p1 (cap 2) + p2 (cap 2) = 4 >= 3 riders → both selected, all
+  // covered. With the rule, p2 is skipped because h1 is already driving.
+  const inputs = {
+    trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
+    children: [
+      { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams" },
+      { id: "c2", household_id: "h1", first_name: "Ben", last_name: "Adams" },
+      { id: "c3", household_id: "h1", first_name: "Cleo", last_name: "Adams" },
+    ],
+    vehicles: [
+      { id: "v1", household_id: "h1", label: "Adams car 1", child_passenger_capacity: 2 },
+      { id: "v2", household_id: "h1", label: "Adams car 2", child_passenger_capacity: 2 },
+    ],
+    profiles: [
+      { id: "p1", full_name: "Adams Parent A", household_id: "h1" },
+      { id: "p2", full_name: "Adams Parent B", household_id: "h1" },
+    ],
+    rideRequests: [
+      { trip_id: "t1", child_id: "c1", needs_ride: true },
+      { trip_id: "t1", child_id: "c2", needs_ride: true },
+      { trip_id: "t1", child_id: "c3", needs_ride: true },
+    ],
+    availability: [
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t1", driver_profile_id: "p2", vehicle_id: "v2", preference: "prefer" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 5], ["p2", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  assert.ok(t1);
+
+  // Exactly one driver from h1 — not both co-parents
+  assert.equal(t1.driver_count, 1, "only one co-parent should drive (shared-car rule)");
+  const p1Assignment = t1.assignments.find((a) => a.driver_profile_id === "p1");
+  const p2Assignment = t1.assignments.find((a) => a.driver_profile_id === "p2");
+  assert.ok(p1Assignment, "p1 should be the selected driver (name-sort tiebreak)");
+  assert.equal(p2Assignment, undefined, "p2 must NOT be selected — same household as p1");
+
+  // p1's car fills with 2 own children; the 3rd is uncovered (not handed to p2)
+  assert.equal(p1Assignment.assigned_child_ids.length, 2, "p1 car fills to capacity 2");
+  assert.equal(t1.uncovered_rider_count, 1, "one rider uncovered rather than using the second co-parent");
+  assert.equal(t1.uncovered, true);
+});
+
+test("shared-car: co-parent from different household still selectable on same trip", async () => {
+  // Two co-parents in h1, but only p1 is a natural driver (h1 has a rider).
+  // p2 is in h2 which has no rider on t1 — p2 should already be filtered
+  // by the natural-driver rule. This guards that the shared-car rule does
+  // not interfere with the existing natural-driver filter.
+  const { generateSchedule } = await loadGreedyModule();
+  const inputs = {
+    trips: [{ id: "t1", service_date: "2026-08-03", direction: "morning" }],
+    children: [{ id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams" }],
+    vehicles: [
+      { id: "v1", household_id: "h1", label: "Adams car", child_passenger_capacity: 2 },
+      { id: "v2", household_id: "h2", label: "Other car", child_passenger_capacity: 2 },
+    ],
+    profiles: [
+      { id: "p1", full_name: "Adams Parent", household_id: "h1" },
+      { id: "p2", full_name: "Other Parent", household_id: "h2" },
+    ],
+    rideRequests: [{ trip_id: "t1", child_id: "c1", needs_ride: true }],
+    availability: [
+      { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },
+      { trip_id: "t1", driver_profile_id: "p2", vehicle_id: "v2", preference: "prefer" },
+    ],
+    maxDrivesByDriver: new Map([["p1", 5], ["p2", 5]]),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  };
+  const result = generateSchedule(inputs);
+  const t1 = result.trips.find((t) => t.trip_id === "t1");
+  assert.ok(t1.assignments.find((a) => a.driver_profile_id === "p1"), "p1 (natural driver) selected");
+  assert.equal(t1.assignments.find((a) => a.driver_profile_id === "p2"), undefined, "p2 not natural driver — not selected");
+  assert.equal(t1.uncovered_rider_count, 0);
 });
