@@ -120,7 +120,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { type, assignment_id, version_id } = body;
+    const { type, assignment_id, version_id, displaced_drivers } = body;
 
     if (!SERVICE_ROLE_KEY) return jsonError("Service role key not configured", 500);
     if (!type) return jsonError("Missing notification type", 400);
@@ -424,6 +424,78 @@ Deno.serve(async (req) => {
       title = "Schedule needs attention";
       bodyText = `${uncoveredChildren.length} child${uncoveredChildren.length !== 1 ? "ren" : ""} still need${uncoveredChildren.length === 1 ? "s" : ""} a ride this week. Open the app to assign a driver.`;
       tag = `admin-escalation-${version_id}`;
+    } else if (type === "displaced" && version_id && Array.isArray(displaced_drivers)) {
+      // Each displaced driver gets a personal notification:
+      // "You're no longer driving on [day] [morning/afternoon] — the
+      // schedule was re-optimized."
+      const versionData = await supaFetch("schedule_versions", "group_id", { id: `eq.${version_id}` });
+      if (versionData.length === 0) return jsonError("Version not found", 404);
+      groupId = versionData[0].group_id;
+
+      ensureVapid();
+
+      let dSent = 0, dFailed = 0;
+      for (const dd of displaced_drivers) {
+        const tripData = await supaFetch("trips", "service_date,direction", { id: `eq.${dd.trip_id}` });
+        if (tripData.length === 0) continue;
+        const t = tripData[0];
+        const period = t.direction === "morning" ? "morning" : "afternoon";
+        const title = "You're no longer driving";
+        const bodyText = `The ${period} trip on ${t.service_date} was re-optimized — you're no longer needed as a driver. Thanks for being available.`;
+        const tag = `displaced-${dd.trip_id}-${dd.profile_id}`;
+
+        const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${dd.profile_id}` });
+        for (const sub of subs) {
+          try {
+            await webpush.sendNotification(
+              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+              { title, body: bodyText, tag, url: "/" },
+              { TTL: 2419200 },
+            );
+            dSent++;
+          } catch (error: any) {
+            dFailed++;
+            const statusCode = error?.statusCode ?? 0;
+            if (statusCode === 410 || statusCode === 404) {
+              await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+            }
+          }
+        }
+
+        const profile = await supaFetch("profiles", "email", { id: `eq.${dd.profile_id}` });
+        if (profile.length > 0 && profile[0].email && RESEND_API_KEY) {
+          const email = profile[0].email;
+          if (!email.endsWith("@seed.kidpool") && !email.endsWith("@test.kidpool") && !email.endsWith("@e2e.kidpool")) {
+            try {
+              const cta = APP_URL
+                ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
+                : "";
+              const htmlBody =
+                `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;">` +
+                `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1>` +
+                `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(bodyText)}</p>` +
+                `<p style="margin-top:24px;">${cta}</p></body></html>`;
+              await fetch("https://api.resend.com/emails", {
+                method: "POST",
+                headers: {
+                  "Authorization": `Bearer ${RESEND_API_KEY}`,
+                  "Content-Type": "application/json",
+                  "Idempotency-Key": `carpool-${tag}-${dd.profile_id}`,
+                },
+                body: JSON.stringify({
+                  from: RESEND_FROM_EMAIL,
+                  to: email,
+                  subject: title,
+                  html: htmlBody,
+                }),
+              });
+            } catch (e) {
+              console.error(`[send-push] Displaced email to ${email} failed:`, e);
+            }
+          }
+        }
+      }
+      return jsonResponse({ sent: dSent, failed: dFailed });
     } else {
       return jsonError(`Invalid type or missing parameters: ${type}`, 400);
     }

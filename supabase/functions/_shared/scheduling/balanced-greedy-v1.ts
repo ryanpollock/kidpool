@@ -1,6 +1,18 @@
-// Pure deterministic greedy scheduler, version 1.
+// Balanced greedy scheduler, version 1.
 // Zero imports so it runs in both Deno (Edge Function) and Node (tests).
 // To swap in a better algorithm later, add a new module and select by version.
+//
+// Design objectives (in priority order):
+//   1. Coverage — seat every child who needs a ride.
+//   2. Load balance — spread driving across parents over the week.
+//   3. Own kids with their parent — selected drivers' own children ride
+//      in their car (seats reserved before anyone else's).
+//   4. Minimize drivers — given the above, use the fewest drivers.
+//   5. Priority children, riding buddies, driver preference, determinism.
+//
+// Two-phase approach:
+//   Phase 1 — select the minimum drivers (sorted by least-loaded first)
+//   Phase 2 — fill cars (own kids first, then others with reservation)
 
 import type {
   SchedulingAssignment,
@@ -15,7 +27,7 @@ import type {
   SchedulingProfile,
 } from "./types.ts";
 
-export const ALGORITHM_VERSION = "greedy-v1";
+export const ALGORITHM_VERSION = "balanced-greedy-v1";
 
 function tripSortKey(trip: SchedulingTrip): string {
   return `${trip.service_date}|${trip.direction === "morning" ? "0" : "1"}`;
@@ -43,26 +55,18 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
     inputs.profiles.map((p) => [p.id, p.household_id]),
   );
 
-  const confirmedAssignmentsByTrip = new Map<
-    string,
-    SchedulingAssignment[]
-  >();
+  // Confirmed-assignment lookup (for confirmed/tentative output marking).
+  const confirmedKeys = new Set<string>();
   for (const assignment of inputs.existingAssignments) {
-    if (!assignment.confirmed) continue;
-    const existing = confirmedAssignmentsByTrip.get(assignment.trip_id) ?? [];
-    existing.push(assignment);
-    confirmedAssignmentsByTrip.set(assignment.trip_id, existing);
-  }
-
-  const assignmentsThisWeek = new Map<string, number>();
-  for (const a of inputs.existingAssignments) {
-    if (a.confirmed) {
-      assignmentsThisWeek.set(
-        a.driver_profile_id,
-        (assignmentsThisWeek.get(a.driver_profile_id) ?? 0) + 1,
-      );
+    if (assignment.confirmed) {
+      confirmedKeys.add(`${assignment.trip_id}|${assignment.driver_profile_id}`);
     }
   }
+
+// Running weekly drive count — the load-balance counter.
+// Starts at 0 for everyone. The algorithm re-optimizes from scratch;
+// prior-version assignments don't count toward this week's load.
+const assignmentsThisWeek = new Map<string, number>();
 
   const tripResults: SchedulingTripResult[] = [];
 
@@ -73,6 +77,8 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
       .filter((c): c is SchedulingChild => c !== undefined)
       .sort((a, b) => childSortKey(a).localeCompare(childSortKey(b)));
 
+    const riderHouseholds = new Set(riders.map((r) => r.household_id));
+
     const eligibleAvailability = inputs.availability.filter(
       (a): a is SchedulingAvailability & { vehicle_id: string } =>
         a.trip_id === trip.id &&
@@ -80,42 +86,59 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
         a.vehicle_id !== null,
     );
 
-    const confirmedForTrip = confirmedAssignmentsByTrip.get(trip.id) ?? [];
-    const confirmedDriverIds = new Set(confirmedForTrip.map((a) => a.driver_profile_id));
-
+    // ── Phase 1: Select drivers ────────────────────────────────
+    // Eligibility: natural drivers only (own kids need a ride on this trip),
+    // not declined/expired, under max_drives.
     const candidateDrivers = eligibleAvailability
       .filter((a) => {
-        // Skip drivers who declined or let expire this specific trip
         if (inputs.declinedTripsByDriver?.get(a.driver_profile_id)?.has(trip.id)) return false;
         if (inputs.expiredTripsByDriver?.get(a.driver_profile_id)?.has(trip.id)) return false;
         const maxDrives = inputs.maxDrivesByDriver.get(a.driver_profile_id) ?? 0;
         const already = assignmentsThisWeek.get(a.driver_profile_id) ?? 0;
-        if (confirmedDriverIds.has(a.driver_profile_id)) return true;
-        return already < maxDrives;
+        if (already >= maxDrives) return false;
+        const household = householdByProfileId.get(a.driver_profile_id) ?? "";
+        if (!riderHouseholds.has(household)) return false;
+        return true;
       })
       .sort((a, b) => {
-        // Prefer drivers whose own children are among this trip's riders
-        const aHousehold = householdByProfileId.get(a.driver_profile_id) ?? "";
-        const bHousehold = householdByProfileId.get(b.driver_profile_id) ?? "";
-        const aHasOwn = riders.some((r) => r.household_id === aHousehold);
-        const bHasOwn = riders.some((r) => r.household_id === bHousehold);
-        if (aHasOwn !== bHasOwn) return aHasOwn ? -1 : 1;
-
-        const prefDiff = driverPreferenceRank(a.preference) -
-          driverPreferenceRank(b.preference);
-        if (prefDiff !== 0) return prefDiff;
+        // Primary: least-loaded this week (load balance).
         const aCount = assignmentsThisWeek.get(a.driver_profile_id) ?? 0;
         const bCount = assignmentsThisWeek.get(b.driver_profile_id) ?? 0;
         if (aCount !== bCount) return aCount - bCount;
+        // Secondary: preference (prefer > can).
+        const prefDiff = driverPreferenceRank(a.preference) -
+          driverPreferenceRank(b.preference);
+        if (prefDiff !== 0) return prefDiff;
+        // Final: profile ID for determinism.
         return a.driver_profile_id.localeCompare(b.driver_profile_id);
       });
+
+    // Greedily select until total raw capacity >= riders count.
+    const selectedDrivers: (SchedulingAvailability & { vehicle_id: string })[] = [];
+    let accumulatedCapacity = 0;
+    for (const avail of candidateDrivers) {
+      if (accumulatedCapacity >= riders.length) break;
+      const vehicle = vehicleById.get(avail.vehicle_id);
+      accumulatedCapacity += vehicle?.child_passenger_capacity ?? 0;
+      selectedDrivers.push(avail);
+    }
+
+    // Reserved households: all selected drivers' households. Their children
+    // are blocked from other drivers' cars until their parent is processed.
+    const reservedDriverHouseholds = new Set<string>();
+    for (const avail of selectedDrivers) {
+      reservedDriverHouseholds.add(
+        householdByProfileId.get(avail.driver_profile_id) ?? "",
+      );
+    }
+    const processedDriverHouseholds = new Set<string>();
 
     const remainingRiders = new Set(riders.map((r) => r.id));
     const tripAssignments: SchedulingDriverAssignment[] = [];
 
+    // ── Phase 2: Fill cars ────────────────────────────────────
     const buildAssignment = (
       avail: SchedulingAvailability & { vehicle_id: string },
-      confirmed: boolean,
     ): SchedulingDriverAssignment => {
       const vehicle = vehicleById.get(avail.vehicle_id);
       const capacity = vehicle?.child_passenger_capacity ?? 0;
@@ -125,6 +148,8 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
 
       const assigned: string[] = [];
       const assignedSet = new Set<string>();
+
+      // Own children first (up to capacity).
       const ownChildren = riders.filter(
         (r) =>
           r.household_id === driverHouseholdId &&
@@ -136,13 +161,22 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
         assignedSet.add(child.id);
         remainingRiders.delete(child.id);
       }
-      // Pick best remaining other child each iteration.
-      // Priority: child whose preferred buddy is already in the car,
-      // then deterministic name/ID tiebreak.
-      // Capacity check runs every iteration so we never overfill.
+
+      // Mark this household as processed so overflow kids (car was full)
+      // become available to subsequent drivers.
+      processedDriverHouseholds.add(driverHouseholdId);
+
+      // Fill remaining seats with other riders.
+      // Exclude children from reserved households that haven't been
+      // processed yet — they're reserved for their own parent's car.
       const otherPool = riders
         .filter((r) => r.household_id !== driverHouseholdId)
+        .filter((r) =>
+          !reservedDriverHouseholds.has(r.household_id) ||
+          processedDriverHouseholds.has(r.household_id)
+        )
         .sort((a, b) => childSortKey(a).localeCompare(childSortKey(b)));
+
       while (assigned.length < capacity && otherPool.length > 0) {
         let bestIdx = 0;
         for (let i = 1; i < otherPool.length; i++) {
@@ -175,6 +209,11 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
         assignedSet.add(chosen.id);
         remainingRiders.delete(chosen.id);
       }
+
+      const confirmed = confirmedKeys.has(
+        `${trip.id}|${avail.driver_profile_id}`,
+      );
+
       return {
         trip_id: trip.id,
         driver_profile_id: avail.driver_profile_id,
@@ -185,34 +224,8 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
       };
     };
 
-    for (const confirmed of confirmedForTrip) {
-      const avail = eligibleAvailability.find(
-        (a) => a.driver_profile_id === confirmed.driver_profile_id,
-      );
-      if (!avail) {
-        const vehicle = vehicleById.get(confirmed.vehicle_id);
-        if (!vehicle) continue;
-        tripAssignments.push({
-          trip_id: trip.id,
-          driver_profile_id: confirmed.driver_profile_id,
-          vehicle_id: confirmed.vehicle_id,
-          child_passenger_capacity: confirmed.child_passenger_capacity,
-          assigned_child_ids: [],
-          confirmed: true,
-        });
-        continue;
-      }
-      const assignment = buildAssignment(
-        avail as SchedulingAvailability & { vehicle_id: string },
-        true,
-      );
-      tripAssignments.push(assignment);
-    }
-
-    for (const avail of candidateDrivers) {
-      if (remainingRiders.size === 0) break;
-      if (confirmedDriverIds.has(avail.driver_profile_id)) continue;
-      const assignment = buildAssignment(avail, false);
+    for (const avail of selectedDrivers) {
+      const assignment = buildAssignment(avail);
       if (assignment.assigned_child_ids.length > 0) {
         tripAssignments.push(assignment);
         assignmentsThisWeek.set(

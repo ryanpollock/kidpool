@@ -2,9 +2,13 @@
 // Invoked by a coordinator OR by the cron automation to produce a versioned
 // draft schedule for a week. Reads the week's trips, check-ins, ride requests,
 // driver availability, vehicles, children, and existing assignments; runs the
-// pure greedy-v1 algorithm; writes a new schedule_version with tentative driver
+// pure balanced-greedy-v2 algorithm; writes a new schedule_version with tentative driver
 // and rider assignments. Auto-publishes when the confirmation deadline has
 // passed and no prior published version exists (or the new draft is clean).
+//
+// Algorithm: balanced-greedy-v2 — adds the shared-car rule over v1: at most
+// one driver per household per trip (a household may have multiple adults
+// who can drive but only one car).
 //
 // Auth paths:
 //   - User JWT (manual): coordinator check via memberships table.
@@ -18,7 +22,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
-import { generateSchedule, ALGORITHM_VERSION } from "../_shared/scheduling/greedy-v1.ts";
+import { generateSchedule, ALGORITHM_VERSION } from "../_shared/scheduling/balanced-greedy-v2.ts";
 import type {
   SchedulingAssignment,
   SchedulingAvailability,
@@ -223,6 +227,12 @@ Deno.serve(async (req: Request) => {
       preference: a.preference,
     }));
 
+    const eligibleAvailabilityKey = new Set(
+      availability
+        .filter((a) => a.preference !== "cannot" && a.vehicle_id)
+        .map((a) => `${a.trip_id}|${a.driver_profile_id}`),
+    );
+
     const maxDrivesByDriver = new Map<string, number>();
     for (const c of (checkinsRes.data ?? []) as Array<{ household_id: string; max_drives: number; status: string }>) {
       if (c.status !== "submitted") continue;
@@ -238,6 +248,10 @@ Deno.serve(async (req: Request) => {
     let nextVersionNumber = 1;
     const declinedTripsByDriver = new Map<string, Set<string>>();
     const expiredTripsByDriver = new Map<string, Set<string>>();
+    let priorDriverAssignments: Array<{
+      id: string; trip_id: string; driver_profile_id: string;
+      vehicle_id: string; child_passenger_capacity: number; status: string;
+    }> = [];
     const { data: latestVersion, error: latestVersionError } = await supabase
       .from("schedule_versions")
       .select("id, version_number, status")
@@ -251,26 +265,32 @@ Deno.serve(async (req: Request) => {
 
     if (latestVersion && latestVersion.id) {
       nextVersionNumber = latestVersion.version_number + 1;
-      const { data: priorDriverAssignments, error: priorError } = await supabase
+      const { data: priorData, error: priorError } = await supabase
         .from("driver_assignments")
         .select("id, trip_id, driver_profile_id, vehicle_id, child_passenger_capacity, status")
         .eq("schedule_version_id", latestVersion.id)
         .eq("group_id", groupId);
 
       if (priorError) return jsonError("Failed to load prior assignments.", 500);
+      priorDriverAssignments = priorData ?? [];
 
-      existingAssignments = (priorDriverAssignments ?? []).map((a) => ({
-        trip_id: a.trip_id,
-        driver_profile_id: a.driver_profile_id,
-        household_id: profileHouseholdMap.get(a.driver_profile_id) ?? "",
-        vehicle_id: a.vehicle_id,
-        child_passenger_capacity: a.child_passenger_capacity,
-        confirmed: a.status === "confirmed",
-      }));
+      existingAssignments = priorDriverAssignments
+        .filter((a) => {
+          if (a.status !== "confirmed") return true;
+          return eligibleAvailabilityKey.has(`${a.trip_id}|${a.driver_profile_id}`);
+        })
+        .map((a) => ({
+          trip_id: a.trip_id,
+          driver_profile_id: a.driver_profile_id,
+          household_id: profileHouseholdMap.get(a.driver_profile_id) ?? "",
+          vehicle_id: a.vehicle_id,
+          child_passenger_capacity: a.child_passenger_capacity,
+          confirmed: a.status === "confirmed",
+        }));
 
       // Build declined/expired maps so the algorithm doesn't re-offer trips
       // to drivers who said no or let the confirmation deadline pass.
-      for (const a of (priorDriverAssignments ?? [])) {
+      for (const a of priorDriverAssignments) {
         if (a.status === "declined" || a.status === "released") {
           let set = declinedTripsByDriver.get(a.driver_profile_id);
           if (!set) { set = new Set(); declinedTripsByDriver.set(a.driver_profile_id, set); }
@@ -427,6 +447,39 @@ if (shouldAutoPublish) {
       }
     } catch (pushError) {
       console.warn("Push notification failed (non-blocking):", pushError instanceof Error ? pushError.message : "unknown");
+    }
+
+    // ── Detect displaced confirmed drivers ────────────────────
+    // A displaced driver was confirmed in the prior version but is NOT
+    // in the new published version (re-optimization dropped them).
+    // Notify them via send-push 'displaced' type.
+    if (priorDriverAssignments.length > 0) {
+      const newDriverKeys = new Set<string>();
+      for (const t of outputs.trips) {
+        for (const a of t.assignments) {
+          newDriverKeys.add(`${a.trip_id}|${a.driver_profile_id}`);
+        }
+      }
+      const displaced = priorDriverAssignments.filter((a) =>
+        a.status === "confirmed" &&
+        !newDriverKeys.has(`${a.trip_id}|${a.driver_profile_id}`),
+      );
+      if (displaced.length > 0) {
+        try {
+          await writeClient.functions.invoke("send-push", {
+            body: {
+              type: "displaced",
+              version_id: newVersion.id,
+              displaced_drivers: displaced.map((a) => ({
+                profile_id: a.driver_profile_id,
+                trip_id: a.trip_id,
+              })),
+            },
+          });
+        } catch (displacedPushError) {
+          console.warn("Displaced-driver notification failed (non-blocking):", displacedPushError instanceof Error ? displacedPushError.message : "unknown");
+        }
+      }
     }
   }
 } else if (latestVersion && latestVersion.id && latestVersion.status === "draft") {
