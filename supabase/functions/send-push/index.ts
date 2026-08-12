@@ -943,7 +943,6 @@ Deno.serve(async (req) => {
     let sent = 0;
     let failed = 0;
     let removed = 0;
-    const pushErrors: any[] = [];
 
     for (const sub of subscriptions) {
       try {
@@ -968,7 +967,6 @@ Deno.serve(async (req) => {
           removed++;
         } else {
           console.error(`[send-push] Push failed (status ${statusCode}):`, error?.message ?? error);
-          pushErrors.push({ statusCode, message: error?.message ?? String(error), endpoint: sub.endpoint.slice(0, 80) });
         }
       }
     }
@@ -1031,7 +1029,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    return jsonResponse({ sent, failed, removed, email_sent: emailSent, email_failed: emailFailed, push_errors: pushErrors });
+    return jsonResponse({ sent, failed, removed, email_sent: emailSent, email_failed: emailFailed });
   } catch (error) {
     return jsonError(error.message ?? "Internal error", 500);
   }
