@@ -865,6 +865,18 @@ button {
   color: var(--green);
 }
 
+.confirmation-hero--today h1 {
+  color: var(--teal);
+}
+
+.confirmation-hero--today .eyebrow {
+  color: #fff;
+  background: var(--teal);
+  padding: 3px 7px;
+  border-radius: 999px;
+  letter-spacing: 0.14em;
+}
+
 .hero-deadline {
   gap: 8px;
   margin: 18px 0 8px;
@@ -874,6 +886,16 @@ button {
 
 .hero-deadline strong {
   color: var(--amber);
+}
+
+.hero-deadline--today {
+  margin: 14px 0 8px;
+  font-size: 16px;
+}
+
+.hero-deadline--today strong {
+  color: var(--teal);
+  text-transform: capitalize;
 }
 
 .hero-support {
@@ -1024,6 +1046,45 @@ button {
   margin-top: 7px;
   color: var(--ink-soft);
   font-size: 11px;
+}
+
+.assignment-date-sub {
+  margin-bottom: 4px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.assignment-row--today {
+  background: var(--teal-pale);
+  border-radius: 12px;
+  padding: 14px 12px;
+  margin: -2px -4px;
+}
+
+.assignment-row--today .assignment-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.assignment-row--today .today-chip {
+  margin-bottom: 4px;
+}
+
+.assignment-row-wrapper--today {
+  position: relative;
+  padding-left: 10px;
+}
+
+.assignment-row-wrapper--today::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 16px;
+  bottom: 16px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--teal);
 }
 
 .status-label,
@@ -1714,6 +1775,47 @@ a.directory-contact-item:hover {
 
 .week-day--pending .week-date {
   opacity: 0.6;
+}
+
+.week-day--today {
+  background: var(--teal-pale);
+  border-left: 3px solid var(--teal);
+}
+
+.week-day--today .week-date {
+  border-right-color: rgba(17, 139, 140, 0.25);
+}
+
+.week-date--today {
+  gap: 3px;
+}
+
+.week-date--today strong {
+  color: var(--teal);
+  font-weight: 800;
+}
+
+.today-chip {
+  display: inline-block;
+  width: fit-content;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--teal);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  line-height: 1.4;
+}
+
+.leg--today {
+  background: rgba(17, 139, 140, 0.06);
+}
+
+.leg--today small {
+  color: var(--teal);
+  font-weight: 800;
 }
 
 .mini-status--alert {
