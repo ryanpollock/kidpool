@@ -211,19 +211,20 @@ export class CarpoolRepository {
   }
 
   async updateCurrentProfile(
-    fields: { fullName?: string; phone?: string | null; sharePhone?: boolean; shareEmail?: boolean },
+    fields: { fullName?: string; phone?: string | null; sharePhone?: boolean; shareEmail?: boolean; avatarUrl?: string | null },
   ): Promise<Tables<"profiles">>;
   async updateCurrentProfile(fullName: string): Promise<Tables<"profiles">>;
   async updateCurrentProfile(
     fields:
       | string
-      | { fullName?: string; phone?: string | null; sharePhone?: boolean; shareEmail?: boolean },
+      | { fullName?: string; phone?: string | null; sharePhone?: boolean; shareEmail?: boolean; avatarUrl?: string | null },
   ): Promise<Tables<"profiles">> {
     const payload: {
       full_name?: string;
       phone?: string | null;
       share_phone?: boolean;
       share_email?: boolean;
+      avatar_url?: string | null;
     } = {};
     if (typeof fields === "string") {
       const normalizedName = fields.trim().replace(/\s+/g, " ");
@@ -238,6 +239,7 @@ export class CarpoolRepository {
       if (fields.phone !== undefined) payload.phone = fields.phone;
       if (fields.sharePhone !== undefined) payload.share_phone = fields.sharePhone;
       if (fields.shareEmail !== undefined) payload.share_email = fields.shareEmail;
+      if (fields.avatarUrl !== undefined) payload.avatar_url = fields.avatarUrl;
     }
 
     const userResult = await this.client.auth.getUser();
@@ -521,8 +523,8 @@ export class CarpoolRepository {
     return created;
   }
 
-  async updateChild(childId: string, updates: { firstName?: string; lastName?: string; preferredBuddyChildId?: string | null; photoUrl?: string | null }) {
-    const updatePayload: Partial<{ first_name: string; last_name: string; preferred_buddy_child_id: string | null; photo_url: string | null }> = {};
+  async updateChild(childId: string, updates: { firstName?: string; lastName?: string; preferredBuddyChildId?: string | null; photoUrl?: string | null; phone?: string | null }) {
+    const updatePayload: Partial<{ first_name: string; last_name: string; preferred_buddy_child_id: string | null; photo_url: string | null; phone: string | null }> = {};
     if (updates.firstName !== undefined) {
       const trimmed = updates.firstName.trim();
       if (!trimmed) throw new Error("First name cannot be empty.");
@@ -541,6 +543,9 @@ export class CarpoolRepository {
     }
     if (updates.photoUrl !== undefined) {
       updatePayload.photo_url = updates.photoUrl;
+    }
+    if (updates.phone !== undefined) {
+      updatePayload.phone = updates.phone;
     }
     if (Object.keys(updatePayload).length === 0) return;
 
@@ -565,7 +570,7 @@ export class CarpoolRepository {
     return unwrapRequired(
       await this.client
         .from("children")
-        .select("id, group_id, household_id, first_name, last_name, active, created_by, created_at, updated_at, preferred_buddy_child_id, photo_url, is_priority")
+        .select("id, group_id, household_id, first_name, last_name, active, created_by, created_at, updated_at, preferred_buddy_child_id, photo_url, is_priority, phone")
         .eq("group_id", groupId)
         .eq("active", true)
         .order("first_name")
@@ -590,6 +595,25 @@ export class CarpoolRepository {
       .upload(path, file, { upsert: true, contentType: file.type || undefined });
     if (error) throw new Error(`Photo upload failed: ${error.message}`);
     return this.client.storage.from("child-photos").getPublicUrl(path).data.publicUrl;
+  }
+
+  /**
+   * Upload a parent avatar to the parent-avatars Storage bucket and
+   * return the public URL. Object path: <profile_id>.<ext>
+   * RLS keys on auth.uid(), so the caller can only write their own avatar.
+   */
+  async uploadParentAvatar(
+    profileId: string,
+    file: File,
+  ): Promise<string> {
+    const ext = (file.name.split(".").pop() ?? "jpg").toLowerCase();
+    const safeExt = /^[a-z0-9]+$/.test(ext) ? ext : "jpg";
+    const path = `${profileId}.${safeExt}`;
+    const { error } = await this.client.storage
+      .from("parent-avatars")
+      .upload(path, file, { upsert: true, contentType: file.type || undefined });
+    if (error) throw new Error(`Avatar upload failed: ${error.message}`);
+    return this.client.storage.from("parent-avatars").getPublicUrl(path).data.publicUrl;
   }
 
   async deactivateChild(childId: string) {

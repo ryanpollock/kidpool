@@ -90,6 +90,7 @@ export type ChildRow = Timestamps & {
   preferred_buddy_child_id: string | null;
   photo_url: string | null;
   is_priority: boolean;
+  phone: string | null;
 };
 
 export type VehicleRow = Timestamps & {
@@ -310,6 +311,7 @@ export type Database = {
           updated_at?: string;
           preferred_buddy_child_id?: string | null;
           photo_url?: string | null;
+          phone?: string | null;
         }
       >;
       vehicles: Table<

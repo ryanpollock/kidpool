@@ -17,6 +17,7 @@ import {
   GroupIcon,
   HomeIcon,
   LockClosedIcon,
+  MobileIcon,
   MoonIcon,
   PersonIcon,
   QuestionMarkCircledIcon,
@@ -999,12 +1000,14 @@ function AssignmentRow({
   riderCount,
   status,
   isToday,
+  onClick,
 }: {
   trip: Tables<"trips">;
   vehicle: Tables<"vehicles">;
   riderCount: number;
   status: AssignmentStatus;
   isToday?: boolean;
+  onClick?: () => void;
 }) {
   const period = trip.direction === "morning" ? "Morning" : "Afternoon";
   const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
@@ -1015,7 +1018,13 @@ function AssignmentRow({
   const expired = status === "expired";
 
   return (
-    <article className={`assignment-row${isToday ? " assignment-row--today" : ""}`}>
+    <article
+      className={`assignment-row${isToday ? " assignment-row--today" : ""}${onClick ? " assignment-row--clickable" : ""}`}
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      data-testid={onClick ? "assignment-row-button" : undefined}
+    >
       <span className={`period-icon ${trip.direction === "morning" ? "period-icon--morning" : "period-icon--afternoon"}`}>
         <PeriodIcon width="22" height="22" />
       </span>
@@ -1033,10 +1042,14 @@ function AssignmentRow({
           <span>{riderCount} rider{riderCount !== 1 ? "s" : ""}</span>
         </div>
       </div>
-      <span className={`status-label ${confirmed ? "status-label--confirmed" : declined ? "status-label--declined" : released || expired ? "status-label--declined" : "status-label--tentative"}`}>
-        {confirmed ? <CheckIcon width="13" height="13" /> : null}
-        {confirmed ? "Confirmed" : declined ? "Declined" : released ? "Reassigned" : expired ? "Expired" : "Tentative"}
-      </span>
+      {onClick ? (
+        <span className="assignment-row-chevron"><ChevronRightIcon /></span>
+      ) : (
+        <span className={`status-label ${confirmed ? "status-label--confirmed" : declined ? "status-label--declined" : released || expired ? "status-label--declined" : "status-label--tentative"}`}>
+          {confirmed ? <CheckIcon width="13" height="13" /> : null}
+          {confirmed ? "Confirmed" : declined ? "Declined" : released ? "Reassigned" : expired ? "Expired" : "Tentative"}
+        </span>
+      )}
     </article>
   );
 }
@@ -1080,6 +1093,8 @@ function HomeScreen({
   onDismissIOSInstall,
   timezone,
   todayDate,
+  onOpenDrive,
+  showAvatarNudge,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -1119,6 +1134,8 @@ function HomeScreen({
   onDismissIOSInstall: () => void;
   timezone: string;
   todayDate: string;
+  onOpenDrive: (assignmentId: string) => void;
+  showAvatarNudge: boolean;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const [cancelingId, setCancelingId] = useState<string | null>(null);
@@ -1199,6 +1216,17 @@ function HomeScreen({
             <Cross2Icon width="14" height="14" />
           </button>
         </div>
+      ) : null}
+
+      {showAvatarNudge ? (
+        <button className="avatar-nudge" data-testid="avatar-nudge" onClick={onAccount}>
+          <PersonIcon width="20" height="20" />
+          <div className="push-banner-body">
+            <strong>Add your photo</strong>
+            <small>So other parents recognize you in the directory and drive rosters.</small>
+          </div>
+          <ChevronRightIcon />
+        </button>
       ) : null}
 
       {assignmentsLoading ? (
@@ -1411,6 +1439,7 @@ function HomeScreen({
                   riderCount={entry.children.length}
                   status={entry.assignment.status}
                   isToday={isToday}
+                  onClick={() => onOpenDrive(entry.assignment.id)}
                 />
                 {entry.assignment.status === "confirmed" ? (
                   cancelingId === entry.assignment.id ? (
@@ -2993,6 +3022,11 @@ function AccountScreen({
   const [buddyError, setBuddyError] = useState<string | null>(null);
   const [photoWorkingId, setPhotoWorkingId] = useState<string | null>(null);
   const [photoError, setPhotoError] = useState<string | null>(null);
+  const [childPhoneDraft, setChildPhoneDraft] = useState<Record<string, string>>({});
+  const [childPhoneWorkingId, setChildPhoneWorkingId] = useState<string | null>(null);
+  const [childPhoneError, setChildPhoneError] = useState<string | null>(null);
+  const [avatarWorking, setAvatarWorking] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
 
   const [vehicleLabel, setVehicleLabel] = useState("");
   const [vehicleCapacity, setVehicleCapacity] = useState("4");
@@ -3200,6 +3234,41 @@ function AccountScreen({
     }
   };
 
+  const saveChildPhone = async (childId: string) => {
+    const draft = (childPhoneDraft[childId] ?? "").trim();
+    const digits = draft.replace(/\D/g, "");
+    if (draft && digits.length < 7) {
+      setChildPhoneError("Enter a valid phone number, or clear it to remove.");
+      return;
+    }
+    setChildPhoneWorkingId(childId);
+    setChildPhoneError(null);
+    try {
+      await repository.updateChild(childId, { phone: draft || null });
+      setChildPhoneDraft((prev) => { const next = { ...prev }; delete next[childId]; return next; });
+      await onReloadHousehold();
+    } catch (nextError) {
+      setChildPhoneError(readableError(nextError));
+    } finally {
+      setChildPhoneWorkingId(null);
+    }
+  };
+
+  const uploadParentAvatar = async (file: File | null) => {
+    if (!file) return;
+    setAvatarWorking(true);
+    setAvatarError(null);
+    try {
+      const publicUrl = await repository.uploadParentAvatar(profile.id, file);
+      await repository.updateCurrentProfile({ avatarUrl: publicUrl });
+      await onReloadHousehold();
+    } catch (nextError) {
+      setAvatarError(readableError(nextError));
+    } finally {
+      setAvatarWorking(false);
+    }
+  };
+
   const removeVehicle = async () => {
     const activeVehicle = setup?.vehicles.find((v) => v.active) ?? null;
     if (!activeVehicle) return;
@@ -3260,7 +3329,26 @@ function AccountScreen({
         <span className="account-avatar">
           {profile.avatar_url ? <img src={profile.avatar_url} alt="" /> : <PersonIcon />}
         </span>
-        <div><strong>{profile.full_name}</strong><small>{profile.email}</small></div>
+        <div>
+          <strong>{profile.full_name}</strong>
+          <small>{profile.email}</small>
+          <div className="account-avatar-upload">
+            <label className="inline-action child-photo-upload">
+              <span>{avatarWorking ? "Uploading…" : profile.avatar_url ? "Change photo" : "Add your photo"}</span>
+              <input
+                type="file"
+                accept="image/*"
+                disabled={avatarWorking}
+                onChange={(event) => void uploadParentAvatar(event.target.files?.[0] ?? null)}
+                style={{ display: "none" }}
+              />
+            </label>
+            {!profile.avatar_url ? (
+              <small className="account-avatar-nudge">So other parents recognize you in the directory and drive rosters.</small>
+            ) : null}
+            {avatarError ? <div className="auth-error" role="alert">{avatarError}</div> : null}
+          </div>
+        </div>
       </section>
 
       <section className="household-section" aria-labelledby="name-section-heading">
@@ -3423,6 +3511,28 @@ function AccountScreen({
                         style={{ display: "none" }}
                       />
                     </label>
+                  </div>
+                  <div className="child-phone-row">
+                    <label className="auth-field child-phone-field">
+                      <span>{child.first_name}'s phone {child.phone ? <em>(on file)</em> : <em>(optional)</em>}</span>
+                      <KeyboardInput
+                        value={childPhoneDraft[child.id] ?? child.phone ?? ""}
+                        onChange={(event) => setChildPhoneDraft((prev) => ({ ...prev, [child.id]: event.target.value }))}
+                        autoComplete="tel"
+                        inputMode="tel"
+                        placeholder="(415) 555-0100"
+                        disabled={childPhoneWorkingId === child.id}
+                      />
+                    </label>
+                    <button
+                      className="inline-action"
+                      disabled={childPhoneWorkingId === child.id}
+                      onClick={() => void saveChildPhone(child.id)}
+                    >
+                      {childPhoneWorkingId === child.id ? "Saving…" : "Save phone"}
+                    </button>
+                    {childPhoneError && childPhoneWorkingId === child.id ? <div className="auth-error" role="alert">{childPhoneError}</div> : null}
+                    <p className="helper-copy child-phone-help">Shown only to parents driving {child.first_name}.</p>
                   </div>
                   <label className="buddy-picker">
                     <span>Riding buddy</span>
@@ -4073,6 +4183,15 @@ function DriveDetailScreen({
                   {child.photo_url ? <img src={child.photo_url} alt="" /> : <PersonIcon />}
                 </span>
                 <strong>{child.first_name} {child.last_name}</strong>
+                {child.phone ? (
+                  <a
+                    href={`tel:${child.phone.replace(/\s/g, "")}`}
+                    className="call-kid-link"
+                    data-testid={`call-kid-${child.id}`}
+                  >
+                    <MobileIcon width="13" height="13" /> Call {child.first_name}
+                  </a>
+                ) : null}
               </div>
             ))}
           </div>
@@ -4609,6 +4728,13 @@ export default function Prototype() {
     return true;
   })();
 
+  const shouldShowAvatarNudge = (() => {
+    if (!identity) return false;
+    if (identity.profile.avatar_url) return false;
+    if (localStorage.getItem("avatar_nudge_dismissed") === "true") return false;
+    return true;
+  })();
+
   const loadMyAssignments = useCallback(async () => {
     if (!identity?.group || !homeSchedule) return;
     setAssignmentsLoading(true);
@@ -4965,17 +5091,20 @@ const navItems = useMemo(() => {
       );
     }
 
-    if (driveDetailId && identity && publishedSchedule) {
-      const found = findDriveDetail(publishedSchedule, driveDetailId);
-      if (found) {
-        return (
-          <DriveDetailScreen
-            entry={found.entry}
-            trip={found.trip}
-            serviceDate={found.serviceDate}
-            onBack={() => setDriveDetailId(null)}
-          />
-        );
+    if (driveDetailId && identity) {
+      const searchSchedule = publishedSchedule ?? homeSchedule;
+      if (searchSchedule) {
+        const found = findDriveDetail(searchSchedule, driveDetailId);
+        if (found) {
+          return (
+            <DriveDetailScreen
+              entry={found.entry}
+              trip={found.trip}
+              serviceDate={found.serviceDate}
+              onBack={() => setDriveDetailId(null)}
+            />
+          );
+        }
       }
     }
 
@@ -5138,6 +5267,8 @@ const navItems = useMemo(() => {
         onDismissIOSInstall={() => { setIOSInstallDismissed(true); localStorage.setItem("ios_install_dismissed", "true"); }}
         timezone={identity.group.timezone}
         todayDate={todayDate}
+        onOpenDrive={(id) => setDriveDetailId(id)}
+        showAvatarNudge={shouldShowAvatarNudge}
       />
     );
   };
