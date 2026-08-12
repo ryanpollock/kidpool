@@ -3928,13 +3928,13 @@ function AddToCalendarButton({
             </>
           ) : (
             <p className="calendar-sheet-note">
-              Adding {assignments.length} drives at once. Google Calendar and Outlook support one event at a time — use Apple Calendar (.ics) to import all drives together.
+              Adding {assignments.length} drives at once. Download a single .ics file and import it into any calendar app — Google Calendar, Apple Calendar, Outlook, and others. In Google Calendar (web): Settings → Import &amp; export → Select the .ics file → Import.
             </p>
           )}
           <button className="calendar-sheet-option" data-testid="calendar-apple" onClick={handleApple}>
             <span className="calendar-sheet-icon"><CalendarIcon width="18" height="18" /></span>
             <span className="calendar-sheet-label">
-              {isBulk ? "Apple Calendar (.ics — all drives)" : "Apple Calendar (.ics)"}
+              {isBulk ? "Download .ics — all drives" : "Download .ics"}
             </span>
             <ChevronRightIcon />
           </button>

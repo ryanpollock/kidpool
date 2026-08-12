@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { isNoSchoolDay, todayInTimezone, PILOT_TIMEZONE } from "../school-calendar";
+import { isNoSchoolDay, todayInTimezone, dateInTimezone, PILOT_TIMEZONE } from "../school-calendar";
 import type {
   ConfirmationResponse,
   Database,
@@ -736,7 +736,7 @@ export class CarpoolRepository {
       const weekStart = new Date(mostRecent.starts_on + "T00:00:00");
       const friday = new Date(weekStart);
       friday.setDate(weekStart.getDate() + 4);
-      const fridayStr = friday.toISOString().slice(0, 10);
+      const fridayStr = dateInTimezone(friday);
       if (todayStr >= mostRecent.starts_on && todayStr <= fridayStr) {
         const trips = await this.listTripsForWeek(mostRecent.id);
         return { week: mostRecent, trips };
@@ -801,10 +801,10 @@ export class CarpoolRepository {
 
     const saturdayStr = new Date(startDate);
     saturdayStr.setDate(startDate.getDate() - 2);
-    const saturdayDate = saturdayStr.toISOString().slice(0, 10);
+    const saturdayDate = dateInTimezone(saturdayStr);
     const sundayStr = new Date(startDate);
     sundayStr.setDate(startDate.getDate() - 1);
-    const sundayDate = sundayStr.toISOString().slice(0, 10);
+    const sundayDate = dateInTimezone(sundayStr);
 
     const checkinDeadline = new Date(`${saturdayDate}T15:00:00-07:00`);
     const confirmationDeadline = new Date(`${sundayDate}T20:00:00-07:00`);
@@ -827,7 +827,7 @@ export class CarpoolRepository {
     for (let offset = 0; offset < 5; offset++) {
       const date = new Date(startDate);
       date.setDate(date.getDate() + offset);
-      const serviceDate = date.toISOString().slice(0, 10);
+      const serviceDate = dateInTimezone(date);
 
       if (isNoSchoolDay(serviceDate)) continue;
 
@@ -1837,7 +1837,7 @@ async getLatestScheduleVersion(
       const start = new Date(w.starts_on + "T00:00:00");
       const fri = new Date(start);
       fri.setDate(start.getDate() + 4);
-      return todayStr >= w.starts_on && todayStr <= fri.toISOString().slice(0, 10);
+      return todayStr >= w.starts_on && todayStr <= dateInTimezone(fri);
     });
     if (underway) {
       const trips = await this.listTripsForWeek(underway.id);
