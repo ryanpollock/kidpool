@@ -14,6 +14,7 @@ In ChatGPT Work Mode, run `sites-preview start "$PWD"`, open `http://terminal.lo
 - The Admin tab (formerly Status) is coordinator-only and acts as a triage board: "Needs your attention" (uncovered trips, declined drives, not-started households) → "On track" summary → "The week" (trip demand + household responses) → "Overrides" (de-emphasized generate/publish with automation copy).
 - Schedule generation and publication are automated via pg_cron (Sat 3 PM PD generates the draft, Sun 8 PM PD regenerates and auto-publishes). The coordinator's manual generate/publish buttons are overrides, not required steps.
 - The admin can manually assign any active member with a vehicle to an uncovered trip via the `manually_assign_driver` RPC, regardless of the driver's stated availability.
+- Today emphasis: the This Week tab and Home screen treat the current pilot-timezone date as "today" only when the displayed week contains it. Today's day card gets a teal tint + left accent bar + a bold `TODAY` chip; today's legs read `TODAY · Tuesday Morning` (full weekday). Home flips its hero to `TODAY` / "You're driving today" when the user has a drive today, and today's rows sort to the top with a chip + accent. Other days stay muted. The day-name + today treatment is intentionally scoped to This Week and Home — Review, Drive-detail, and alert screens still use the short `tripLabel`.
 
 Before planning or implementing any mobile-app change, read this `AGENTS.md` in full. It is the source of truth for the template's runtime and component guidance.
 

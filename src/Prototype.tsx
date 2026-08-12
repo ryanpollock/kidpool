@@ -753,14 +753,16 @@ function OnboardingScreen({
 }
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WEEKDAY_FULL_LABELS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function formatTripDate(serviceDate: string) {
   const date = new Date(serviceDate + "T00:00:00");
   const weekday = WEEKDAY_LABELS[date.getDay()];
+  const weekdayFull = WEEKDAY_FULL_LABELS[date.getDay()];
   const month = MONTH_LABELS[date.getMonth()];
   const day = date.getDate();
-  return { weekday, short: `${month} ${day}`, full: `${weekday}, ${month} ${day}` };
+  return { weekday, weekdayFull, short: `${month} ${day}`, full: `${weekday}, ${month} ${day}` };
 }
 
 function weekLabel(startsOn: string): string {
@@ -996,11 +998,13 @@ function AssignmentRow({
   vehicle,
   riderCount,
   status,
+  isToday,
 }: {
   trip: Tables<"trips">;
   vehicle: Tables<"vehicles">;
   riderCount: number;
   status: AssignmentStatus;
+  isToday?: boolean;
 }) {
   const period = trip.direction === "morning" ? "Morning" : "Afternoon";
   const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
@@ -1011,12 +1015,18 @@ function AssignmentRow({
   const expired = status === "expired";
 
   return (
-    <article className="assignment-row">
+    <article className={`assignment-row${isToday ? " assignment-row--today" : ""}`}>
       <span className={`period-icon ${trip.direction === "morning" ? "period-icon--morning" : "period-icon--afternoon"}`}>
         <PeriodIcon width="22" height="22" />
       </span>
       <div className="assignment-copy">
-        <div className="assignment-title">{dateInfo.full} · {period}</div>
+        {isToday ? <span className="today-chip">Today</span> : null}
+        <div className="assignment-title">
+          {isToday
+            ? `${dateInfo.weekdayFull} ${period}`
+            : `${dateInfo.full} · ${period}`}
+        </div>
+        {isToday ? <div className="assignment-date-sub">{dateInfo.full}</div> : null}
         <div className="assignment-route">{trip.origin} → {trip.destination}</div>
         <div className="assignment-meta">
           <span>{vehicle.label}</span>
@@ -1069,6 +1079,7 @@ function HomeScreen({
   showIOSInstallBanner,
   onDismissIOSInstall,
   timezone,
+  todayDate,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -1107,6 +1118,7 @@ function HomeScreen({
   showIOSInstallBanner: boolean;
   onDismissIOSInstall: () => void;
   timezone: string;
+  todayDate: string;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const [cancelingId, setCancelingId] = useState<string | null>(null);
@@ -1134,6 +1146,27 @@ function HomeScreen({
   const checkinDeadlineLabel = checkinDeadline
     ? new Date(checkinDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
     : "Sat 3:00 PM";
+  const todaysDrives = activeAssignments.filter((a) => a.trip.service_date === todayDate);
+  const hasTodaysDrive = todaysDrives.length > 0;
+  const todayWeekdayFull = todaysDrives.length > 0 ? formatTripDate(todaysDrives[0].trip.service_date).weekdayFull : "";
+  const todayHasMorning = todaysDrives.some((a) => a.trip.direction === "morning");
+  const todayHasAfternoon = todaysDrives.some((a) => a.trip.direction === "afternoon");
+  const todayPeriodLabel = todayHasMorning && todayHasAfternoon
+    ? `${todayWeekdayFull} morning & afternoon`
+    : todayHasMorning
+      ? `${todayWeekdayFull} morning`
+      : todayHasAfternoon
+        ? `${todayWeekdayFull} afternoon`
+        : "";
+  const todayRouteLabel = todaysDrives.length > 0
+    ? `${todaysDrives[0].trip.meeting_time} · ${todaysDrives[0].trip.origin} → ${todaysDrives[0].trip.destination}`
+    : "";
+  const todaysTentative = todaysDrives.some((a) => a.assignment.status === "tentative");
+  const sortedActiveAssignments = [...activeAssignments].sort((a, b) => {
+    const aToday = a.trip.service_date === todayDate ? 0 : 1;
+    const bToday = b.trip.service_date === todayDate ? 0 : 1;
+    return aToday - bToday;
+  });
 
   return (
     <div className="screen-content home-screen" data-testid="home-screen">
@@ -1221,19 +1254,28 @@ function HomeScreen({
           )}
         </section>
       ) : (
-        <section className={`confirmation-hero ${allConfirmed && !hasAlerts && !hasReacceptable ? "confirmation-hero--done" : ""}`}>
+        <section className={`confirmation-hero ${allConfirmed && !hasAlerts && !hasReacceptable ? "confirmation-hero--done" : ""}${hasTodaysDrive ? " confirmation-hero--today" : ""}`}>
           <span className="eyebrow">
-            {allConfirmed && !hasAlerts && !hasReacceptable
-              ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish")
-              : "Action needed"}
+            {hasTodaysDrive
+              ? "TODAY"
+              : allConfirmed && !hasAlerts && !hasReacceptable
+                ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish")
+                : "Action needed"}
           </span>
           <h1>
-            {hasReacceptable
-              ? (reacceptableAssignments.length === 1 ? "You have a cancelled drive" : "You have cancelled drives")
-              : allConfirmed && !hasAlerts
-                ? (schedulePublished ? "You're all set" : "Drives confirmed")
-                : hasAlerts ? "Your child needs a ride" : "Confirm your drives"}
+            {hasTodaysDrive
+              ? (todaysTentative ? "Confirm your drive today" : "You're driving today")
+              : hasReacceptable
+                ? (reacceptableAssignments.length === 1 ? "You have a cancelled drive" : "You have cancelled drives")
+                : allConfirmed && !hasAlerts
+                  ? (schedulePublished ? "You're all set" : "Drives confirmed")
+                  : hasAlerts ? "Your child needs a ride" : "Confirm your drives"}
           </h1>
+          {hasTodaysDrive ? (
+            <p className="hero-deadline hero-deadline--today">
+              <strong>{todayPeriodLabel}</strong> <span aria-hidden="true">·</span> {todayRouteLabel}
+            </p>
+          ) : null}
           <p className="hero-deadline">
             {hasReacceptable ? (
               <>{confirmed.length} confirmed <span aria-hidden="true">·</span> <strong>{reacceptableAssignments.length} cancelled — re-accept below</strong></>
@@ -1359,13 +1401,16 @@ function HomeScreen({
             <h2 id="assignment-heading">{allConfirmed ? "Your confirmed drives" : "Your tentative drives"}</h2>
           </div>
           <div className="assignment-list">
-            {activeAssignments.map((entry) => (
-              <div className="assignment-row-wrapper" key={entry.assignment.id}>
+            {sortedActiveAssignments.map((entry) => {
+              const isToday = entry.trip.service_date === todayDate;
+              return (
+                <div className={`assignment-row-wrapper${isToday ? " assignment-row-wrapper--today" : ""}`} key={entry.assignment.id}>
                 <AssignmentRow
                   trip={entry.trip}
                   vehicle={entry.vehicle}
                   riderCount={entry.children.length}
                   status={entry.assignment.status}
+                  isToday={isToday}
                 />
                 {entry.assignment.status === "confirmed" ? (
                   cancelingId === entry.assignment.id ? (
@@ -1397,7 +1442,8 @@ function HomeScreen({
                   )
                 ) : null}
               </div>
-            ))}
+              );
+            })}
           </div>
           {!allConfirmed ? (
             <>
@@ -2101,6 +2147,7 @@ function WeekScreen({
   avatarUrl,
   onAccount,
   onOpenDrive,
+  todayDate,
 }: {
   week: WeekWithTrips | null;
   weekLoading: boolean;
@@ -2115,6 +2162,7 @@ function WeekScreen({
   avatarUrl: string | null;
   onAccount: () => void;
   onOpenDrive: (assignmentId: string) => void;
+  todayDate: string;
 }) {
   const weekHeading = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   if (weekLoading) {
@@ -2178,6 +2226,14 @@ function WeekScreen({
     weekdays.push(dateInTimezone(d));
   }
 
+  const renderWeekDate = (dateInfo: ReturnType<typeof formatTripDate>, isToday: boolean) => (
+    <div className={`week-date${isToday ? " week-date--today" : ""}`}>
+      {isToday ? <span className="today-chip">Today</span> : null}
+      <strong>{dateInfo.weekday}</strong>
+      <span>{dateInfo.short}</span>
+    </div>
+  );
+
   if (scheduleLoading) {
     return (
       <div className="screen-content week-screen" data-testid="week-screen">
@@ -2217,10 +2273,11 @@ function WeekScreen({
           {weekdays.map((serviceDate) => {
             const dateInfo = formatTripDate(serviceDate);
             const noSchoolReason = getNoSchoolReason(serviceDate);
+            const isToday = serviceDate === todayDate;
             if (noSchoolReason) {
               return (
-                <article className="week-day week-day--no-school" key={serviceDate} data-testid={`no-school-${serviceDate}`}>
-                  <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
+                <article className={`week-day week-day--no-school${isToday ? " week-day--today" : ""}`} key={serviceDate} data-testid={`no-school-${serviceDate}`}>
+                  {renderWeekDate(dateInfo, isToday)}
                   <div className="leg leg--no-school">
                     <CalendarIcon />
                     <span>
@@ -2232,8 +2289,8 @@ function WeekScreen({
               );
             }
             return (
-              <article className="week-day week-day--pending" key={serviceDate}>
-                <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
+              <article className={`week-day week-day--pending${isToday ? " week-day--today" : ""}`} key={serviceDate}>
+                {renderWeekDate(dateInfo, isToday)}
                 <div className="leg leg--pending">
                   <ClockIcon />
                   <span>
@@ -2318,10 +2375,11 @@ function WeekScreen({
           const dateTrips = tripsByDate.get(serviceDate) ?? [];
           const dateInfo = formatTripDate(serviceDate);
           const noSchoolReason = getNoSchoolReason(serviceDate);
+          const isToday = serviceDate === todayDate;
           if (noSchoolReason) {
             return (
-              <article className="week-day week-day--no-school" key={serviceDate} data-testid={`no-school-${serviceDate}`}>
-                <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
+              <article className={`week-day week-day--no-school${isToday ? " week-day--today" : ""}`} key={serviceDate} data-testid={`no-school-${serviceDate}`}>
+                {renderWeekDate(dateInfo, isToday)}
                 <div className="leg leg--no-school">
                   <CalendarIcon />
                   <span>
@@ -2333,8 +2391,8 @@ function WeekScreen({
             );
           }
           return (
-            <article className="week-day" key={serviceDate}>
-              <div className="week-date"><strong>{dateInfo.weekday}</strong><span>{dateInfo.short}</span></div>
+            <article className={`week-day${isToday ? " week-day--today" : ""}`} key={serviceDate} data-testid={isToday ? "week-day-today" : undefined}>
+              {renderWeekDate(dateInfo, isToday)}
               {dateTrips.map((trip) => {
                 const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
                 const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
@@ -2345,11 +2403,12 @@ function WeekScreen({
                   (r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released" || r.driverAssignment.status === "expired",
                 );
                 const uncovered = activeRosters.length === 0;
+                const legLabel = `${isToday ? "TODAY · " : ""}${dateInfo.weekdayFull} ${trip.direction === "morning" ? "Morning" : "Afternoon"}`;
                 return (
-                  <div className={`leg ${uncovered ? "leg--alert" : ""}`} key={trip.id}>
+                  <div className={`leg${uncovered ? " leg--alert" : ""}${isToday ? " leg--today" : ""}`} key={trip.id}>
                     <PeriodIcon />
                     <span>
-                      <small>{trip.direction === "morning" ? "Morning" : "Afternoon"}</small>
+                      <small>{legLabel}</small>
                       <strong>{trip.meeting_time} · {trip.origin} → {trip.destination}</strong>
                     </span>
                     {uncovered ? (
@@ -4081,6 +4140,7 @@ export default function Prototype() {
   const [authWorking, setAuthWorking] = useState(false);
   const [authError, setAuthError] = useState<string | null>(() => oauthErrorFromLocation());
   const [activeTab, setActiveTab] = useState<AppTab>("home");
+  const todayDate = todayInTimezone();
   const [reviewOpen, setReviewOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [directoryOpen, setDirectoryOpen] = useState(false);
@@ -4975,6 +5035,7 @@ const navItems = useMemo(() => {
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
           onOpenDrive={(id) => setDriveDetailId(id)}
+          todayDate={todayDate}
         />
       );
     }
@@ -5076,6 +5137,7 @@ const navItems = useMemo(() => {
         showIOSInstallBanner={shouldShowIOSInstallBanner}
         onDismissIOSInstall={() => { setIOSInstallDismissed(true); localStorage.setItem("ios_install_dismissed", "true"); }}
         timezone={identity.group.timezone}
+        todayDate={todayDate}
       />
     );
   };
