@@ -28,6 +28,16 @@ const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
 const UID = (n: number) => `deadbeef-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const TEST_PASSWORD = "TestPass123!";
 
+// Format a Date as YYYY-MM-DD in the pilot timezone (America/Los_Angeles).
+// toISOString() converts to UTC which shifts the date and breaks the
+// weeks_starts_on_check constraint (must be Monday).
+function localDateStr(date: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(date);
+}
+
 if (PROJECT_REF === PRODUCTION_REF) {
   console.error("Aborting: weekly cycle tests must not run against production.");
   process.exit(1);
@@ -218,44 +228,57 @@ function setupHousehold(n: number, name: string, coordinator = false) {
 }
 
 function setupCurrentWeekWithTrips() {
-  const now = new Date();
-  const dayOfWeek = now.getDay();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1));
-  return setupWeekStartingOn(monday);
+  return setupWeekStartingOn(currentMondayStrSF());
 }
 
 function setupNextWeekWithTrips() {
-  const now = new Date();
-  const dayOfWeek = now.getDay();
-  const nextMonday = new Date(now);
-  nextMonday.setDate(now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1) + 7);
-  return setupWeekStartingOn(nextMonday);
+  const mondayStr = currentMondayStrSF();
+  const [y, m, d] = mondayStr.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  date.setUTCDate(date.getUTCDate() + 7);
+  return setupWeekStartingOn(date.toISOString().slice(0, 10));
 }
 
-function setupWeekStartingOn(monday: Date) {
-  const weekStart = monday.toISOString().slice(0, 10);
+// Returns YYYY-MM-DD for the Monday of the current week in SF time.
+// Uses UTC date arithmetic to avoid system timezone interference.
+function currentMondayStrSF(): string {
+  const sfToday = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  const [y, m, d] = sfToday.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  const dow = date.getUTCDay();
+  const daysBack = dow === 0 ? 6 : dow - 1;
+  date.setUTCDate(date.getUTCDate() - daysBack);
+  return date.toISOString().slice(0, 10);
+}
+
+function setupWeekStartingOn(mondayStr: string) {
+  const weekStart = mondayStr;
 
   const weekId = UID(950);
   const tripIds: string[] = [];
   const dates: string[] = [];
-  // Trip dates start from today (not Monday) so they're never in the past.
-  // The respond_to_driver_assignment RPC blocks responses for past trips.
-  const today = new Date();
+  // Trip dates are Monday–Friday of the week (validate_trip_service_date
+  // requires dates within the week). Use UTC arithmetic for consistency.
+  const [my, mm, md] = mondayStr.split("-").map(Number);
+  const mondayDate = new Date(Date.UTC(my, mm - 1, md));
   for (let d = 0; d < 5; d++) {
-    const date = new Date(today);
-    date.setDate(today.getDate() + d);
+    const date = new Date(mondayDate);
+    date.setUTCDate(mondayDate.getUTCDate() + d);
     dates.push(date.toISOString().slice(0, 10));
   }
 
   // Check-in deadline is in the recent past (Saturday before this week).
   // Confirmation deadline is 7 days from now so it hasn't passed —
   // the Edge Function keeps the schedule as draft with tentative assignments.
-  const saturday = new Date(monday);
-  saturday.setDate(monday.getDate() - 2);
+  const saturdayDate = new Date(mondayDate);
+  saturdayDate.setUTCDate(mondayDate.getUTCDate() - 2);
+  const saturdayStr = saturdayDate.toISOString().slice(0, 10);
   const futureConfirmation = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  const checkinDeadline = `${saturday.toISOString().slice(0, 10)}T15:00:00-08:00`;
-  const confirmationDeadline = `${futureConfirmation.toISOString().slice(0, 10)}T20:00:00-08:00`;
+  const checkinDeadline = `${saturdayStr}T15:00:00-08:00`;
+  const confirmationDeadline = `${localDateStr(futureConfirmation)}T20:00:00-08:00`;
 
   let sql = `DELETE FROM public.rider_assignments WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
   sql += `DELETE FROM public.driver_confirmations WHERE driver_assignment_id IN (SELECT id FROM public.driver_assignments WHERE schedule_version_id IN (SELECT id FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}')));\n`;
@@ -321,7 +344,7 @@ test.describe.serial("Weekly Cycle", () => {
     const rider = setupHousehold(12, "CycleRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     // SQL-seed check-ins (Plan tab uses different week selection than coordinator/Home)
@@ -420,7 +443,7 @@ test.describe.serial("Weekly Cycle", () => {
     const rider = setupHousehold(22, "DeclRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -500,7 +523,7 @@ test.describe.serial("Weekly Cycle", () => {
     const rider = setupHousehold(32, "UncovRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     // Driver has a tiny car (capacity 1) — only fits own child, not rider's child

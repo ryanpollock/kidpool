@@ -41,6 +41,16 @@ const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
 const UID = (n: number) => `deadbeef-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const TEST_PASSWORD = "TestPass123!";
 
+// Format a Date as YYYY-MM-DD in the pilot timezone (America/Los_Angeles).
+// toISOString() converts to UTC which shifts the date and breaks the
+// weeks_starts_on_check constraint (must be Monday).
+function localDateStr(date: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(date);
+}
+
 if (PROJECT_REF === PRODUCTION_REF) {
   console.error("Aborting: pilot scenario tests must not run against production.");
   process.exit(1);
@@ -207,32 +217,58 @@ function setupHousehold(n: number, name: string, coordinator = false) {
   return { userId, householdId, email };
 }
 
+// Returns YYYY-MM-DD for the Monday of the current week in SF time.
+// Uses UTC date arithmetic to avoid system timezone interference.
+function currentMondayStrSF(): string {
+  const sfToday = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  const [y, m, d] = sfToday.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  const dow = date.getUTCDay();
+  const daysBack = dow === 0 ? 6 : dow - 1;
+  date.setUTCDate(date.getUTCDate() - daysBack);
+  return date.toISOString().slice(0, 10);
+}
+
 function setupCurrentWeekWithTrips() {
-  const now = new Date();
-  const dayOfWeek = now.getDay();
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1));
-  const weekStart = monday.toISOString().slice(0, 10);
+  const weekStart = currentMondayStrSF();
+  return setupWeekStartingOn(weekStart);
+}
+
+function setupNextWeekWithTrips() {
+  const mondayStr = currentMondayStrSF();
+  const [y, m, d] = mondayStr.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  date.setUTCDate(date.getUTCDate() + 7);
+  return setupWeekStartingOn(date.toISOString().slice(0, 10));
+}
+
+function setupWeekStartingOn(weekStart: string) {
 
   const weekId = UID(950);
   const tripIds: string[] = [];
   const dates: string[] = [];
-  // Trip dates start from today (not Monday) so they're never in the past.
-  // The respond_to_driver_assignment RPC blocks responses for past trips.
+  // Trip dates are Monday–Friday of the week (validate_trip_service_date
+  // requires dates within the week). Use UTC arithmetic for consistency.
+  const [my, mm, md] = weekStart.split("-").map(Number);
+  const mondayDate = new Date(Date.UTC(my, mm - 1, md));
   for (let d = 0; d < 5; d++) {
-    const date = new Date(now);
-    date.setDate(now.getDate() + d);
+    const date = new Date(mondayDate);
+    date.setUTCDate(mondayDate.getUTCDate() + d);
     dates.push(date.toISOString().slice(0, 10));
   }
 
   // Check-in deadline is in the recent past (Saturday before this week).
   // Confirmation deadline is 7 days from now so it hasn't passed —
   // the Edge Function keeps the schedule as draft with tentative assignments.
-  const saturday = new Date(monday);
-  saturday.setDate(monday.getDate() - 2);
+  const saturdayDate = new Date(mondayDate);
+  saturdayDate.setUTCDate(mondayDate.getUTCDate() - 2);
+  const saturdayStr = saturdayDate.toISOString().slice(0, 10);
   const futureConfirmation = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  const checkinDeadline = `${saturday.toISOString().slice(0, 10)}T15:00:00-08:00`;
-  const confirmationDeadline = `${futureConfirmation.toISOString().slice(0, 10)}T20:00:00-08:00`;
+  const checkinDeadline = `${saturdayStr}T15:00:00-08:00`;
+  const confirmationDeadline = `${localDateStr(futureConfirmation)}T20:00:00-08:00`;
 
   let sql = `DELETE FROM public.rider_assignments WHERE trip_id IN (SELECT id FROM public.trips WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}'));\n`;
   sql += `DELETE FROM public.driver_confirmations WHERE driver_assignment_id IN (SELECT id FROM public.driver_assignments WHERE schedule_version_id IN (SELECT id FROM public.schedule_versions WHERE week_id IN (SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${weekStart}')));\n`;
@@ -314,7 +350,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(12, "UncovRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -358,7 +394,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(22, "DeclRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -414,7 +450,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const noCheck = setupHousehold(32, "NoCheckFamily", false);
     if (!noCheck) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -453,7 +489,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(42, "ExpRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -503,7 +539,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(52, "RegenRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -546,7 +582,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const driver = setupHousehold(61, "PubDraftDriver", false);
     if (!driver) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -603,7 +639,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(72, "DeclUncovRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -652,7 +688,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(82, "CancelRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -708,7 +744,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(92, "UncovVolRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -755,7 +791,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(102, "SmallRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -803,7 +839,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(112, "NoVehRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -844,7 +880,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const driver = setupHousehold(121, "HappyDriver", false);
     if (!driver) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -886,7 +922,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(132, "RiderHappyRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -952,7 +988,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(152, "DraftRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -989,7 +1025,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const driver = setupHousehold(161, "DlDriver", false);
     if (!driver) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -1027,7 +1063,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const driver = setupHousehold(171, "PubGateDriver", false);
     if (!driver) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     // Set confirmation deadline to a future date so the publish gate is active
@@ -1068,7 +1104,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const driver = setupHousehold(181, "PubExpDriver", false);
     if (!driver) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     const now = new Date();
@@ -1122,7 +1158,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const notStarted = setupHousehold(193, "StatusNotStarted", false);
     if (!notStarted) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -1165,7 +1201,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(202, "AdminRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -1208,7 +1244,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const driver = setupHousehold(211, "PillDriver", false);
     if (!driver) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -1249,7 +1285,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(222, "ReacceptRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -1326,7 +1362,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(232, "FlowARider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -1390,7 +1426,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(242, "ExpReacceptRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -1465,7 +1501,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(252, "ExpBlockRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -1552,7 +1588,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const driver = setupHousehold(261, "MixedDriver", false);
     if (!driver) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     // Use 4 morning trips: Mon(0), Tue(2), Wed(4), Thu(6)
     const trips = [tripIds[0], tripIds[2], tripIds[4], tripIds[6]];
 
@@ -1629,7 +1665,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const rider = setupHousehold(272, "FriendlyErrRider", false);
     if (!rider) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`
@@ -1709,7 +1745,7 @@ test.describe.serial("Pilot Scenarios", () => {
     const driver = setupHousehold(281, "ExpLabelDriver", false);
     if (!driver) { test.skip(); return; }
 
-    const { weekId, tripIds } = setupCurrentWeekWithTrips();
+    const { weekId, tripIds } = setupNextWeekWithTrips();
     const morningTrip = tripIds[0];
 
     runSql(`

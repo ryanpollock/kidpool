@@ -49,4 +49,16 @@ export function todayInTimezone(timezone: string = PILOT_TIMEZONE): string {
   }).format(new Date());
 }
 
+// Format an arbitrary Date as YYYY-MM-DD in the pilot timezone.
+// Use this instead of date.toISOString().slice(0, 10) which converts to UTC
+// and shifts the date by up to a day for SF users (UTC-7/-8).
+export function dateInTimezone(date: Date, timezone: string = PILOT_TIMEZONE): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
 export { PILOT_TIMEZONE };
