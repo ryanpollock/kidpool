@@ -21,6 +21,31 @@ const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
 const UID = (n: number) => `deadbeef-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const TEST_PASSWORD = "TestPass123!";
 
+// Format a Date as YYYY-MM-DD in the pilot timezone (America/Los_Angeles).
+// toISOString() converts to UTC which shifts the date and breaks the
+// weeks_starts_on_check constraint (must be Monday).
+function localDateStr(date: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(date);
+}
+
+// Get the Monday of the current week in SF time as a YYYY-MM-DD string.
+// Uses UTC date arithmetic to avoid system timezone interference.
+function currentMondayStr(): string {
+  const sfToday = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  const [y, m, d] = sfToday.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  const dow = date.getUTCDay();
+  const daysBack = dow === 0 ? 6 : dow - 1;
+  date.setUTCDate(date.getUTCDate() - daysBack);
+  return date.toISOString().slice(0, 10);
+}
+
 if (PROJECT_REF === PRODUCTION_REF) {
   console.error("Aborting: E2E tests must not run against production. Run `npm run link:test` first.");
   process.exit(1);
@@ -274,18 +299,19 @@ function setupWeekWithTrips() {
 }
 
 function setupCurrentWeekWithTrips() {
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
+  const mondayStr = currentMondayStr();
   const weekId = UID(913);
   const tripIds: string[] = [];
   const dates: string[] = [];
-  for (let d = 0; d < 5; d++) {
-    const date = new Date(today);
-    date.setDate(today.getDate() + d);
+  const [y, m, d] = mondayStr.split("-").map(Number);
+  const mondayDate = new Date(Date.UTC(y, m - 1, d));
+  for (let dd = 0; dd < 5; dd++) {
+    const date = new Date(mondayDate);
+    date.setUTCDate(mondayDate.getUTCDate() + dd);
     dates.push(date.toISOString().slice(0, 10));
   }
-  let sql = `DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${todayStr}';\n`;
-  sql += `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${todayStr}', 'open', '${todayStr}T15:00:00-08:00', '${todayStr}T20:00:00-08:00');\n`;
+  let sql = `DELETE FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${mondayStr}';\n`;
+  sql += `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${mondayStr}', 'open', '${dates[0]}T15:00:00-08:00', '${dates[0]}T20:00:00-08:00');\n`;
   for (let d = 0; d < 5; d++) {
     for (const dir of ["morning", "afternoon"]) {
       const tId = UID(413 + d * 2 + (dir === "morning" ? 0 : 1));
@@ -311,7 +337,9 @@ function generateScheduleViaEdgeFunction(coordEmail: string, weekId: string) {
     `curl -s -X POST -H "Authorization: Bearer ${jwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
     { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
   );
-  return JSON.parse(fnResult);
+  const parsed = JSON.parse(fnResult);
+  if (!parsed.success) console.error(`[DEBUG] genSchedule ${coordEmail} week=${weekId}: ${fnResult}`);
+  return parsed;
 }
 
 test.describe("App E2E", () => {
@@ -855,20 +883,21 @@ test.describe("App E2E", () => {
     const driver = setupHousehold(291, "CalDriver");
     if (!driver) { test.skip(); return; }
 
-    // Create a week starting today (so it's the "current week" the home screen loads)
-    // Use the existing seed week if it exists; otherwise create one.
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
+    // Create a week starting on the Monday of the current week
+    // (weeks.starts_on must be Monday per check constraint)
+    const mondayStr = currentMondayStr();
     const dates: string[] = [];
+    const [my, mm, md] = mondayStr.split("-").map(Number);
+    const mondayDate = new Date(Date.UTC(my, mm - 1, md));
     for (let d = 0; d < 5; d++) {
-      const date = new Date(today);
-      date.setDate(today.getDate() + d);
+      const date = new Date(mondayDate);
+      date.setUTCDate(mondayDate.getUTCDate() + d);
       dates.push(date.toISOString().slice(0, 10));
     }
 
-    // Find or create the week for today
+    // Find or create the week for this Monday
     const existingWeek = JSON.parse(execSync(
-      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/weeks?group_id=eq.${GROUP_ID}&starts_on=eq.${todayStr}&select=id"`,
+      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/rest/v1/weeks?group_id=eq.${GROUP_ID}&starts_on=eq.${mondayStr}&select=id"`,
       { encoding: "utf8" },
     ));
     let weekId: string;
@@ -883,7 +912,7 @@ test.describe("App E2E", () => {
       tripIds = existingTrips.map((t: { id: string }) => t.id);
     } else {
       weekId = UID(912);
-      let weekSql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${todayStr}', 'open', '${todayStr}T15:00:00-08:00', '${todayStr}T20:00:00-08:00');\n`;
+      let weekSql = `INSERT INTO public.weeks (id, group_id, starts_on, status, checkin_deadline, confirmation_deadline) VALUES ('${weekId}', '${GROUP_ID}', '${mondayStr}', 'open', '${dates[0]}T15:00:00-08:00', '${dates[0]}T20:00:00-08:00');\n`;
       for (let d = 0; d < 5; d++) {
         for (const dir of ["morning", "afternoon"]) {
           const tId = UID(412 + d * 2 + (dir === "morning" ? 0 : 1));

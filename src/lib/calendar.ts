@@ -1,4 +1,5 @@
 import type { MyDriverAssignment } from "./supabase/carpool-repository";
+import { todayInTimezone } from "./school-calendar";
 
 function pad(n: number): string {
   return String(n).padStart(2, "0");
@@ -45,7 +46,7 @@ export function buildIcsEvent(assignment: MyDriverAssignment, timezone: string):
   const description = eventDescription(assignment);
   const location = eventLocation(assignment);
   const uid = `${assignment.assignment.id}@carpoolcrew.co`;
-  const dtstamp = toIcsLocal(new Date().toISOString().slice(0, 10), new Date().toTimeString().slice(0, 5));
+  const dtstamp = toIcsLocal(todayInTimezone(), new Date().toTimeString().slice(0, 5));
   return [
     "BEGIN:VEVENT",
     `UID:${uid}`,

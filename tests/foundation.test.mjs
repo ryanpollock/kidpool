@@ -344,6 +344,8 @@ test("Add to calendar button renders in Prototype with BottomSheet options", asy
   assert.match(source, /data-testid="calendar-apple"/);
   assert.match(source, /data-testid="calendar-outlook"/);
   assert.match(source, /Add all to calendar/);
+  assert.match(source, /Download \.ics/);
+  assert.match(source, /Import &amp; export/);
   assert.match(source, /buildIcsCalendar/);
   assert.match(source, /buildGoogleCalendarUrl/);
   assert.match(source, /buildOutlookUrl/);
