@@ -538,3 +538,30 @@ test("send-push: drive_reminder branch sends push + email to confirmed drivers",
   // Resend tags include the type
   assert.match(ts, /value: "drive_reminder"/);
 });
+
+// ─── Broadcast type ──────────────────────────────────────────
+
+test("send-push: broadcast type sends arbitrary email to all active members", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Branch accepts content from the request body
+  assert.match(ts, /type === "broadcast"/);
+  assert.match(ts, /broadcast_id/);
+  assert.match(ts, /html_body/);
+  assert.match(ts, /text_body/);
+
+  // Sends to all active memberships in the pilot group
+  assert.match(ts, /broadcast: one-off email to all active members/);
+
+  // Idempotency key uses broadcast_id + profile_id
+  assert.match(ts, /broadcast-\$\{broadcastId\}-\$\{profile\.id\}/);
+
+  // Skips fake seed/test/e2e emails
+  assert.match(ts, /@seed\.kidpool/);
+
+  // Resend tags include the type
+  assert.match(ts, /value: "broadcast"/);
+
+  // Supports filtering to a single email (for test sends)
+  assert.match(ts, /filter_email/);
+});

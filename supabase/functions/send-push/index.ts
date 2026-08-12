@@ -249,6 +249,94 @@ Deno.serve(async (req) => {
       return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
     }
 
+    // ── broadcast: one-off email to all active members ─────────
+    // Reusable type for sending arbitrary content to the whole group.
+    // Request body: { type, broadcast_id, subject, html_body, text_body }
+    // Recipients: all active memberships in the pilot group.
+    // Idempotency key: broadcast-${broadcast_id}-${profile.id} — re-runs dedupe.
+    if (type === "broadcast") {
+      const broadcastId: string | undefined = body.broadcast_id;
+      const subject: string | undefined = body.subject;
+      const htmlBodyParam: string | undefined = body.html_body;
+      const textBodyParam: string | undefined = body.text_body;
+      const filterEmail: string | undefined = body.filter_email;
+
+      if (!broadcastId) return jsonError("Missing broadcast_id", 400);
+      if (!subject) return jsonError("Missing subject", 400);
+      if (!htmlBodyParam) return jsonError("Missing html_body", 400);
+
+      if (!RESEND_API_KEY) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_resend_key" });
+      }
+
+      // Pilot group
+      const groupId = "c1000000-0000-4000-8000-000000000001";
+      const memberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${groupId}`, status: "eq.active" });
+      const recipientProfileIds = [...new Set(memberships.map((m: any) => m.profile_id))];
+      if (recipientProfileIds.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_recipients" });
+      }
+
+      const profileIdsStr = `(${recipientProfileIds.join(",")})`;
+      const profiles = await supaFetch("profiles", "id,email", { id: `in.${profileIdsStr}` });
+
+      const cta = APP_URL
+        ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
+        : "";
+
+      // Wrap the provided html_body in the standard email shell + append CTA
+      const fullHtml =
+        `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+        `${htmlBodyParam}` +
+        `<p style="margin-top:24px;">${cta}</p>` +
+        `</body></html>`;
+
+      let emailSent = 0;
+      let emailFailed = 0;
+      let skipped = 0;
+      for (const profile of profiles) {
+        if (!profile.email) continue;
+        if (profile.email.endsWith("@seed.kidpool") || profile.email.endsWith("@test.kidpool") || profile.email.endsWith("@e2e.kidpool")) continue;
+        if (filterEmail && profile.email !== filterEmail) continue;
+
+        const idempotencyKey = `broadcast-${broadcastId}-${profile.id}`;
+        try {
+          const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKey,
+            },
+            body: JSON.stringify({
+              from: RESEND_FROM_EMAIL,
+              to: profile.email,
+              reply_to: RESEND_REPLY_TO,
+              subject,
+              html: fullHtml,
+              text: textBodyParam ?? "",
+              tags: [
+                { name: "type", value: "broadcast" },
+                { name: "group", value: groupId },
+              ],
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.text();
+            console.error(`[send-push] Broadcast email to ${profile.email} failed:`, err);
+            emailFailed++;
+          } else {
+            emailSent++;
+          }
+        } catch (e) {
+          console.error(`[send-push] Broadcast email to ${profile.email} threw:`, e);
+          emailFailed++;
+        }
+      }
+
+      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed, skipped });
+    }
+
     // ── night_before_summary: "who's driving tomorrow" email ─────
     // Triggered hourly by pg_cron. Self-gates to 8 PM Pacific so it fires
     // once per evening before a school day. Recipients are families with a
