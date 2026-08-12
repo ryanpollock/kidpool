@@ -46,7 +46,7 @@ import {
   type WeekWithTrips,
 } from "./lib/supabase";
 import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference } from "./lib/supabase/database.types";
-import { getNoSchoolReason, todayInTimezone } from "./lib/school-calendar";
+import { getNoSchoolReason, todayInTimezone, dateInTimezone } from "./lib/school-calendar";
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
 
@@ -767,7 +767,7 @@ function weekLabel(startsOn: string): string {
   const start = formatTripDate(startsOn);
   const endDate = new Date(startsOn + "T00:00:00");
   endDate.setDate(endDate.getDate() + 4);
-  const end = formatTripDate(endDate.toISOString().slice(0, 10));
+  const end = formatTripDate(dateInTimezone(endDate));
   return `Week of ${start.short} – ${end.short}`;
 }
 
@@ -836,7 +836,7 @@ function nextMonday(): string {
   const daysUntilMonday = day === 0 ? 1 : 8 - day;
   const monday = new Date(today);
   monday.setDate(today.getDate() + daysUntilMonday);
-  return monday.toISOString().slice(0, 10);
+  return dateInTimezone(monday);
 }
 
 const TEMPLATE_DAYS = [1, 2, 3, 4, 5];
@@ -2175,7 +2175,7 @@ function WeekScreen({
   for (let offset = 0; offset < 5; offset++) {
     const d = new Date(weekStart);
     d.setDate(d.getDate() + offset);
-    weekdays.push(d.toISOString().slice(0, 10));
+    weekdays.push(dateInTimezone(d));
   }
 
   if (scheduleLoading) {
@@ -4488,6 +4488,44 @@ export default function Prototype() {
       setPushSubscribing(false);
     }
   }, [repository]);
+
+  // Auto re-subscribe when permission is granted but no subscription exists.
+  // Handles VAPID key rotation: old subscriptions were cleared server-side, but
+  // users who previously granted permission won't see the banner again (permission
+  // is already "granted"). This silently re-subscribes them with the current key.
+  useEffect(() => {
+    if (!identity) return;
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "granted") return;
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const existing = await reg.pushManager.getSubscription();
+        if (existing) return;
+        const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+        if (!vapidKey) return;
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: vapidKey,
+        });
+        if (cancelled) return;
+        const json = sub.toJSON();
+        if (json.keys?.p256dh && json.keys?.auth) {
+          await repository.savePushSubscription(
+            sub.endpoint,
+            json.keys.p256dh,
+            json.keys.auth,
+          );
+          console.log("[carpool] Auto re-subscribed to push (VAPID key rotation).");
+        }
+      } catch (err) {
+        console.error("[carpool] Auto re-subscribe failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [identity, repository]);
 
   // iOS Safari doesn't support PushManager until the app is installed as a PWA.
   // Show install instructions instead of the standard push permission banner.

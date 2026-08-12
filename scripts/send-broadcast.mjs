@@ -9,7 +9,7 @@
 // Requires: Supabase CLI linked to production (npm run link:prod).
 
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 
 const PRODUCTION_REF = "ujcrnrcgbvzyqosykkjy";
@@ -37,7 +37,6 @@ verifyLinkedProject();
 // Resolve cron_secret from the production vault
 function getCronSecret() {
   const tmpFile = path.join(import.meta.dirname, "..", "supabase/.temp", `_vault_${Date.now()}.sql`);
-  const { writeFileSync, unlinkSync } = await import("node:fs");
   writeFileSync(tmpFile, "select decrypted_secret from vault.decrypted_secrets where name = 'cron_secret';");
   try {
     const result = execSync(`supabase db query --linked -f "${tmpFile}" 2>/dev/null`, { encoding: "utf8" });
@@ -65,12 +64,13 @@ const HTML_BODY = `
 <p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>Android:</strong> Open carpoolcrew.co in Chrome, tap the menu (three dots), then <strong>Add to Home Screen</strong> or <strong>Install app</strong>. Allow notifications when prompted.</p>
 
 <h2 style="font-size:16px;margin:24px 0 8px;">2. Enable notifications</h2>
-<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Open the app from your home screen icon. Tap <strong>Allow</strong> on the "Get notified" banner at the top of the Home screen. You'll get alerts when:</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">If you installed the app previously, just open it — notifications will reconnect automatically. If you haven't installed yet, open the app from your home screen icon and tap <strong>Allow</strong> on the "Get notified" banner. You'll get alerts when:</p>
 <ul style="font-size:15px;line-height:1.6;margin:0 0 16px;padding-left:20px;">
   <li>Your child's drive changes</li>
   <li>It's 75 minutes before you drive</li>
   <li>The night before each school day (who's driving tomorrow)</li>
 </ul>
+<p style="font-size:13px;line-height:1.5;color:#4f6278;margin:0 0 8px;">Not getting notifications within a day? Reinstall the app: remove the home screen icon, open carpoolcrew.co in Safari, and add it to your home screen again.</p>
 
 <h2 style="font-size:16px;margin:24px 0 8px;">3. Check in for next week (Aug 17–21)</h2>
 <p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Tap <strong>Submit</strong> by <strong>Saturday, August 15 at 3 PM Pacific</strong>. Missed check-ins mean your child might not get a ride.</p>
@@ -92,10 +92,12 @@ Android: Open carpoolcrew.co in Chrome, tap the menu (three dots), then "Add to 
 
 2. ENABLE NOTIFICATIONS
 
-Open the app from your home screen icon. Tap "Allow" on the "Get notified" banner at the top of the Home screen. You'll get alerts when:
+If you installed the app previously, just open it — notifications will reconnect automatically. If you haven't installed yet, open the app from your home screen icon and tap "Allow" on the "Get notified" banner. You'll get alerts when:
   - Your child's drive changes
   - It's 75 minutes before you drive
   - The night before each school day (who's driving tomorrow)
+
+Not getting notifications within a day? Reinstall the app: remove the home screen icon, open carpoolcrew.co in Safari, and add it to your home screen again.
 
 3. CHECK IN FOR NEXT WEEK (AUG 17-21)
 
