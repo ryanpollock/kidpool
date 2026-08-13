@@ -38,6 +38,10 @@ const publishSundayEveningMigrationUrl = new URL(
   "../supabase/migrations/202608130001_publish_sunday_evening.sql",
   import.meta.url,
 );
+const pgnetTimeoutMigrationUrl = new URL(
+  "../supabase/migrations/202608130002_increase_pgnet_timeout.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -104,6 +108,30 @@ test("schedule automation: Sunday publish rescheduled to 8:30 PM Pacific", async
 
   // Saturday draft cron is NOT touched by this reschedule
   assert.doesNotMatch(sql, /generate-schedule-saturday/);
+});
+
+// ─── pg_net timeout fix (root cause of night-before silence) ──
+
+test("pg_net timeout: all wrapper functions use 120s timeout", async () => {
+  const sql = await readFile(pgnetTimeoutMigrationUrl, "utf8");
+
+  // All three wrapper functions are rewritten with CREATE OR REPLACE
+  assert.match(sql, /create or replace function public\.send_night_before_summary\(\)/);
+  assert.match(sql, /create or replace function public\.send_drive_reminders\(\)/);
+  assert.match(sql, /create or replace function public\.generate_schedule_cron\(\)/);
+
+  // All three include timeout_milliseconds := 120000 (the fix)
+  assert.match(sql, /timeout_milliseconds := 120000/);
+
+  // All three use security definer + revoke
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_night_before_summary\(\) from public, authenticated/);
+  assert.match(sql, /revoke all on function public\.send_drive_reminders\(\) from public, authenticated/);
+  assert.match(sql, /revoke all on function public\.generate_schedule_cron\(\) from public, authenticated/);
+
+  // All three use vault secrets (environment-aware)
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
 });
 
 // ─── publish_schedule_internal RPC ──────────────────────────
