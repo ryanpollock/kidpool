@@ -90,7 +90,7 @@ test("frameless production MobileRuntime provides ScreenPortalContext for Bottom
   // PhoneFrame provides the context. In production (frameless MobileRuntime),
   // the context was missing, throwing "useScreenPortal must be used inside
   // PhoneFrame" and crashing the Home screen for any user reaching a
-  // BottomSheet (e.g. AddToCalendarButton with confirmed drives).
+  // BottomSheet (e.g. any sheet opened from the Home screen).
   const runtimeUrl = new URL("../src/mobile/MobileRuntime.tsx", import.meta.url);
   const phoneFrameUrl = new URL("../src/mobile/PhoneFrame.tsx", import.meta.url);
   const bottomSheetUrl = new URL("../src/mobile/BottomSheet.tsx", import.meta.url);

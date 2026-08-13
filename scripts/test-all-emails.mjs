@@ -68,6 +68,22 @@ const emailTypes = [
     send_via: "welcome",
   },
   {
+    id: "drive_confirmed",
+    subject: "You're driving morning — calendar invite",
+    description: "Sent immediately after a driver confirms a drive. Email with a .ics calendar invite attached (1-hour event: 15 min before pickup through 45 min after departure). Includes Google Calendar link as fallback.",
+    send_via: "broadcast",
+    html_body: `
+<h1 style="font-size:22px;margin:0 0 16px;">You're driving, Ryan</h1>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Your morning drive is confirmed for 2026-08-14. Meet at Midtown Terrace Playground at 8:40 AM. Depart 8:45 AM. Kids in your car: Sara Pollock, Lily Chen.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">A calendar invite is attached to this email. Open it to add the event to your calendar — it covers the full drive (15 min before pickup through 45 min after departure).</p>
+<p style="font-size:14px;line-height:1.6;margin:0 0 16px;">Or add via <a href="https://calendar.google.com">Google Calendar</a>.</p>`,
+    text_body: `You're driving, Ryan
+
+Your morning drive is confirmed for 2026-08-14. Meet at Midtown Terrace Playground at 8:40 AM. Depart 8:45 AM. Kids in your car: Sara Pollock, Lily Chen.
+
+A calendar invite is attached to this email. Open it to add the event to your calendar — it covers the full drive (15 min before pickup through 45 min after departure).`,
+  },
+  {
     id: "night_before_summary",
     subject: "Tomorrow's carpool",
     description: "Sent at 9 PM Pacific every night before a school day. Personalized: shows the recipient's driving status + the full driver roster with kids in each car.",

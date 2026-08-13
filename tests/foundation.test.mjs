@@ -336,12 +336,14 @@ test("Calendar utility generates Google Calendar and Outlook URLs", async () => 
   assert.match(source, /enddt/);
 });
 
-test("Add to calendar button renders in Prototype", async () => {
+test("drive_confirmed email is triggered on confirm in Prototype", async () => {
   const source = await readFile(prototypeUrl, "utf8");
 
-  assert.match(source, /function AddToCalendarButton/);
-  assert.match(source, /data-testid="add-to-calendar"/);
-  assert.match(source, /Add all to calendar/);
-  assert.match(source, /buildIcsCalendar/);
-  assert.match(source, /downloadIcs/);
+  // No more manual AddToCalendarButton — calendar invite is emailed automatically
+  assert.doesNotMatch(source, /function AddToCalendarButton/);
+  assert.doesNotMatch(source, /data-testid="add-to-calendar"/);
+  assert.doesNotMatch(source, /Add all to calendar/);
+
+  // Confirm triggers the drive_confirmed email
+  assert.match(source, /drive_confirmed/);
 });

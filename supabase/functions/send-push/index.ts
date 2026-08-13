@@ -98,6 +98,22 @@ function formatTime(t: string): string {
   return `${hour12}:${m} ${ampm}`;
 }
 
+// Add minutes to a Postgres time string ("08:40" -> "09:10" for +30).
+// Wraps past midnight. Returns "HH:MM" (zero-padded).
+function addMinutes(time: string, minutes: number): string {
+  const [h, m] = time.split(":").map((n) => parseInt(n, 10));
+  const total = h * 60 + m + minutes;
+  const wrapped = ((total % 1440) + 1440) % 1440;
+  const nh = Math.floor(wrapped / 60);
+  const nm = wrapped % 60;
+  return `${String(nh).padStart(2, "0")}:${String(nm).padStart(2, "0")}`;
+}
+
+// Format a date+time as an ICS local datetime: "20260814T082500".
+function toIcsLocal(dateStr: string, timeStr: string): string {
+  return `${dateStr.replaceAll("-", "")}T${timeStr.replaceAll(":", "")}00`;
+}
+
 // Pacific-time parts for the current instant. `hour12: false` yields 00-23.
 function pacificParts(now: Date, withMinute = false): Record<string, string> {
   const opts: Intl.DateTimeFormatOptions = {
@@ -747,6 +763,157 @@ Deno.serve(async (req) => {
       }
 
       return jsonResponse({ sent, failed, removed, email_sent: emailSent, email_failed: emailFailed });
+    }
+
+    // ── drive_confirmed: email calendar invite to the confirmed driver ──
+    // Triggered by the client immediately after respondToDriverAssignment
+    // returns "confirmed". Sends an email with a .ics attachment covering the
+    // full drive duration: 15 min before meeting (drive to pickup) through
+    // 45 min after departure (drive to school + drive home). Also includes
+    // Google Calendar and Outlook links as fallbacks. Idempotency key is
+    // per-assignment so a re-confirm dedupes.
+    if (type === "drive_confirmed" && assignment_id) {
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,meeting_time,departure_time,origin,destination,week_id,group_id", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const driverProfile = await supaFetch("profiles", "id,full_name,email", { id: `eq.${da.driver_profile_id}` });
+      if (driverProfile.length === 0) return jsonError("Driver not found", 404);
+      const driver = driverProfile[0];
+      if (!driver.email || isTestEmail(driver.email)) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
+      }
+      if (!RESEND_API_KEY) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_resend_key" });
+      }
+
+      // Fetch rider assignments (kids in this car)
+      const riderAssignments = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${assignment_id}` });
+      const childIds = riderAssignments.map((ra: any) => ra.child_id);
+      const children = childIds.length > 0 ? await supaFetch("children", "first_name,last_name", { id: `in.(${childIds.join(",")})` }) : [];
+      const kidNames = children.map((c: any) => `${c.first_name} ${c.last_name}`.trim());
+
+      // Fetch vehicle label
+      let vehicleLabel = "";
+      if (da.vehicle_id) {
+        const vehicles = await supaFetch("vehicles", "label", { id: `eq.${da.vehicle_id}` });
+        if (vehicles.length > 0) vehicleLabel = vehicles[0].label;
+      }
+
+      const groupId = da.group_id;
+      const timezone = "America/Los_Angeles";
+      const firstName = (driver.full_name ?? "there").split(" ")[0];
+      const dirLabel = trip.direction === "morning" ? "morning" : "afternoon";
+      const meetingTime = formatTime(trip.meeting_time);
+      const departureTime = formatTime(trip.departure_time);
+
+      // Calendar event: 15 min before meeting through 45 min after departure
+      const eventStart = addMinutes(trip.meeting_time, -15);
+      const eventEnd = addMinutes(trip.departure_time, 45);
+      const dtstart = toIcsLocal(trip.service_date, eventStart);
+      const dtend = toIcsLocal(trip.service_date, eventEnd);
+      const dtstamp = toIcsLocal(
+        new Date().toISOString().slice(0, 10),
+        new Date().toTimeString().slice(0, 5),
+      );
+      const summary = `Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive to ${trip.destination}`;
+      const ridersStr = kidNames.length > 0 ? kidNames.join(", ") : "No riders assigned";
+      const description = `Riders: ${ridersStr}\\nVehicle: ${vehicleLabel || "Unknown"}\\nMeet at ${meetingTime} at ${trip.origin}\\nDepart ${departureTime}`;
+      const icsContent = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Carpool Crew//EN",
+        `X-WR-TIMEZONE:${timezone}`,
+        "BEGIN:VEVENT",
+        `UID:drive-confirmed-${assignment_id}@carpoolcrew.co`,
+        `DTSTAMP:${dtstamp}`,
+        `DTSTART;TZID=${timezone}:${dtstart}`,
+        `DTEND;TZID=${timezone}:${dtend}`,
+        `SUMMARY:${summary}`,
+        `DESCRIPTION:${description}`,
+        `LOCATION:${trip.origin}`,
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ].join("\r\n");
+
+      // Base64-encode the ICS for the Resend attachment
+      const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
+
+      // Google Calendar link (fallback)
+      const googleStart = toIcsLocal(trip.service_date, eventStart);
+      const googleEnd = toIcsLocal(trip.service_date, eventEnd);
+      const googleParams = new URLSearchParams({
+        action: "TEMPLATE",
+        text: summary,
+        dates: `${googleStart}/${googleEnd}`,
+        ctz: timezone,
+        location: trip.origin,
+        details: description.replaceAll("\\n", "\n"),
+      });
+      const googleUrl = `https://calendar.google.com/calendar/render?${googleParams.toString()}`;
+
+      const kidsStr = kidNames.length > 0 ? ` Kids in your car: ${kidNames.join(", ")}.` : "";
+      const htmlBody =
+        `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+        `<h1 style="font-size:22px;margin:0 0 16px;">You're driving, ${escapeHtml(firstName)}</h1>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Your ${dirLabel} drive is confirmed for ${escapeHtml(trip.service_date)}. Meet at ${escapeHtml(trip.origin)} at ${escapeHtml(meetingTime)}. Depart ${escapeHtml(departureTime)}.${kidsStr}</p>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">A calendar invite is attached to this email. Open it to add the event to your calendar — it covers the full drive (15 min before pickup through 45 min after departure).</p>` +
+        `<p style="font-size:14px;line-height:1.6;margin:0 0 16px;">Or add via <a href="${googleUrl}">Google Calendar</a>.</p>` +
+        `<p style="margin-top:24px;">${APP_URL ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>` : ""}</p>` +
+        `</body></html>`;
+
+      const textBody =
+        `You're driving, ${firstName}\n\n` +
+        `Your ${dirLabel} drive is confirmed for ${trip.service_date}. Meet at ${trip.origin} at ${meetingTime}. Depart ${departureTime}.${kidsStr}\n\n` +
+        `A calendar invite is attached to this email. Open it to add the event to your calendar — it covers the full drive (15 min before pickup through 45 min after departure).\n\n` +
+        `Or add via Google Calendar: ${googleUrl}`;
+
+      const idempotencyKey = `drive-confirmed-${assignment_id}`;
+      let emailSent = 0;
+      let emailFailed = 0;
+      try {
+        const res = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: driver.email,
+            reply_to: RESEND_REPLY_TO,
+            subject: `You're driving ${dirLabel} — ${trip.service_date}`,
+            html: htmlBody,
+            text: textBody,
+            attachments: [
+              {
+                filename: "carpool-crew-drive.ics",
+                content: icsBase64,
+              },
+            ],
+            tags: [
+              { name: "type", value: "drive_confirmed" },
+              { name: "group", value: groupId ?? "unknown" },
+            ],
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.text();
+          console.error(`[send-push] Drive confirmed email to ${driver.email} failed:`, err);
+          emailFailed++;
+        } else {
+          emailSent++;
+        }
+      } catch (e) {
+        console.error(`[send-push] Drive confirmed email to ${driver.email} threw:`, e);
+        emailFailed++;
+      }
+      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
     }
 
     let recipientProfileIds: string[] = [];
