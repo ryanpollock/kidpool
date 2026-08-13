@@ -773,7 +773,7 @@ Deno.serve(async (req) => {
     // Google Calendar and Outlook links as fallbacks. Idempotency key is
     // per-assignment so a re-confirm dedupes.
     if (type === "drive_confirmed" && assignment_id) {
-      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id", { id: `eq.${assignment_id}` });
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,updated_at", { id: `eq.${assignment_id}` });
       if (assignment.length === 0) return jsonError("Assignment not found", 404);
       const da = assignment[0];
 
@@ -872,7 +872,7 @@ Deno.serve(async (req) => {
         `A calendar invite is attached to this email. Open it to add the event to your calendar — it covers the full drive (15 min before pickup through 45 min after departure).\n\n` +
         `Or add via Google Calendar: ${googleUrl}`;
 
-      const idempotencyKey = `drive-confirmed-${assignment_id}`;
+      const idempotencyKey = `drive-confirmed-${assignment_id}-${da.updated_at}`;
       let emailSent = 0;
       let emailFailed = 0;
       try {
@@ -911,6 +911,118 @@ Deno.serve(async (req) => {
         }
       } catch (e) {
         console.error(`[send-push] Drive confirmed email to ${driver.email} threw:`, e);
+        emailFailed++;
+      }
+      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
+    }
+
+    // ── drive_cancelled: calendar cancellation email to the driver ──
+    // Triggered by the client when a driver declines a previously confirmed
+    // drive. Sends a .ics with METHOD:CANCEL so the driver's calendar app
+    // removes the event. Also sends a plain-text "drive cancelled" email.
+    // Idempotency key includes updated_at so a re-decline after re-accept
+    // gets a fresh key.
+    if (type === "drive_cancelled" && assignment_id) {
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,updated_at", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,meeting_time,departure_time,origin,destination,week_id,group_id", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const driverProfile = await supaFetch("profiles", "id,full_name,email", { id: `eq.${da.driver_profile_id}` });
+      if (driverProfile.length === 0) return jsonError("Driver not found", 404);
+      const driver = driverProfile[0];
+      if (!driver.email || isTestEmail(driver.email)) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
+      }
+      if (!RESEND_API_KEY) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_resend_key" });
+      }
+
+      const groupId = da.group_id;
+      const timezone = "America/Los_Angeles";
+      const firstName = (driver.full_name ?? "there").split(" ")[0];
+      const dirLabel = trip.direction === "morning" ? "morning" : "afternoon";
+
+      // ICS with METHOD:CANCEL so calendar apps remove the event
+      const dtstamp = toIcsLocal(
+        new Date().toISOString().slice(0, 10),
+        new Date().toTimeString().slice(0, 5),
+      );
+      const icsContent = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Carpool Crew//EN",
+        `X-WR-TIMEZONE:${timezone}`,
+        "METHOD:CANCEL",
+        "BEGIN:VEVENT",
+        `UID:drive-confirmed-${assignment_id}@carpoolcrew.co`,
+        `DTSTAMP:${dtstamp}`,
+        `DTSTART;TZID=${timezone}:${toIcsLocal(trip.service_date, addMinutes(trip.meeting_time, -15))}`,
+        `DTEND;TZID=${timezone}:${toIcsLocal(trip.service_date, addMinutes(trip.departure_time, 45))}`,
+        `SUMMARY:CANCELLED: Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive`,
+        "STATUS:CANCELLED",
+        `LOCATION:${trip.origin}`,
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ].join("\r\n");
+
+      const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
+
+      const htmlBody =
+        `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+        `<h1 style="font-size:22px;margin:0 0 16px;">Drive cancelled, ${escapeHtml(firstName)}</h1>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Your ${dirLabel} drive on ${escapeHtml(trip.service_date)} has been cancelled. A calendar cancellation is attached so your calendar app can remove the event.</p>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Affected families have been notified that their child needs a new ride.</p>` +
+        `<p style="margin-top:24px;">${APP_URL ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>` : ""}</p>` +
+        `</body></html>`;
+
+      const textBody =
+        `Drive cancelled, ${firstName}\n\n` +
+        `Your ${dirLabel} drive on ${trip.service_date} has been cancelled. A calendar cancellation is attached so your calendar app can remove the event.\n\n` +
+        `Affected families have been notified that their child needs a new ride.`;
+
+      const idempotencyKey = `drive-cancelled-${assignment_id}-${da.updated_at}`;
+      let emailSent = 0;
+      let emailFailed = 0;
+      try {
+        const res = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: driver.email,
+            reply_to: RESEND_REPLY_TO,
+            subject: `Drive cancelled — ${trip.service_date}`,
+            html: htmlBody,
+            text: textBody,
+            attachments: [
+              {
+                filename: "carpool-crew-cancel.ics",
+                content: icsBase64,
+              },
+            ],
+            tags: [
+              { name: "type", value: "drive_cancelled" },
+              { name: "group", value: groupId ?? "unknown" },
+            ],
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.text();
+          console.error(`[send-push] Drive cancelled email to ${driver.email} failed:`, err);
+          emailFailed++;
+        } else {
+          emailSent++;
+        }
+      } catch (e) {
+        console.error(`[send-push] Drive cancelled email to ${driver.email} threw:`, e);
         emailFailed++;
       }
       return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });

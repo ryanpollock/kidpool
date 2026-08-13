@@ -1579,7 +1579,7 @@ export class CarpoolRepository {
   async sendPushNotification(
     assignmentId: string | null,
     versionId: string | null,
-    type: "declined" | "uncovered" | "published" | "volunteered" | "admin_escalation" | "manually_assigned" | "drive_confirmed",
+    type: "declined" | "uncovered" | "published" | "volunteered" | "admin_escalation" | "manually_assigned" | "drive_confirmed" | "drive_cancelled",
   ): Promise<void> {
     try {
       await this.client.functions.invoke("send-push", {

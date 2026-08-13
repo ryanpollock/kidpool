@@ -1641,7 +1641,10 @@ function ReviewScreen({
       if (response === "confirmed") {
         void repository.sendPushNotification(assignmentId, null, "drive_confirmed");
       }
-      if (response === "declined") onDeclined(assignmentId);
+      if (response === "declined") {
+        void repository.sendPushNotification(assignmentId, null, "drive_cancelled");
+        onDeclined(assignmentId);
+      }
     } catch (nextError) {
       setError(readableError(nextError));
     } finally {
@@ -4770,6 +4773,7 @@ export default function Prototype() {
       await repository.respondToDriverAssignment(assignmentId, "declined");
       updateAssignmentStatus(assignmentId, "declined");
       void repository.sendPushNotification(assignmentId, null, "declined");
+      void repository.sendPushNotification(assignmentId, null, "drive_cancelled");
       await loadMyAssignments();
       await loadHomeSchedule();
       await loadPublishedSchedule();
