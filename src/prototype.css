@@ -692,12 +692,12 @@ button.child-photo-thumb:active {
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 4px 18px 24px;
+  padding: 0;
 }
 
 .photo-lightbox img {
   max-width: 100%;
-  max-height: calc(100vh - 160px);
+  max-height: calc(85vh - 100px);
   object-fit: contain;
   border-radius: 12px;
 }
@@ -1441,7 +1441,9 @@ button.child-photo-thumb:active {
 
 .directory-screen,
 .drive-detail-screen,
-.faq-screen {
+.faq-screen,
+.detail-screen {
+  min-height: auto;
   padding-bottom: 40px;
 }
 
