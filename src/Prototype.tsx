@@ -28,9 +28,7 @@ import {
 } from "@radix-ui/react-icons";
 import { KeyboardInput, MobileScroll, BottomSheet, useScreenPortal } from "./mobile";
 import {
-  buildGoogleCalendarUrl,
   buildIcsCalendar,
-  buildOutlookUrl,
   downloadIcs,
 } from "./lib/calendar";
 import {
@@ -4092,67 +4090,23 @@ function AddToCalendarButton({
   timezone: string;
   label?: string;
 }) {
-  const [open, setOpen] = useState(false);
   const isBulk = assignments.length > 1;
 
-  const handleGoogle = () => {
+  const handleClick = () => {
     if (assignments.length === 0) return;
-    window.open(buildGoogleCalendarUrl(assignments[0], timezone), "_blank", "noopener");
-    setOpen(false);
-  };
-
-  const handleOutlook = () => {
-    if (assignments.length === 0) return;
-    window.open(buildOutlookUrl(assignments[0], timezone), "_blank", "noopener");
-    setOpen(false);
-  };
-
-  const handleApple = () => {
     const ics = buildIcsCalendar(assignments, timezone);
     const filename = isBulk ? "carpool-crew-drives.ics" : "carpool-crew-drive.ics";
     downloadIcs(filename, ics);
-    setOpen(false);
   };
 
   return (
-    <>
-      <button
-        className="secondary-button calendar-button"
-        data-testid="add-to-calendar"
-        onClick={() => setOpen(true)}
-      >
-        <CalendarIcon width="16" height="16" /> {label}
-      </button>
-      <BottomSheet open={open} onOpenChange={setOpen} title="Add to calendar">
-        <div className="calendar-sheet" data-testid="calendar-sheet">
-          {!isBulk ? (
-            <>
-              <button className="calendar-sheet-option" data-testid="calendar-google" onClick={handleGoogle}>
-                <span className="calendar-sheet-icon">G</span>
-                <span className="calendar-sheet-label">Google Calendar</span>
-                <ChevronRightIcon />
-              </button>
-              <button className="calendar-sheet-option" data-testid="calendar-outlook" onClick={handleOutlook}>
-                <span className="calendar-sheet-icon">O</span>
-                <span className="calendar-sheet-label">Outlook</span>
-                <ChevronRightIcon />
-              </button>
-            </>
-          ) : (
-            <p className="calendar-sheet-note">
-              Adding {assignments.length} drives at once. Download a single .ics file and import it into any calendar app — Google Calendar, Apple Calendar, Outlook, and others. In Google Calendar (web): Settings → Import &amp; export → Select the .ics file → Import.
-            </p>
-          )}
-          <button className="calendar-sheet-option" data-testid="calendar-apple" onClick={handleApple}>
-            <span className="calendar-sheet-icon"><CalendarIcon width="18" height="18" /></span>
-            <span className="calendar-sheet-label">
-              {isBulk ? "Download .ics — all drives" : "Download .ics"}
-            </span>
-            <ChevronRightIcon />
-          </button>
-        </div>
-      </BottomSheet>
-    </>
+    <button
+      className="secondary-button calendar-button"
+      data-testid="add-to-calendar"
+      onClick={handleClick}
+    >
+      <CalendarIcon width="16" height="16" /> {label}
+    </button>
   );
 }
 
