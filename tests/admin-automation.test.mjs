@@ -42,6 +42,10 @@ const pgnetTimeoutMigrationUrl = new URL(
   "../supabase/migrations/202608130002_increase_pgnet_timeout.sql",
   import.meta.url,
 );
+const pgnetTimeoutRemainingMigrationUrl = new URL(
+  "../supabase/migrations/202608130003_increase_pgnet_timeout_remaining.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -132,6 +136,32 @@ test("pg_net timeout: all wrapper functions use 120s timeout", async () => {
   // All three use vault secrets (environment-aware)
   assert.match(sql, /cron_secret/);
   assert.match(sql, /cron_edge_base_url/);
+});
+
+test("pg_net timeout: remaining wrapper functions use 120s timeout", async () => {
+  const sql = await readFile(pgnetTimeoutRemainingMigrationUrl, "utf8");
+
+  // Both wrapper functions are rewritten with CREATE OR REPLACE
+  assert.match(sql, /create or replace function public\.send_deadline_reminders\(\)/);
+  assert.match(sql, /create or replace function public\.send_welcome_email\(\)/);
+
+  // Both include timeout_milliseconds := 120000 (the fix)
+  assert.match(sql, /timeout_milliseconds := 120000/);
+
+  // Both use security definer + revoke
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_deadline_reminders\(\) from public, authenticated/);
+  assert.match(sql, /revoke all on function public\.send_welcome_email\(\) from public, authenticated/);
+
+  // Both use vault secrets (environment-aware)
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
+
+  // Welcome email is a trigger function (RETURNS trigger)
+  assert.match(sql, /returns trigger/);
+
+  // Deadline reminder is a void function
+  assert.match(sql, /returns void/);
 });
 
 // ─── publish_schedule_internal RPC ──────────────────────────
