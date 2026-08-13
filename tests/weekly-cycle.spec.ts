@@ -18,15 +18,19 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import path from "node:path";
+import {
+  getSpecEnv, makeRunSql, makeAuth, truncateAll,
+  UID, PILOT_GROUP_ID,
+} from "./lib/playwright-helpers.ts";
 
-const PRODUCTION_REF = "ujcrnrcgbvzyqosykkjy";
-const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "jfyjgmhqnlbdcafoarrg";
-const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`;
-const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
-const UID = (n: number) => `deadbeef-0000-4000-8000-${String(n).padStart(12, "0")}`;
+const env = getSpecEnv();
+const runSql = makeRunSql(env);
+const { createTestUser, deleteTestUser, deleteAllTestUsers } = makeAuth(env);
+const skip = !env.serviceKey;
 const TEST_PASSWORD = "TestPass123!";
+const SUPABASE_URL = env.supabaseUrl;
+const ANON_KEY = env.anonKey;
+const GROUP_ID = PILOT_GROUP_ID;
 
 // Format a Date as YYYY-MM-DD in the pilot timezone (America/Los_Angeles).
 // toISOString() converts to UTC which shifts the date and breaks the
@@ -37,68 +41,6 @@ function localDateStr(date: Date): string {
     year: "numeric", month: "2-digit", day: "2-digit",
   }).format(date);
 }
-
-if (PROJECT_REF === PRODUCTION_REF) {
-  console.error("Aborting: weekly cycle tests must not run against production.");
-  process.exit(1);
-}
-
-function verifyLinkedProject() {
-  try {
-    const linkedRef = readFileSync(path.join(import.meta.dirname, "..", "supabase/.temp/project-ref"), "utf8").trim();
-    if (linkedRef !== PROJECT_REF) {
-      console.error(`CLI linked to ${linkedRef} but PROJECT_REF is ${PROJECT_REF}. Run "npm run link:test".`);
-      process.exit(1);
-    }
-  } catch {
-    console.error("Could not read linked project ref. Run 'npm run link:test'.");
-    process.exit(1);
-  }
-}
-verifyLinkedProject();
-
-function getServiceKey(): string | null {
-  if (process.env.SUPABASE_TEST_SERVICE_KEY) return process.env.SUPABASE_TEST_SERVICE_KEY;
-  try {
-    const cliToken = execSync('security find-generic-password -s "Supabase CLI" -w 2>/dev/null', { encoding: "utf8" }).trim();
-    const result = execSync(
-      `curl -s -H "Authorization: Bearer ${cliToken}" "https://api.supabase.com/v1/projects/${PROJECT_REF}/api-keys"`,
-      { encoding: "utf8" },
-    );
-    const parsed = JSON.parse(result);
-    const keyList = Array.isArray(parsed) ? parsed : (parsed.keys ?? []);
-    for (const k of keyList) { if (k.id === "service_role") return k.api_key; }
-  } catch {}
-  try {
-    const keys = JSON.parse(readFileSync("/tmp/kidpool-test-keys.json", "utf8"));
-    if (keys.serviceKey) return keys.serviceKey;
-  } catch {}
-  return null;
-}
-
-const SERVICE_KEY = getServiceKey();
-const skip = !SERVICE_KEY;
-
-function getAnonKey(): string {
-  if (process.env.SUPABASE_TEST_ANON_KEY) return process.env.SUPABASE_TEST_ANON_KEY;
-  try {
-    const cliToken = execSync('security find-generic-password -s "Supabase CLI" -w 2>/dev/null', { encoding: "utf8" }).trim();
-    const result = execSync(
-      `curl -s -H "Authorization: Bearer ${cliToken}" "https://api.supabase.com/v1/projects/${PROJECT_REF}/api-keys"`,
-      { encoding: "utf8" },
-    );
-    const parsed = JSON.parse(result);
-    const keyList = Array.isArray(parsed) ? parsed : (parsed.keys ?? []);
-    for (const k of keyList) { if (k.id === "anon") return k.api_key; }
-  } catch {}
-  try {
-    const keys = JSON.parse(readFileSync("/tmp/kidpool-test-keys.json", "utf8"));
-    if (keys.anonKey) return keys.anonKey;
-  } catch {}
-  return "";
-}
-
-const ANON_KEY = getAnonKey();
 
 function generateScheduleViaEdgeFunction(coordEmail: string, weekId: string) {
   const tokenBody = JSON.stringify({ email: coordEmail, password: TEST_PASSWORD });
@@ -123,72 +65,11 @@ function generateScheduleViaEdgeFunction(coordEmail: string, weekId: string) {
   return parsed;
 }
 
-function runSql(sql: string): { rows?: Array<Record<string, unknown>>; error?: { message: string } } {
-  const tmpFile = `/tmp/kidpool-cycle-query.sql`;
-  execSync(`cat > "${tmpFile}" << 'ENDSQL'\n${sql}\nENDSQL`, { shell: "/bin/bash" });
-  try {
-    const result = execSync(`supabase db query --linked -f "${tmpFile}" 2>/dev/null`, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
-    try { return JSON.parse(result); } catch { return {}; }
-  } catch (e: unknown) {
-    const stdout = (e as { stdout?: string }).stdout;
-    if (stdout) { try { return JSON.parse(stdout); } catch {} }
-    return {};
-  }
-}
-
-function createTestUser(email: string): string | null {
-  try {
-    const listResult = execSync(
-      `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users?per_page=1000"`,
-      { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
-    );
-    const parsed = JSON.parse(listResult);
-    const users = parsed.users || parsed || [];
-    for (const user of users) {
-      if (user.email === email) { deleteTestUser(user.id); }
-    }
-  } catch {}
-  runSql(`DELETE FROM public.profiles WHERE email = '${email}';`);
-  const body = JSON.stringify({ email, password: TEST_PASSWORD, email_confirm: true, user_metadata: { full_name: email } });
-  try {
-    const result = execSync(
-      `curl -s -X POST -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" -H "Content-Type: application/json" -d '${body}' "${SUPABASE_URL}/auth/v1/admin/users"`,
-      { encoding: "utf8" },
-    );
-    const parsed = JSON.parse(result);
-    return parsed.id || null;
-  } catch { return null; }
-}
-
-function deleteTestUser(userId: string) {
-  if (!userId) return;
-  try {
-    execSync(`curl -s -X DELETE -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users/${userId}" > /dev/null`, { encoding: "utf8" });
-  } catch {}
-}
-
-function deleteTestUsersByEmail() {
-  try { runSql(`DELETE FROM auth.users WHERE email LIKE '%@cycle.kidpool';`); } catch {}
-  let page = 1;
-  while (page <= 50) {
-    try {
-      const result = execSync(
-        `curl -s -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" "${SUPABASE_URL}/auth/v1/admin/users?page=${page}&per_page=1000"`,
-        { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
-      );
-      const parsed = JSON.parse(result);
-      const users = parsed.users || parsed || [];
-      if (users.length === 0) break;
-      for (const user of users) {
-        if (user.email && user.email.endsWith("@cycle.kidpool")) { deleteTestUser(user.id); }
-      }
-      if (users.length < 1000) break;
-      page++;
-    } catch { break; }
-  }
-}
-
 function cleanupCycleData() {
+  if (env.isLocal) {
+    truncateAll(runSql, GROUP_ID);
+    return;
+  }
   runSql(`
     DELETE FROM public.rider_assignments WHERE trip_id::text LIKE 'deadbeef-%' OR child_id::text LIKE 'deadbeef-%';
     DELETE FROM public.driver_assignments WHERE trip_id::text LIKE 'deadbeef-%' OR schedule_version_id::text LIKE 'deadbeef-%';
@@ -211,7 +92,7 @@ function cleanupCycleData() {
     );
     DELETE FROM public.profiles WHERE email LIKE '%@cycle.kidpool';
   `);
-  deleteTestUsersByEmail();
+  deleteAllTestUsers();
 }
 
 function setupHousehold(n: number, name: string, coordinator = false) {

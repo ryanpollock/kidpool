@@ -95,8 +95,10 @@ function runSql(sql) {
     // For non-SELECT (INSERT/UPDATE/DELETE/TRUNCATE), run directly and return {rows:[]}.
     const trimmed = sql.trim();
     const isSelect = /^(with|select)\s/i.test(trimmed);
+    // Strip trailing semicolons — they break inside the json_agg subquery wrapper
+    const cleanSql = trimmed.replace(/;+\s*$/, "");
     const wrappedSql = isSelect
-      ? `SELECT coalesce(json_agg(q), '[]'::json) FROM (${trimmed}) q;`
+      ? `SELECT coalesce(json_agg(q), '[]'::json) FROM (${cleanSql}) q;`
       : trimmed;
     try {
       const result = execSync(
