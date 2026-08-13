@@ -1,4 +1,5 @@
 import { Component, useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Session } from "@supabase/supabase-js";
 import * as Sentry from "@sentry/react";
 import {
@@ -25,7 +26,7 @@ import {
   Share2Icon,
   SunIcon,
 } from "@radix-ui/react-icons";
-import { KeyboardInput, MobileScroll, BottomSheet } from "./mobile";
+import { KeyboardInput, MobileScroll, BottomSheet, useScreenPortal } from "./mobile";
 import {
   buildGoogleCalendarUrl,
   buildIcsCalendar,
@@ -1004,6 +1005,7 @@ function PhotoButton({
   className: string;
 }) {
   const [open, setOpen] = useState(false);
+  const { screenRef } = useScreenPortal();
   if (!url) {
     return (
       <span className={className} aria-hidden="true">
@@ -1021,11 +1023,22 @@ function PhotoButton({
       >
         <img src={url} alt="" />
       </button>
-      <BottomSheet open={open} onOpenChange={setOpen} title={name} snap={0.85}>
-        <div className="photo-lightbox" data-testid="photo-lightbox">
-          <img src={url} alt={`Photo of ${name}`} />
-        </div>
-      </BottomSheet>
+      {open && screenRef.current
+        ? createPortal(
+            <div className="photo-overlay" data-testid="photo-lightbox" onClick={() => setOpen(false)}>
+              <div className="photo-overlay-bar">
+                <strong>{name}</strong>
+                <button type="button" aria-label="Close" onClick={() => setOpen(false)}>
+                  <Cross2Icon width="18" height="18" />
+                </button>
+              </div>
+              <div className="photo-overlay-image">
+                <img src={url} alt={`Photo of ${name}`} />
+              </div>
+            </div>,
+            screenRef.current,
+          )
+        : null}
     </>
   );
 }

@@ -688,18 +688,57 @@ button.child-photo-thumb:active {
   opacity: 0.85;
 }
 
-.photo-lightbox {
+.photo-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
   display: flex;
-  justify-content: center;
-  align-items: center;
-  padding: 0;
+  flex-direction: column;
+  background: rgba(0, 0, 0, 0.92);
 }
 
-.photo-lightbox img {
+.photo-overlay-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px 8px;
+  color: #fff;
+}
+
+.photo-overlay-bar strong {
+  font-size: 15px;
+}
+
+.photo-overlay-bar button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.photo-overlay-bar button:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.photo-overlay-image {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 20px 20px;
+}
+
+.photo-overlay-image img {
   max-width: 100%;
-  max-height: calc(85vh - 100px);
+  max-height: 100%;
   object-fit: contain;
-  border-radius: 12px;
+  border-radius: 8px;
 }
 .child-photo-row {
   display: flex;
@@ -1445,6 +1484,13 @@ button.child-photo-thumb:active {
 .detail-screen {
   min-height: auto;
   padding-bottom: 40px;
+}
+
+.app-main:has(.drive-detail-screen),
+.app-main:has(.directory-screen),
+.app-main:has(.faq-screen),
+.app-main:has(.detail-screen) {
+  min-height: auto;
 }
 
 .directory-list {
