@@ -84,6 +84,11 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Skip test/seed/demo addresses — any email ending in "kidpool" is a non-deliverable test address.
+function isTestEmail(email: string): boolean {
+  return email.endsWith("kidpool");
+}
+
 // Format a Postgres time string ("08:40:00" or "17:15") as "8:40 AM".
 function formatTime(t: string): string {
   const [h, m] = t.split(":");
@@ -157,7 +162,7 @@ Deno.serve(async (req) => {
       const userId: string | undefined = body.user_id;
       if (!email) return jsonError("Missing email for welcome", 400);
       if (!userId) return jsonError("Missing user_id for welcome", 400);
-      if (email.endsWith("@seed.kidpool") || email.endsWith("@test.kidpool") || email.endsWith("@e2e.kidpool")) {
+      if (isTestEmail(email)) {
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
       }
       if (!RESEND_API_KEY) {
@@ -296,7 +301,7 @@ Deno.serve(async (req) => {
       let skipped = 0;
       for (const profile of profiles) {
         if (!profile.email) continue;
-        if (profile.email.endsWith("@seed.kidpool") || profile.email.endsWith("@test.kidpool") || profile.email.endsWith("@e2e.kidpool")) continue;
+        if (isTestEmail(profile.email)) continue;
         if (filterEmail && profile.email !== filterEmail) continue;
 
         const idempotencyKey = `broadcast-${broadcastId}-${profile.id}`;
@@ -338,19 +343,22 @@ Deno.serve(async (req) => {
     }
 
     // ── night_before_summary: "who's driving tomorrow" email ─────
-    // Triggered hourly by pg_cron. Self-gates to 8 PM Pacific so it fires
-    // once per evening before a school day. Recipients are families with a
-    // child riding tomorrow (via rider_assignments on the published schedule).
-    // Each email is personalized — the recipient's own driving status is
-    // highlighted, followed by the full driver roster. Email-only, no push.
-    // Idempotency key is date-stamped per recipient so re-fires dedupe.
+    // Triggered hourly by pg_cron. Self-gates to 9–10 PM Pacific so it fires
+    // once per evening before a school day, AFTER the Sunday auto-publish
+    // (8:30 PM Pacific — see 202608130001_publish_sunday_evening.sql). The
+    // 10 PM fire dedupes against the 9 PM send via the per-recipient
+    // Idempotency-Key below, so families get one email. Recipients are
+    // families with a child riding tomorrow (via rider_assignments on the
+    // published schedule). Each email is personalized — the recipient's own
+    // driving status is highlighted, followed by the full driver roster.
+    // Email-only, no push.
     if (type === "night_before_summary") {
       const now = new Date();
       const parts = pacificParts(now, false);
       const pacificHour = parseInt(parts.hour, 10) % 24;
 
-      // Gate to 8 PM Pacific only
-      if (pacificHour !== 20) {
+      // Gate to 9–10 PM Pacific only (after the 8:30 PM Sunday publish)
+      if (pacificHour < 21 || pacificHour > 22) {
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "outside_window" });
       }
 
@@ -494,7 +502,7 @@ Deno.serve(async (req) => {
       let emailFailed = 0;
       for (const profile of recipientProfiles) {
         if (!profile.email) continue;
-        if (profile.email.endsWith("@seed.kidpool") || profile.email.endsWith("@test.kidpool") || profile.email.endsWith("@e2e.kidpool")) continue;
+        if (isTestEmail(profile.email)) continue;
 
         const firstName = (profile.full_name ?? "there").split(" ")[0];
         const myDrives = driverProfileToTrips.get(profile.id) ?? [];
@@ -693,7 +701,7 @@ Deno.serve(async (req) => {
 
         // Email to this driver
         if (driver.email && RESEND_API_KEY) {
-          if (driver.email.endsWith("@seed.kidpool") || driver.email.endsWith("@test.kidpool") || driver.email.endsWith("@e2e.kidpool")) continue;
+          if (isTestEmail(driver.email)) continue;
           const cta = APP_URL
             ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
             : "";
@@ -979,7 +987,7 @@ Deno.serve(async (req) => {
         const profile = await supaFetch("profiles", "email", { id: `eq.${dd.profile_id}` });
         if (profile.length > 0 && profile[0].email && RESEND_API_KEY) {
           const email = profile[0].email;
-          if (!email.endsWith("@seed.kidpool") && !email.endsWith("@test.kidpool") && !email.endsWith("@e2e.kidpool")) {
+          if (!isTestEmail(email)) {
             try {
               const cta = APP_URL
                 ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
@@ -1080,7 +1088,7 @@ Deno.serve(async (req) => {
 
       for (const profile of profiles) {
         if (!profile.email) continue;
-        if (profile.email.endsWith("@seed.kidpool") || profile.email.endsWith("@test.kidpool") || profile.email.endsWith("@e2e.kidpool")) continue;
+        if (isTestEmail(profile.email)) continue;
         const idempotencyKey = `carpool-${tag}-${profile.id}`;
         try {
           const res = await fetch("https://api.resend.com/emails", {

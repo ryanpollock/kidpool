@@ -34,6 +34,10 @@ const driveReminderMigrationUrl = new URL(
   "../supabase/migrations/202608070007_drive_reminder_cron.sql",
   import.meta.url,
 );
+const publishSundayEveningMigrationUrl = new URL(
+  "../supabase/migrations/202608130001_publish_sunday_evening.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -64,7 +68,9 @@ test("schedule automation: creates cron wrapper function and two schedules", asy
   assert.match(sql, /generate-schedule-saturday/);
   assert.match(sql, /0 23 \* \* 6/);
 
-  // Sunday cron (after 8 PM Pacific in both DST and standard time)
+  // Sunday cron — originally '0 5 * * 1' here; rescheduled to 8:30 PM Pacific
+  // by 202608130001_publish_sunday_evening.sql (tested below). This assertion
+  // documents the original schedule; the reschedule test covers the new one.
   assert.match(sql, /generate-schedule-sunday/);
   assert.match(sql, /0 5 \* \* 1/);
 
@@ -78,6 +84,26 @@ test("schedule automation: creates cron wrapper function and two schedules", asy
   assert.match(sql, /distinct on \(w\.group_id\)/);
   assert.match(sql, /starts_on > \(now\(\) at time zone 'America\/Los_Angeles'\)::date/);
   assert.match(sql, /exists \(select 1 from public\.trips t where t\.week_id = w\.id\)/);
+});
+
+// ─── Sunday publish rescheduled to 8:30 PM Pacific ────────────
+
+test("schedule automation: Sunday publish rescheduled to 8:30 PM Pacific", async () => {
+  const sql = await readFile(publishSundayEveningMigrationUrl, "utf8");
+
+  // Unschedules the original Sunday cron before re-scheduling it
+  assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
+
+  // New schedule: '30 3,4 * * 1' = Mon 03:30 and 04:30 UTC
+  //   Mon 03:30 UTC = Sun 8:30 PM PDT  (first fire after 8 PM PDT deadline)
+  //   Mon 04:30 UTC = Sun 8:30 PM PST  (first fire after 8 PM PST deadline)
+  // The off-DST fire is an idempotent no-op (generate_schedule_cron self-gates
+  // on deadlinePassed && !wasPublished).
+  assert.match(sql, /30 3,4 \* \* 1/);
+  assert.match(sql, /generate_schedule_cron/);
+
+  // Saturday draft cron is NOT touched by this reschedule
+  assert.doesNotMatch(sql, /generate-schedule-saturday/);
 });
 
 // ─── publish_schedule_internal RPC ──────────────────────────
@@ -229,10 +255,9 @@ test("send-push: sends transactional email via Resend alongside push", async () 
   assert.match(ts, /email_sent: emailSent/);
   assert.match(ts, /email_failed: emailFailed/);
 
-  // Skips fake seed/test/e2e emails to avoid bounces polluting Resend
-  assert.match(ts, /@seed\.kidpool/);
-  assert.match(ts, /@test\.kidpool/);
-  assert.match(ts, /@e2e\.kidpool/);
+  // Skips all test/seed/demo emails — any address ending in "kidpool"
+  assert.match(ts, /isTestEmail/);
+  assert.match(ts, /endsWith\("kidpool"\)/);
 });
 
 test("send-push: PostgREST filters use proper operator syntax (eq., in.)", async () => {
@@ -320,8 +345,8 @@ test("send-push: welcome type sends email-only onboarding welcome", async () => 
   // Idempotency key uses user_id to prevent duplicate sends
   assert.match(ts, /welcome-\$\{userId\}/);
 
-  // Skips fake seed/test/e2e emails (same as all other types)
-  assert.match(ts, /@seed\.kidpool/);
+  // Skips all test/seed/demo emails (any address ending in "kidpool")
+  assert.match(ts, /isTestEmail/);
 
   // Subject is the welcome subject
   assert.match(ts, /subject: "Welcome to Carpool Crew"/);
@@ -466,14 +491,14 @@ test("send-push: night_before_summary branch sends personalized emails", async (
   assert.match(ts, /type === "night_before_summary"/);
   assert.match(ts, /night_before_summary: "who's driving tomorrow" email/);
 
-  // Gates to 8 PM Pacific
-  assert.match(ts, /pacificHour !== 20/);
+  // Gates to 9–10 PM Pacific (after the 8:30 PM Sunday auto-publish)
+  assert.match(ts, /pacificHour < 21 \|\| pacificHour > 22/);
 
   // Idempotency key is date-stamped per recipient
   assert.match(ts, /night-before-\$\{tomorrow\}-\$\{profile\.id\}/);
 
-  // Skips fake seed/test/e2e emails
-  assert.match(ts, /@seed\.kidpool/);
+  // Skips all test/seed/demo emails (any address ending in "kidpool")
+  assert.match(ts, /isTestEmail/);
 
   // Personalized driving status section + full roster
   assert.match(ts, /Tomorrow's carpool/);
@@ -532,8 +557,8 @@ test("send-push: drive_reminder branch sends push + email to confirmed drivers",
   // Lists kids in the car
   assert.match(ts, /Kids in your car/);
 
-  // Skips fake seed/test/e2e emails
-  assert.match(ts, /@seed\.kidpool/);
+  // Skips all test/seed/demo emails (any address ending in "kidpool")
+  assert.match(ts, /isTestEmail/);
 
   // Resend tags include the type
   assert.match(ts, /value: "drive_reminder"/);
@@ -556,8 +581,8 @@ test("send-push: broadcast type sends arbitrary email to all active members", as
   // Idempotency key uses broadcast_id + profile_id
   assert.match(ts, /broadcast-\$\{broadcastId\}-\$\{profile\.id\}/);
 
-  // Skips fake seed/test/e2e emails
-  assert.match(ts, /@seed\.kidpool/);
+  // Skips all test/seed/demo emails (any address ending in "kidpool")
+  assert.match(ts, /isTestEmail/);
 
   // Resend tags include the type
   assert.match(ts, /value: "broadcast"/);
