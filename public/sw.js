@@ -1,6 +1,42 @@
-// Carpool Crew — Service Worker for PWA push notifications
-// Handles push events and notification clicks.
+// Carpool Crew — Service Worker for PWA push notifications + cache-busting
+// Handles push events, notification clicks, and network-first navigation
+// to defeat iOS PWA WebKit's aggressive stale-page cache.
 
+// ── Lifecycle: activate new SW immediately ───────────────────────
+self.addEventListener("install", (event) => {
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
+// ── Fetch: network-first for navigations, pass-through otherwise ─
+self.addEventListener("fetch", (event) => {
+  const request = event.request;
+  if (request.mode === "navigate") {
+    event.respondWith(
+      (async () => {
+        try {
+          // Always fetch fresh HTML from the network — bypasses iOS PWA cache.
+          const networkResponse = await fetch(request, { cache: "no-store" });
+          return networkResponse;
+        } catch {
+          // Offline: fall back to the cached page (or index.html).
+          const cache = await caches.open("carpool-pages");
+          const cached = await cache.match(request);
+          if (cached) return cached;
+          return cache.match("/index.html");
+        }
+      })(),
+    );
+    return;
+  }
+  // All other requests (hashed JS/CSS, images, storage) use the browser's
+  // default cache — Vite's hashed assets are immutable and cache fine.
+});
+
+// ── Push notifications ───────────────────────────────────────────
 self.addEventListener("push", (event) => {
   let payload;
   try {
