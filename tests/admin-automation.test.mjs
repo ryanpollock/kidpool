@@ -46,6 +46,10 @@ const pgnetTimeoutRemainingMigrationUrl = new URL(
   "../supabase/migrations/202608130003_increase_pgnet_timeout_remaining.sql",
   import.meta.url,
 );
+const restoreReleasedMigrationUrl = new URL(
+  "../supabase/migrations/202608130004_restore_released_on_volunteer_decline.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -710,4 +714,56 @@ test("send-push: broadcast type sends arbitrary email to all active members", as
 
   // Supports filtering to a single email (for test sends)
   assert.match(ts, /filter_email/);
+});
+
+// ─── Restore released assignment when volunteer declines ────
+
+test("restore released: respond_to_driver_assignment restores released assignment on decline", async () => {
+  const sql = await readFile(restoreReleasedMigrationUrl, "utf8");
+
+  // Rewrites the RPC with CREATE OR REPLACE
+  assert.match(sql, /create or replace function public\.respond_to_driver_assignment\(/);
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.respond_to_driver_assignment\(uuid, public\.confirmation_response, text\) from public/);
+
+  // When declining a confirmed assignment, looks for a 'released' assignment
+  // for the same trip + schedule_version
+  assert.match(sql, /status = 'released'/);
+  assert.match(sql, /schedule_version_id = assignment\.schedule_version_id/);
+  assert.match(sql, /trip_id = assignment\.trip_id/);
+
+  // Guards: only restores if no other confirmed/tentative driver exists
+  assert.match(sql, /status in \('tentative', 'confirmed'\)/);
+  assert.match(sql, /v_other_active_count = 0/);
+
+  // Moves riders back to the restored assignment
+  assert.match(sql, /update public\.rider_assignments/);
+  assert.match(sql, /set driver_assignment_id = v_released_assignment\.id/);
+
+  // Restores the released assignment to 'declined' (not 'confirmed')
+  assert.match(sql, /set status = 'declined'/);
+  assert.match(sql, /where id = v_released_assignment\.id/);
+
+  // Audit event for the restoration
+  assert.match(sql, /released_assignment_restored/);
+
+  // One-time data fix block
+  assert.match(sql, /one-time data fix/);
+  assert.match(sql, /do \$\$/);
+});
+
+test("restore released: one-time data fix only restores when no active driver exists", async () => {
+  const sql = await readFile(restoreReleasedMigrationUrl, "utf8");
+
+  // The data fix checks for v_active_count = 0 before restoring
+  assert.match(sql, /v_active_count = 0/);
+
+  // Only matches released + declined pairs for the same trip + version
+  assert.match(sql, /da_released\.status = 'released'/);
+  assert.match(sql, /da_declined\.status = 'declined'/);
+  assert.match(sql, /da_released\.driver_profile_id <> da_declined\.driver_profile_id/);
+
+  // Only runs once — restored assignments become 'declined', not 'released',
+  // so they won't match the WHERE clause on re-run
+  assert.match(sql, /Idempotent/);
 });
