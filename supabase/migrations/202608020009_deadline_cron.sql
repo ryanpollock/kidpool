@@ -3,7 +3,12 @@ create extension if not exists pg_cron;
 create extension if not exists pg_net;
 
 -- Drop the old cron schedule that used a non-existent GUC
-select cron.unschedule('checkin-deadline-reminder');
+do $$
+begin
+  perform cron.unschedule('checkin-deadline-reminder');
+exception when others then
+  null;
+end $$;
 
 -- Wrapper function that reads the cron secret from vault and calls the Edge Function.
 create or replace function public.send_deadline_reminders()

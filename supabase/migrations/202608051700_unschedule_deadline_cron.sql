@@ -6,4 +6,9 @@
 -- the cron is rewritten to be environment-aware (it's currently hard-coded
 -- to the production Supabase URL, which would also fire from staging).
 
-select cron.unschedule('checkin-deadline-reminder');
+do $$
+begin
+  perform cron.unschedule('checkin-deadline-reminder');
+exception when others then
+  null;
+end $$;

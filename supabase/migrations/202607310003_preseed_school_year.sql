@@ -6,9 +6,12 @@
 -- updated to the correct times.
 
 -- Step 1: Insert all weeks (Aug 2026 – Jul 2027)
+-- Guard: only insert if the pilot group exists (makes this truly idempotent
+-- on a fresh DB where seed.sql hasn't run yet).
 insert into public.weeks (group_id, starts_on, status)
 select 'c1000000-0000-4000-8000-000000000001'::uuid, d.date, 'open'
 from generate_series('2026-08-03'::date, '2027-07-26'::date, interval '1 week') as d(date)
+where exists (select 1 from public.groups where id = 'c1000000-0000-4000-8000-000000000001'::uuid)
 on conflict (group_id, starts_on) do nothing;
 
 -- Step 2: Insert/update morning trips for all weeks

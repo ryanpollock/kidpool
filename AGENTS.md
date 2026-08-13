@@ -91,15 +91,17 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 Run these before considering any change complete:
 
 ```bash
-npm test                    # 82 foundation + 7 admin-automation + 54 scheduling + 4 sites = 147 tests (no live DB)
-npm run test:integration   # 22 tests against live Supabase (needs service key in macOS keychain)
-npm run test:runtime       # Playwright: 8 mobile-runtime + 22 E2E + 5 journeys + 4 exploratory = 39 tests
-npx tsc --noEmit           # TypeScript check
-npm run check:runtime      # Mobile runtime integrity (28 protected files)
-npm run build              # Full production build (uploads source maps to Sentry if SENTRY_AUTH_TOKEN is set)
+npm run check:contracts       # 166 static contract checks (no live DB, ~1s)
+npm run test:integration:local # 25 integration tests against local Supabase (~19s)
+npm run test:runtime          # Playwright: 8 mobile-runtime + 22 E2E + 5 journeys + 4 exploratory = 39 tests
+npx tsc --noEmit              # TypeScript check
+npm run check:runtime         # Mobile runtime integrity (28 protected files)
+npm run build                 # Full production build (uploads source maps to Sentry if SENTRY_AUTH_TOKEN is set)
 ```
 
-All 208 tests must pass before pushing to `main`.
+All behavioral tests must pass before pushing to `main`: `npm run test:all`.
+- `check:contracts` (166 static checks) + `test:integration:local` (25) + `test:sites` (4) + `test:runtime` (Playwright) + `tsc` + `check:runtime`
+- The 166 "foundation" tests are static contract checks (grep SQL/source for patterns), not behavioral tests. They run as `npm run check:contracts` and are included in `test:all`.
 
 ### Dev test-auth bypass
 

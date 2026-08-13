@@ -1,6 +1,12 @@
 -- Repeatable development seed. Parent accounts and household records are
 -- created through Google sign-in and onboarding rather than by bypassing Auth.
 
+-- In Supabase cloud, anon/service_role grants are auto-applied by the platform.
+-- Locally they must be explicit. Idempotent — GRANT is a no-op if already granted.
+grant usage on schema public to anon, authenticated, service_role;
+grant select, insert, update, delete on all tables in schema public to anon, authenticated, service_role;
+grant usage, select on all sequences in schema public to anon, authenticated, service_role;
+
 insert into public.groups (
   id,
   name,
