@@ -523,6 +523,22 @@ button {
   font-size: 10px;
 }
 
+.account-avatar-upload {
+  margin-top: 6px;
+  display: grid;
+  gap: 4px;
+}
+
+.account-avatar-upload .child-photo-upload {
+  width: fit-content;
+}
+
+.account-avatar-nudge {
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
 .account-info {
   margin-top: 18px;
   padding: 15px;
@@ -667,6 +683,37 @@ button {
   cursor: pointer;
   font-size: 13px;
   color: var(--teal);
+}
+
+.child-phone-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  align-items: center;
+  margin-top: 10px;
+  padding-left: 48px;
+}
+
+.child-phone-field {
+  gap: 3px;
+}
+
+.child-phone-field > span {
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.child-phone-field > span em {
+  color: var(--ink-soft);
+  font-style: normal;
+  font-weight: 400;
+}
+
+.child-phone-help {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: var(--ink-soft);
+  margin: 0;
 }
 
 .buddy-picker {
@@ -1087,6 +1134,57 @@ button {
   background: var(--teal);
 }
 
+.assignment-row--clickable {
+  cursor: pointer;
+}
+
+.assignment-row--clickable:active {
+  opacity: 0.6;
+}
+
+.assignment-row-chevron {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-soft);
+}
+
+.avatar-nudge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--teal);
+  border-radius: 12px;
+  background: var(--teal-pale);
+  color: var(--ink);
+  text-align: left;
+}
+
+.avatar-nudge:active {
+  opacity: 0.7;
+}
+
+.avatar-nudge > svg:first-child {
+  color: var(--teal);
+  flex-shrink: 0;
+}
+
+.avatar-nudge .push-banner-body {
+  flex: 1;
+}
+
+.avatar-nudge .push-banner-body strong {
+  display: block;
+  font-size: 13px;
+}
+
+.avatar-nudge .push-banner-body small {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
 .status-label,
 .mini-status {
   display: inline-flex;
@@ -1490,6 +1588,24 @@ a.directory-contact-item:hover {
 }
 .child-photo-card strong {
   font-size: 14px;
+}
+
+.call-kid-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--teal-pale);
+  color: var(--teal);
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.call-kid-link:active {
+  opacity: 0.6;
 }
 
 .detail-intro,
