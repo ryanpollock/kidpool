@@ -4313,13 +4313,20 @@ export default function Prototype() {
   const [manualAssignWorking, setManualAssignWorking] = useState(false);
   const [manualAssignError, setManualAssignError] = useState<string | null>(null);
 
-  // Register service worker for PWA push notifications
+  // Register service worker for PWA push notifications + cache-busting.
+  // On a new SW taking over (skipWaiting + clients.claim), reload once
+  // so the page loads through the new SW's network-first fetch handler.
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch((err) => {
-        console.error("[carpool] Service worker registration failed:", err);
-      });
-    }
+    if (!("serviceWorker" in navigator)) return;
+    const reloadOnControl = () => {
+      if (navigator.serviceWorker.controller) window.location.reload();
+    };
+    navigator.serviceWorker.addEventListener("controllerchange", reloadOnControl);
+    void navigator.serviceWorker.register("/sw.js").then(
+      (reg) => void reg.update(),
+      (err) => console.error("[carpool] Service worker registration failed:", err),
+    );
+    return () => navigator.serviceWorker.removeEventListener("controllerchange", reloadOnControl);
   }, []);
 
   const loadIdentity = useCallback(async () => {
