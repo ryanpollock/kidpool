@@ -4797,7 +4797,7 @@ export default function Prototype() {
         roster.children,
         roster.vehicles,
       );
-      setMyAssignments(assignments);
+      setMyAssignments(assignments.filter((a) => a.trip.service_date >= todayDate));
 
       // Load declined drive alerts and uncovered children for affected parents.
       // These are loaded independently so a failure in alert queries doesn't
@@ -4817,8 +4817,8 @@ export default function Prototype() {
             homeSchedule.version.week_id,
           ),
         ]);
-        setDeclinedAlerts(alerts);
-        setUncoveredAlerts(uncovered);
+        setDeclinedAlerts(alerts.filter((a) => a.trip.service_date >= todayDate));
+        setUncoveredAlerts(uncovered.filter((a) => a.trip.service_date >= todayDate));
       } catch {
         setDeclinedAlerts([]);
         setUncoveredAlerts([]);
