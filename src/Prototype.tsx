@@ -994,6 +994,42 @@ function RideNeedsGrid({
   );
 }
 
+function PhotoButton({
+  url,
+  name,
+  className,
+}: {
+  url: string | null;
+  name: string;
+  className: string;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!url) {
+    return (
+      <span className={className} aria-hidden="true">
+        <PersonIcon />
+      </span>
+    );
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className={className}
+        aria-label={`View photo of ${name}`}
+        onClick={() => setOpen(true)}
+      >
+        <img src={url} alt="" />
+      </button>
+      <BottomSheet open={open} onOpenChange={setOpen} title={name} snap={0.85}>
+        <div className="photo-lightbox" data-testid="photo-lightbox">
+          <img src={url} alt={`Photo of ${name}`} />
+        </div>
+      </BottomSheet>
+    </>
+  );
+}
+
 function AssignmentRow({
   trip,
   vehicle,
@@ -3326,9 +3362,7 @@ function AccountScreen({
         <div><span className="eyebrow">Your account</span><h1>Household profile</h1></div>
       </header>
       <section className="account-card">
-        <span className="account-avatar">
-          {profile.avatar_url ? <img src={profile.avatar_url} alt="" /> : <PersonIcon />}
-        </span>
+        <PhotoButton url={profile.avatar_url} name={profile.full_name} className="account-avatar" />
         <div>
           <strong>{profile.full_name}</strong>
           <small>{profile.email}</small>
@@ -3478,9 +3512,7 @@ function AccountScreen({
               ) : (
                 <div className="child-row-content">
                   <div className="child-row-header">
-                    <span className="child-photo-thumb child-photo-thumb--small">
-                      {child.photo_url ? <img src={child.photo_url} alt="" /> : <PersonIcon />}
-                    </span>
+                    <PhotoButton url={child.photo_url} name={`${child.first_name} ${child.last_name}`} className="child-photo-thumb child-photo-thumb--small" />
                     <span><strong>{child.first_name} {child.last_name}</strong></span>
                     <div className="household-row-actions">
                       <button
@@ -3799,9 +3831,7 @@ function DirectoryScreen({
                 <h2 className="directory-household-name">{householdName}</h2>
                 {members.map((m) => (
                   <div key={m.id} className="directory-row" data-testid="directory-row">
-                    <span className="account-avatar directory-avatar">
-                      {m.avatar_url ? <img src={m.avatar_url} alt="" /> : <PersonIcon />}
-                    </span>
+                    <PhotoButton url={m.avatar_url} name={m.full_name} className="account-avatar directory-avatar" />
                     <div className="directory-row-info">
                       <div className="directory-row-name">
                         <strong>{m.full_name}</strong>
@@ -4179,9 +4209,7 @@ function DriveDetailScreen({
           <div className="child-photo-grid">
             {children.map((child) => (
               <div key={child.id} className="child-photo-card" data-testid="child-photo-card">
-                <span className="child-photo-thumb">
-                  {child.photo_url ? <img src={child.photo_url} alt="" /> : <PersonIcon />}
-                </span>
+                <PhotoButton url={child.photo_url} name={`${child.first_name} ${child.last_name}`} className="child-photo-thumb" />
                 <strong>{child.first_name} {child.last_name}</strong>
                 {child.phone ? (
                   <a
