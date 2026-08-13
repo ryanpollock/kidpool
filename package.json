@@ -23,6 +23,7 @@
     "delete-seed": "node scripts/delete-seed.mjs",
     "link:test": "supabase link --project-ref jfyjgmhqnlbdcafoarrg",
     "link:prod": "supabase link --project-ref ujcrnrcgbvzyqosykkjy",
+    "diagnose-notifications": "node scripts/diagnose-notifications.mjs",
     "dev:staging": "vite --mode staging",
     "dev:test": "vite --mode test",
     "deploy:staging": "node scripts/deploy-staging.mjs",
