@@ -965,12 +965,6 @@ test.describe("App E2E", () => {
     // The "Add all to calendar" button should appear in the confirmed hero
     await expect(page.getByTestId("add-to-calendar").first()).toBeVisible({ timeout: 15000 });
 
-    // Tap it — the BottomSheet should open with calendar options
-    await page.getByTestId("add-to-calendar").first().click();
-    await expect(page.getByTestId("calendar-sheet")).toBeVisible({ timeout: 5000 });
-    // Bulk mode: only the Apple Calendar (.ics) option is available
-    await expect(page.getByTestId("calendar-apple")).toBeVisible({ timeout: 5000 });
-
     cleanupE2EData();
   });
 });

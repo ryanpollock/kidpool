@@ -100,16 +100,35 @@ export function buildOutlookUrl(assignment: MyDriverAssignment, _timezone: strin
 }
 
 export function downloadIcs(filename: string, content: string): void {
-  const dataUri = `data:text/calendar;charset=utf-8,${encodeURIComponent(content)}`;
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  const a = document.createElement("a");
-  a.href = dataUri;
   if (isIOS) {
-    a.target = "_blank";
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "/api/calendar-export";
+    form.target = "_blank";
+    form.style.display = "none";
+    const contentInput = document.createElement("input");
+    contentInput.type = "hidden";
+    contentInput.name = "content";
+    contentInput.value = content;
+    const filenameInput = document.createElement("input");
+    filenameInput.type = "hidden";
+    filenameInput.name = "filename";
+    filenameInput.value = filename;
+    form.appendChild(contentInput);
+    form.appendChild(filenameInput);
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
   } else {
+    const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
     a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
 }

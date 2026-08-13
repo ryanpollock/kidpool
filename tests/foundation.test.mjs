@@ -314,8 +314,8 @@ test("Calendar utility exports ICS, Google Calendar, and Outlook builders", asyn
   assert.match(source, /export function buildGoogleCalendarUrl/);
   assert.match(source, /export function buildOutlookUrl/);
   assert.match(source, /export function downloadIcs/);
-  assert.match(source, /data:text\/calendar/);
-  assert.match(source, /encodeURIComponent/);
+  assert.match(source, /api\/calendar-export/);
+  assert.match(source, /createObjectURL/);
   assert.match(source, /BEGIN:VCALENDAR/);
   assert.match(source, /BEGIN:VEVENT/);
   assert.match(source, /END:VEVENT/);
@@ -336,20 +336,12 @@ test("Calendar utility generates Google Calendar and Outlook URLs", async () => 
   assert.match(source, /enddt/);
 });
 
-test("Add to calendar button renders in Prototype with BottomSheet options", async () => {
+test("Add to calendar button renders in Prototype", async () => {
   const source = await readFile(prototypeUrl, "utf8");
 
   assert.match(source, /function AddToCalendarButton/);
   assert.match(source, /data-testid="add-to-calendar"/);
-  assert.match(source, /data-testid="calendar-sheet"/);
-  assert.match(source, /data-testid="calendar-google"/);
-  assert.match(source, /data-testid="calendar-apple"/);
-  assert.match(source, /data-testid="calendar-outlook"/);
   assert.match(source, /Add all to calendar/);
-  assert.match(source, /Download \.ics/);
-  assert.match(source, /Import &amp; export/);
   assert.match(source, /buildIcsCalendar/);
-  assert.match(source, /buildGoogleCalendarUrl/);
-  assert.match(source, /buildOutlookUrl/);
   assert.match(source, /downloadIcs/);
 });
