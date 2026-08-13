@@ -673,6 +673,34 @@ button {
   height: 20px;
   color: var(--ink-soft);
 }
+
+button.account-avatar,
+button.child-photo-thumb {
+  cursor: pointer;
+  padding: 0;
+  border: none;
+  background: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button.account-avatar:active,
+button.child-photo-thumb:active {
+  opacity: 0.85;
+}
+
+.photo-lightbox {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 4px 18px 24px;
+}
+
+.photo-lightbox img {
+  max-width: 100%;
+  max-height: calc(100vh - 160px);
+  object-fit: contain;
+  border-radius: 12px;
+}
 .child-photo-row {
   display: flex;
   align-items: center;
