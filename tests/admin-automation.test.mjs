@@ -634,8 +634,8 @@ test("send-push: drive_confirmed branch sends calendar invite email", async () =
   // Sends to the confirmed driver only (not all members)
   assert.match(ts, /Assignment not found/);
 
-  // Idempotency key is per-assignment
-  assert.match(ts, /drive-confirmed-\$\{assignment_id\}/);
+  // Idempotency key includes updated_at so re-accept after cancel gets a fresh key
+  assert.match(ts, /drive-confirmed-\$\{assignment_id\}-\$\{da\.updated_at\}/);
 
   // Email has .ics attachment
   assert.match(ts, /attachments/);
@@ -656,6 +656,33 @@ test("send-push: drive_confirmed branch sends calendar invite email", async () =
 
   // Resend tags include the type
   assert.match(ts, /value: "drive_confirmed"/);
+});
+
+test("send-push: drive_cancelled branch sends calendar cancellation email", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Branch handled with its own early-return
+  assert.match(ts, /type === "drive_cancelled"/);
+  assert.match(ts, /drive_cancelled: calendar cancellation email to the driver/);
+
+  // ICS uses METHOD:CANCEL so calendar apps remove the event
+  assert.match(ts, /METHOD:CANCEL/);
+  assert.match(ts, /STATUS:CANCELLED/);
+
+  // Email has .ics attachment
+  assert.match(ts, /carpool-crew-cancel\.ics/);
+
+  // Same UID as the confirm email (so calendar app updates the same event)
+  assert.match(ts, /UID:drive-confirmed-\$\{assignment_id\}@carpoolcrew\.co/);
+
+  // Idempotency key includes updated_at
+  assert.match(ts, /drive-cancelled-\$\{assignment_id\}-\$\{da\.updated_at\}/);
+
+  // Skips test emails
+  assert.match(ts, /isTestEmail/);
+
+  // Resend tags include the type
+  assert.match(ts, /value: "drive_cancelled"/);
 });
 
 // ─── Broadcast type ──────────────────────────────────────────
