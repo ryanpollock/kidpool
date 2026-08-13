@@ -4551,6 +4551,7 @@ export default function Prototype() {
       );
       if (newAssignment) {
         void repository.sendPushNotification(newAssignment.id, null, "manually_assigned");
+        void repository.sendPushNotification(newAssignment.id, null, "drive_confirmed");
       }
       setAdminAssignTarget(null);
       await loadSchedule();
@@ -4831,6 +4832,7 @@ export default function Prototype() {
     try {
       await repository.volunteerForDrive(assignmentId);
       void repository.sendPushNotification(assignmentId, null, "volunteered");
+      void repository.sendPushNotification(assignmentId, null, "drive_confirmed");
       await loadMyAssignments();
       await loadHomeSchedule();
       await loadSchedule();
@@ -4850,6 +4852,7 @@ export default function Prototype() {
       const newAssignment = await repository.volunteerForUncoveredTrip(tripId, versionId);
       if (newAssignment) {
         void repository.sendPushNotification(newAssignment.id, null, "volunteered");
+        void repository.sendPushNotification(newAssignment.id, null, "drive_confirmed");
       }
       await loadMyAssignments();
       await loadHomeSchedule();
