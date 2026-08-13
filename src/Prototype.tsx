@@ -28,10 +28,6 @@ import {
 } from "@radix-ui/react-icons";
 import { KeyboardInput, MobileScroll, BottomSheet, useScreenPortal } from "./mobile";
 import {
-  buildIcsCalendar,
-  downloadIcs,
-} from "./lib/calendar";
-import {
   CarpoolRepository,
   getSupabaseClient,
   type CheckinDetails,
@@ -1372,7 +1368,7 @@ function HomeScreen({
                   : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
           </p>
           {allConfirmed && schedulePublished && !hasAlerts && !hasReacceptable ? (
-            <AddToCalendarButton assignments={confirmed} timezone={timezone} label="Add all to calendar" />
+            <p style={{ fontSize: "14px", color: "#4f6278", marginTop: "16px" }}>Calendar invites have been emailed to you.</p>
           ) : null}
         </section>
       )}
@@ -1642,6 +1638,9 @@ function ReviewScreen({
       setDecliningId(null);
       setDeclineReason("");
       await onResponded();
+      if (response === "confirmed") {
+        void repository.sendPushNotification(assignmentId, null, "drive_confirmed");
+      }
       if (response === "declined") onDeclined(assignmentId);
     } catch (nextError) {
       setError(readableError(nextError));
@@ -1715,7 +1714,6 @@ function ReviewScreen({
             ) : status === "confirmed" ? (
               <>
                 <div className="success-notice"><CheckCircledIcon /><span><strong>Confirmed</strong><small>{dateInfo.full} · {period}</small></span></div>
-                <AddToCalendarButton assignments={[entry]} timezone={timezone} />
                 {isDeclining ? (
                   <div className="decline-form" data-testid="decline-form">
                     <label className="auth-field">
@@ -4081,35 +4079,6 @@ function FaqScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-function AddToCalendarButton({
-  assignments,
-  timezone,
-  label = "Add to calendar",
-}: {
-  assignments: MyDriverAssignment[];
-  timezone: string;
-  label?: string;
-}) {
-  const isBulk = assignments.length > 1;
-
-  const handleClick = () => {
-    if (assignments.length === 0) return;
-    const ics = buildIcsCalendar(assignments, timezone);
-    const filename = isBulk ? "carpool-crew-drives.ics" : "carpool-crew-drive.ics";
-    downloadIcs(filename, ics);
-  };
-
-  return (
-    <button
-      className="secondary-button calendar-button"
-      data-testid="add-to-calendar"
-      onClick={handleClick}
-    >
-      <CalendarIcon width="16" height="16" /> {label}
-    </button>
-  );
-}
-
 function DriveDetailScreen({
   entry,
   trip,
@@ -4816,7 +4785,7 @@ export default function Prototype() {
     try {
       await repository.respondToDriverAssignment(assignmentId, "confirmed");
       updateAssignmentStatus(assignmentId, "confirmed");
-      void repository.sendPushNotification(assignmentId, null, "volunteered");
+      void repository.sendPushNotification(assignmentId, null, "drive_confirmed");
       await loadMyAssignments();
       await loadHomeSchedule();
       await loadPublishedSchedule();
@@ -4841,6 +4810,7 @@ export default function Prototype() {
     try {
       for (const entry of tentative) {
         await repository.respondToDriverAssignment(entry.assignment.id, "confirmed");
+        void repository.sendPushNotification(entry.assignment.id, null, "drive_confirmed");
       }
       await loadMyAssignments();
     } catch (error) {

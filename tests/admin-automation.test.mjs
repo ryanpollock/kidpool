@@ -622,6 +622,42 @@ test("send-push: drive_reminder branch sends push + email to confirmed drivers",
   assert.match(ts, /value: "drive_reminder"/);
 });
 
+// ─── Drive confirmed email (calendar invite) ────────────────
+
+test("send-push: drive_confirmed branch sends calendar invite email", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Branch handled with its own early-return
+  assert.match(ts, /type === "drive_confirmed"/);
+  assert.match(ts, /drive_confirmed: email calendar invite to the confirmed driver/);
+
+  // Sends to the confirmed driver only (not all members)
+  assert.match(ts, /Assignment not found/);
+
+  // Idempotency key is per-assignment
+  assert.match(ts, /drive-confirmed-\$\{assignment_id\}/);
+
+  // Email has .ics attachment
+  assert.match(ts, /attachments/);
+  assert.match(ts, /carpool-crew-drive\.ics/);
+
+  // ICS uses 15 min before meeting + 45 min after departure (1-hour event)
+  assert.match(ts, /addMinutes\(trip\.meeting_time, -15\)/);
+  assert.match(ts, /addMinutes\(trip\.departure_time, 45\)/);
+
+  // ICS content includes VCALENDAR + VEVENT
+  assert.match(ts, /BEGIN:VCALENDAR/);
+  assert.match(ts, /BEGIN:VEVENT/);
+  assert.match(ts, /DTSTART;TZID=/);
+  assert.match(ts, /DTEND;TZID=/);
+
+  // Skips test emails
+  assert.match(ts, /isTestEmail/);
+
+  // Resend tags include the type
+  assert.match(ts, /value: "drive_confirmed"/);
+});
+
 // ─── Broadcast type ──────────────────────────────────────────
 
 test("send-push: broadcast type sends arbitrary email to all active members", async () => {

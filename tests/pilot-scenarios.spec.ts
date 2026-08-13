@@ -791,7 +791,6 @@ test.describe.serial("Pilot Scenarios", () => {
     const heroText = await page.locator(".confirmation-hero h1").first().textContent();
     expect(heroText).toBeTruthy();
     expect(heroText!.toLowerCase()).toContain("all set");
-    await expect(page.getByTestId("add-to-calendar")).toBeVisible({ timeout: 5000 });
   });
 
   // ── Scenario 13: Rider happy path — in schedule, not driving ──
