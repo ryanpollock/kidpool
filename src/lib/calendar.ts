@@ -100,13 +100,16 @@ export function buildOutlookUrl(assignment: MyDriverAssignment, _timezone: strin
 }
 
 export function downloadIcs(filename: string, content: string): void {
-  const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
+  const dataUri = `data:text/calendar;charset=utf-8,${encodeURIComponent(content)}`;
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
+  a.href = dataUri;
+  if (isIOS) {
+    a.target = "_blank";
+  } else {
+    a.download = filename;
+  }
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
 }

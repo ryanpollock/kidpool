@@ -314,6 +314,8 @@ test("Calendar utility exports ICS, Google Calendar, and Outlook builders", asyn
   assert.match(source, /export function buildGoogleCalendarUrl/);
   assert.match(source, /export function buildOutlookUrl/);
   assert.match(source, /export function downloadIcs/);
+  assert.match(source, /data:text\/calendar/);
+  assert.match(source, /encodeURIComponent/);
   assert.match(source, /BEGIN:VCALENDAR/);
   assert.match(source, /BEGIN:VEVENT/);
   assert.match(source, /END:VEVENT/);
