@@ -102,24 +102,14 @@ export function buildOutlookUrl(assignment: MyDriverAssignment, _timezone: strin
 export function downloadIcs(filename: string, content: string): void {
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
   if (isIOS) {
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.action = "/api/calendar-export";
-    form.target = "_blank";
-    form.style.display = "none";
-    const contentInput = document.createElement("input");
-    contentInput.type = "hidden";
-    contentInput.name = "content";
-    contentInput.value = content;
-    const filenameInput = document.createElement("input");
-    filenameInput.type = "hidden";
-    filenameInput.name = "filename";
-    filenameInput.value = filename;
-    form.appendChild(contentInput);
-    form.appendChild(filenameInput);
-    document.body.appendChild(form);
-    form.submit();
-    document.body.removeChild(form);
+    const url = `/api/calendar-export?content=${encodeURIComponent(content)}&filename=${encodeURIComponent(filename)}`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => document.body.removeChild(a), 1000);
   } else {
     const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
     const url = URL.createObjectURL(blob);
