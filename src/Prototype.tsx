@@ -1191,7 +1191,7 @@ function HomeScreen({
   // driver would have no way back (Review screen is hidden when
   // activeAssignments is empty).
   const reacceptableAssignments = myAssignments.filter(
-    (a) => a.assignment.status === "declined" || a.assignment.status === "expired",
+    (a) => a.assignment.status === "declined" || a.assignment.status === "expired" || a.assignment.status === "released",
   );
   const hasReacceptable = reacceptableAssignments.length > 0;
   const tentative = activeAssignments.filter((a) => a.assignment.status === "tentative");
@@ -1566,8 +1566,8 @@ function HomeScreen({
                     status={status}
                   />
                   <div className="declined-notice"><Cross2Icon /><span>
-                    <strong>{status === "expired" ? "Confirmation deadline passed" : "You cancelled this drive"}</strong>
-                    <small>{status === "expired" ? "Re-accept to confirm you can drive." : "Re-accept if you can still drive."}</small>
+                    <strong>{status === "expired" ? "Confirmation deadline passed" : status === "released" ? "Another driver took this drive" : "You cancelled this drive"}</strong>
+                    <small>{status === "expired" ? "Re-accept to confirm you can drive." : status === "released" ? "Re-accept to take it back." : "Re-accept if you can still drive."}</small>
                   </span></div>
                   <button
                     className="primary-button"
@@ -1633,6 +1633,7 @@ function ReviewScreen({
     setWorking(assignmentId);
     setError(null);
     try {
+      const priorStatus = myAssignments.find((a) => a.assignment.id === assignmentId)?.assignment.status;
       await repository.respondToDriverAssignment(assignmentId, response, reason);
       onAssignmentStatusChange(assignmentId, response === "confirmed" ? "confirmed" : "declined");
       setDecliningId(null);
@@ -1640,6 +1641,9 @@ function ReviewScreen({
       await onResponded();
       if (response === "confirmed") {
         void repository.sendPushNotification(assignmentId, null, "drive_confirmed");
+        if (priorStatus === "declined" || priorStatus === "expired" || priorStatus === "released") {
+          void repository.sendPushNotification(assignmentId, null, "volunteered");
+        }
       }
       if (response === "declined") {
         void repository.sendPushNotification(assignmentId, null, "drive_cancelled");
@@ -4791,6 +4795,7 @@ export default function Prototype() {
       await repository.respondToDriverAssignment(assignmentId, "confirmed");
       updateAssignmentStatus(assignmentId, "confirmed");
       void repository.sendPushNotification(assignmentId, null, "drive_confirmed");
+      void repository.sendPushNotification(assignmentId, null, "volunteered");
       await loadMyAssignments();
       await loadHomeSchedule();
       await loadPublishedSchedule();

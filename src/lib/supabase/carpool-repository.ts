@@ -1417,6 +1417,23 @@ export class CarpoolRepository {
     }
 
     const alerts: DeclinedDriveAlert[] = [];
+
+    // Build a set of trip_ids where the current user has a 'released' assignment.
+    // If they have a released assignment for a trip, they should re-accept that
+    // from "Cancelled or missed drives" rather than volunteer via "I can drive"
+    // (which would create an unnecessary third assignment).
+    const myReleasedTripIds = new Set<string>();
+    const allDriverAssignments = await unwrapRequired(
+      await this.client
+        .from("driver_assignments")
+        .select("trip_id")
+        .eq("schedule_version_id", scheduleVersionId)
+        .eq("group_id", groupId)
+        .eq("driver_profile_id", profileId)
+        .eq("status", "released"),
+    );
+    for (const da of allDriverAssignments) myReleasedTripIds.add(da.trip_id);
+
     for (const da of driverAssignments) {
       const riders = ridersByAssignment.get(da.id) ?? [];
       const myChildren = riders.filter((r) => householdIds.has(r.household_id));
@@ -1425,6 +1442,10 @@ export class CarpoolRepository {
       // Don't show the declined alert to the driver who declined.
       // They should use the Review screen to re-accept, not volunteer.
       if (da.driver_profile_id === profileId) continue;
+
+      // Suppress "I can drive" if the user has a 'released' assignment for
+      // this trip — they should re-accept their released assignment instead.
+      if (myReleasedTripIds.has(da.trip_id)) continue;
 
       const trip = tripById.get(da.trip_id);
       if (!trip) continue;
