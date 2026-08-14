@@ -638,6 +638,9 @@ test("send-push: drive_confirmed branch sends calendar invite email", async () =
   // Sends to the confirmed driver only (not all members)
   assert.match(ts, /Assignment not found/);
 
+  // Guard: only sends for confirmed/tentative assignments (not released/declined)
+  assert.match(ts, /assignment_\$\{da\.status\}/);
+
   // Idempotency key includes updated_at so re-accept after cancel gets a fresh key
   assert.match(ts, /drive-confirmed-\$\{assignment_id\}-\$\{da\.updated_at\}/);
 

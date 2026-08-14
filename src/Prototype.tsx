@@ -4830,9 +4830,11 @@ export default function Prototype() {
     setVolunteerWorking(true);
     setVolunteerError(null);
     try {
-      await repository.volunteerForDrive(assignmentId);
-      void repository.sendPushNotification(assignmentId, null, "volunteered");
-      void repository.sendPushNotification(assignmentId, null, "drive_confirmed");
+      const newAssignment = await repository.volunteerForDrive(assignmentId);
+      if (newAssignment) {
+        void repository.sendPushNotification(newAssignment.id, null, "volunteered");
+        void repository.sendPushNotification(newAssignment.id, null, "drive_confirmed");
+      }
       await loadMyAssignments();
       await loadHomeSchedule();
       await loadSchedule();
