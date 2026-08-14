@@ -989,6 +989,13 @@ function RideNeedsGrid({
   );
 }
 
+function upscaleGoogleAvatar(url: string): string {
+  if (url.includes("googleusercontent.com") && url.match(/=s\d+-c$/)) {
+    return url.replace(/=s\d+-c$/, "=s400-c");
+  }
+  return url;
+}
+
 function PhotoButton({
   url,
   name,
@@ -1007,6 +1014,7 @@ function PhotoButton({
       </span>
     );
   }
+  const displayUrl = upscaleGoogleAvatar(url);
   return (
     <>
       <button
@@ -1015,7 +1023,7 @@ function PhotoButton({
         aria-label={`View photo of ${name}`}
         onClick={() => setOpen(true)}
       >
-        <img src={url} alt="" />
+        <img src={displayUrl} alt="" />
       </button>
       {open && screenRef.current
         ? createPortal(
@@ -1027,7 +1035,7 @@ function PhotoButton({
                 </button>
               </div>
               <div className="photo-overlay-image">
-                <img src={url} alt={`Photo of ${name}`} />
+                <img src={displayUrl} alt={`Photo of ${name}`} />
               </div>
             </div>,
             screenRef.current,
