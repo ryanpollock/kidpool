@@ -89,6 +89,65 @@ function isTestEmail(email: string): boolean {
   return email.endsWith("kidpool");
 }
 
+// Send a push notification + email to a single profile. Used by the inline
+// notification types (deadline_reminder, confirmation_reminder, assignment_request)
+// that handle their own recipient logic and return early before the main loop.
+async function sendEmailAndPush(
+  profileId: string,
+  notifTitle: string,
+  notifBody: string,
+  idempotencyKey: string,
+  pushTag: string,
+): Promise<void> {
+  // Push notification
+  if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+    ensureVapid();
+    const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${profileId}` });
+    for (const sub of subs) {
+      try {
+        await webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+          { title: notifTitle, body: notifBody, tag: pushTag, url: "/" },
+          { TTL: 86400 },
+        );
+      } catch (error: any) {
+        const statusCode = error?.statusCode ?? 0;
+        if (statusCode === 410 || statusCode === 404) {
+          await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+        }
+      }
+    }
+  }
+
+  // Email
+  if (RESEND_API_KEY) {
+    const profiles = await supaFetch("profiles", "email", { id: `eq.${profileId}` });
+    const profile = profiles[0];
+    if (profile?.email && !isTestEmail(profile.email)) {
+      try {
+        await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: profile.email,
+            reply_to: RESEND_REPLY_TO,
+            subject: notifTitle,
+            html: `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;"><h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1><p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(notifBody)}</p><p style="margin-top:24px;"><a href="https://carpoolcrew.co" style="display:inline-block;background:#118b8c;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-size:15px;">Open the app</a></p></body></html>`,
+            text: notifBody,
+          }),
+        });
+      } catch (e) {
+        console.error(`[send-push] Email to ${profile.email} failed:`, e);
+      }
+    }
+  }
+}
+
 // Format a Postgres time string ("08:40:00" or "17:15") as "8:40 AM".
 function formatTime(t: string): string {
   const [h, m] = t.split(":");
@@ -199,8 +258,8 @@ Deno.serve(async (req) => {
         `<p style="font-size:15px;line-height:1.6;margin:0 0 8px;"><strong>This Week</strong> — The published schedule, day by day. Tap any drive to see who's in the car.</p>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>Next Week</strong> — Where you check in for next week's rides (see below). Tap <strong>Earlier</strong> or <strong>Later</strong> to browse other weeks.</p>` +
 
-        `<h2 style="font-size:16px;margin:24px 0 8px;">2. Check in by Saturday 3 PM</h2>` +
-        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Every week, open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Submit by <strong>Saturday 3 PM Pacific</strong> — the scheduler builds the week's carpool from your check-in. Missed check-ins mean your child might not get a ride. You can reopen your check-in any time before the schedule is published.</p>` +
+        `<h2 style="font-size:16px;margin:24px 0 8px;">2. Check in by Saturday midnight</h2>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Every week, open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Submit by <strong>Saturday midnight Pacific</strong> — the scheduler builds the week's carpool from your check-in. Missed check-ins mean your child might not get a ride. You can reopen your check-in any time before the schedule is published.</p>` +
 
         `<h2 style="font-size:16px;margin:24px 0 8px;">3. Set your standard week</h2>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">You set this during setup. It pre-fills your weekly check-in with your family's typical ride needs and driving availability, so you only need to adjust for the unusual days. To change it later, tap your avatar, then edit the <strong>Standard week</strong> section. Morning pickup is 8:40 AM from Midtown Terrace; afternoon pickup is 5:15 PM from Presidio.</p>` +
@@ -224,7 +283,7 @@ Deno.serve(async (req) => {
         `This Week: The published schedule, day by day.\n` +
         `Next Week: Where you check in for next week's rides.\n\n` +
         `2. CHECK IN BY SATURDAY 3 PM\n` +
-        `Every week, open the Next Week tab and tell us which days your child needs rides and which days you can drive. Submit by Saturday 3 PM Pacific.\n\n` +
+        `Every week, open the Next Week tab and tell us which days your child needs rides and which days you can drive. Submit by Saturday midnight Pacific.\n\n` +
         `3. SET YOUR STANDARD WEEK\n` +
         `Your standard week defaults pre-fill your weekly check-in — but they don't check you in automatically. You still need to open the Next Week tab and tap Submit each week. Edit your standard week any time from the Account screen (tap your avatar).\n\n` +
         `4. INSTALL THE APP\n` +
@@ -1139,27 +1198,155 @@ Deno.serve(async (req) => {
       tag = `published-${version_id}`;
     } else if (type === "deadline_reminder") {
       const now = new Date();
+      const twoDaysFromNow = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+      const nowStr = now.toISOString();
+      const twoDaysStr = twoDaysFromNow.toISOString();
+      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+
+      // Find weeks where check-in deadline is within 48h (upcoming) OR just passed (< 25h ago)
+      const upcomingWeeks = await supaFetch("weeks", "*", [
+        ["checkin_deadline", `gte.${nowStr}`],
+        ["checkin_deadline", `lte.${twoDaysStr}`],
+      ]);
+      const pastWeeks = await supaFetch("weeks", "*", [
+        ["checkin_deadline", `lt.${nowStr}`],
+        ["checkin_deadline", `gte.${new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString()}`],
+      ]);
+
+      // ── Upcoming deadline: time-aware reminders to non-submitters ──
+      for (const week of upcomingWeeks) {
+        const checkins = await supaFetch("weekly_checkins", "household_id", { week_id: `eq.${week.id}`, status: "eq.submitted" });
+        const submittedHouseholds = new Set(checkins.map((c: any) => c.household_id));
+        const allMemberships = await supaFetch("memberships", "profile_id,household_id", { group_id: `eq.${week.group_id}`, status: "eq.active" });
+        const unsubmitted = allMemberships.filter((m: any) => !submittedHouseholds.has(m.household_id));
+
+        const hoursLeft = week.checkin_deadline ? (new Date(week.checkin_deadline).getTime() - now.getTime()) / (60 * 60 * 1000) : 0;
+        let reminderTitle: string;
+        let reminderBody: string;
+        if (hoursLeft > 24) {
+          reminderTitle = "Check in for next week";
+          reminderBody = `Check in for next week — deadline Saturday midnight.`;
+        } else if (hoursLeft > 6) {
+          reminderTitle = "Check-in deadline approaching";
+          reminderBody = `Submit your check-in by Saturday midnight.`;
+        } else if (hoursLeft > 1) {
+          reminderTitle = "Check in today";
+          reminderBody = `Today's the day — check in by midnight.`;
+        } else {
+          reminderTitle = "1 hour left to check in";
+          reminderBody = `Submit your check-in now — deadline in 1 hour.`;
+        }
+
+        for (const m of unsubmitted) {
+          // Per-day idempotency: one reminder per day per profile
+          const idempotencyKey = `checkin-reminder-${todayStr}-${m.profile_id}`;
+          await sendEmailAndPush(m.profile_id, reminderTitle, reminderBody, idempotencyKey, `checkin-reminder-${todayStr}-${m.profile_id}`);
+        }
+      }
+
+      // ── Missed deadline: one-time notification to non-submitters ──
+      for (const week of pastWeeks) {
+        const checkins = await supaFetch("weekly_checkins", "household_id", { week_id: `eq.${week.id}`, status: "eq.submitted" });
+        const submittedHouseholds = new Set(checkins.map((c: any) => c.household_id));
+        const allMemberships = await supaFetch("memberships", "profile_id,household_id", { group_id: `eq.${week.group_id}`, status: "eq.active" });
+        const unsubmitted = allMemberships.filter((m: any) => !submittedHouseholds.has(m.household_id));
+
+        for (const m of unsubmitted) {
+          // Per-week idempotency: missed notification fires once per week per profile
+          const idempotencyKey = `missed-checkin-${week.id}-${m.profile_id}`;
+          await sendEmailAndPush(m.profile_id, "Missed check-in deadline", `You missed the check-in deadline. Submit now — your kid may not get a spot unless you drive.`, idempotencyKey, `missed-checkin-${week.id}-${m.profile_id}`);
+        }
+      }
+
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    } else if (type === "confirmation_reminder") {
+      const now = new Date();
       const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
       const nowStr = now.toISOString();
       const tomorrowStr = tomorrow.toISOString();
+      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
 
-      const weeks = await supaFetch("weeks", "*", [
-        ["checkin_deadline", `gte.${nowStr}`],
-        ["checkin_deadline", `lte.${tomorrowStr}`],
+      // Upcoming: confirmation deadline within 24h — remind drivers with tentative assignments
+      const upcomingWeeks = await supaFetch("weeks", "*", [
+        ["confirmation_deadline", `gte.${nowStr}`],
+        ["confirmation_deadline", `lte.${tomorrowStr}`],
       ]);
 
-      for (const week of weeks) {
-        const checkins = await supaFetch("weekly_checkins", "household_id", { week_id: `eq.${week.id}`, status: "eq.submitted" });
-        const submittedHouseholds = new Set(checkins.map((c: any) => c.household_id));
+      for (const week of upcomingWeeks) {
+        const versions = await supaFetch("schedule_versions", "id", { week_id: `eq.${week.id}`, group_id: `eq.${week.group_id}`, status: "in.(draft,published)" });
+        for (const version of versions) {
+          const assignments = await supaFetch("driver_assignments", "driver_profile_id,trip_id,status", { schedule_version_id: `eq.${version.id}`, status: `eq.tentative` });
+          const driverTripCounts = new Map<string, number>();
+          for (const a of assignments) {
+            driverTripCounts.set(a.driver_profile_id, (driverTripCounts.get(a.driver_profile_id) ?? 0) + 1);
+          }
 
-        const allMemberships = await supaFetch("memberships", "profile_id,household_id", { group_id: `eq.${week.group_id}`, status: "eq.active" });
-        const unsubmitted = allMemberships.filter((m: any) => !submittedHouseholds.has(m.household_id));
-        recipientProfileIds.push(...unsubmitted.map((m: any) => m.profile_id));
+          const hoursLeft = week.confirmation_deadline ? (new Date(week.confirmation_deadline).getTime() - now.getTime()) / (60 * 60 * 1000) : 0;
+          let cTitle: string;
+          let cBody: string;
+          if (hoursLeft > 6) {
+            cTitle = "Confirm your drives";
+            cBody = `You have drives to confirm by 7 PM tonight. Open the app to review.`;
+          } else if (hoursLeft > 1) {
+            cTitle = "Confirm your drives soon";
+            cBody = `You have drives to confirm — deadline is 7 PM tonight.`;
+          } else {
+            cTitle = "1 hour left to confirm";
+            cBody = `Confirm your drives now — deadline in 1 hour.`;
+          }
+
+          for (const [driverId, count] of driverTripCounts) {
+            const body = count > 1 ? cBody.replace("drives", `${count} drives`) : cBody.replace("drives", "a drive");
+            const idempotencyKey = `confirmation-reminder-${todayStr}-${driverId}`;
+            await sendEmailAndPush(driverId, cTitle, body, idempotencyKey, `confirmation-reminder-${todayStr}-${driverId}`);
+          }
+        }
       }
 
-      title = "Check-in deadline";
-      bodyText = `Your check-in deadline is approaching. Submit your ride needs soon.`;
-      tag = `deadline-reminder-${new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())}`;
+      // Missed: confirmation deadline passed — notify drivers with expired assignments
+      const pastWeeks = await supaFetch("weeks", "*", [
+        ["confirmation_deadline", `lt.${nowStr}`],
+        ["confirmation_deadline", `gte.${new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString()}`],
+      ]);
+
+      for (const week of pastWeeks) {
+        const versions = await supaFetch("schedule_versions", "id", { week_id: `eq.${week.id}`, group_id: `eq.${week.group_id}`, status: "in.(draft,published)" });
+        for (const version of versions) {
+          const expired = await supaFetch("driver_assignments", "driver_profile_id,trip_id", { schedule_version_id: `eq.${version.id}`, status: `eq.expired` });
+          const driverTripCounts = new Map<string, number>();
+          for (const a of expired) {
+            driverTripCounts.set(a.driver_profile_id, (driverTripCounts.get(a.driver_profile_id) ?? 0) + 1);
+          }
+          for (const [driverId, count] of driverTripCounts) {
+            const body = count > 1
+              ? `Your ${count} drives expired — you didn't confirm in time. Re-accept in the app if you can still drive.`
+              : `Your drive expired — you didn't confirm in time. Re-accept in the app if you can still drive.`;
+            const idempotencyKey = `missed-confirmation-${week.id}-${driverId}`;
+            await sendEmailAndPush(driverId, "Drives expired", body, idempotencyKey, `missed-confirmation-${week.id}-${driverId}`);
+          }
+        }
+      }
+
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    } else if (type === "assignment_request" && version_id) {
+      // Notify drivers with tentative assignments that they have drives to confirm.
+      // Fired by generate-schedule Edge Function after writing a draft.
+      const assignments = await supaFetch("driver_assignments", "driver_profile_id,trip_id,status", { schedule_version_id: `eq.${version_id}`, status: `eq.tentative` });
+      const driverTripCounts = new Map<string, number>();
+      for (const a of assignments) {
+        driverTripCounts.set(a.driver_profile_id, (driverTripCounts.get(a.driver_profile_id) ?? 0) + 1);
+      }
+
+      for (const [driverId, count] of driverTripCounts) {
+        const title = count > 1 ? `You're requested to drive ${count} trips` : "You're requested to drive";
+        const body = count > 1
+          ? `You're requested to drive ${count} trips next week. Open the app to confirm by 7 PM tonight.`
+          : `You're requested to drive next week. Open the app to confirm by 7 PM tonight.`;
+        const idempotencyKey = `assignment-request-${version_id}-${driverId}`;
+        await sendEmailAndPush(driverId, title, body, idempotencyKey, `assignment-request-${version_id}-${driverId}`);
+      }
+
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
     } else if (type === "volunteered" && assignment_id) {
       const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: `eq.${assignment_id}` });
       const childIds = riderAssignments.map((ra: any) => ra.child_id);

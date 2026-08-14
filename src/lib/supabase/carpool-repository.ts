@@ -817,7 +817,7 @@ export class CarpoolRepository {
     if (userResult.error) throw new Error(userResult.error.message);
     if (!userResult.data.user) throw new Error("Sign in again to continue.");
 
-    // Deadlines: check-in by Saturday 3 PM Pacific, confirmation by Sunday 8 PM Pacific.
+    // Deadlines: check-in by Saturday midnight Pacific, confirmation by Sunday 7 PM Pacific.
     // Compute in the pilot timezone to avoid UTC drift for SF families.
     const startDate = new Date(startsOn + "T00:00:00");
     const day = startDate.getDay();
@@ -830,7 +830,7 @@ export class CarpoolRepository {
     sundayStr.setDate(startDate.getDate() - 1);
     const sundayDate = dateInTimezone(sundayStr);
 
-    const checkinDeadline = new Date(`${saturdayDate}T15:00:00-07:00`);
+    const checkinDeadline = new Date(`${saturdayDate}T23:59:00-07:00`);
     const confirmationDeadline = new Date(`${sundayDate}T19:00:00-07:00`);
 
     const week = unwrapRequired<Tables<"weeks">>(

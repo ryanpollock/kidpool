@@ -1202,10 +1202,10 @@ function HomeScreen({
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
     ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
-    : "Sun 8:00 PM";
+    : "Sun 7:00 PM";
   const checkinDeadlineLabel = checkinDeadline
     ? new Date(checkinDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
-    : "Sat 3:00 PM";
+    : "Sat midnight";
   const todaysDrives = activeAssignments.filter((a) => a.trip.service_date === todayDate);
   const hasTodaysDrive = todaysDrives.length > 0;
   const todayWeekdayFull = todaysDrives.length > 0 ? formatTripDate(todaysDrives[0].trip.service_date).weekdayFull : "";
@@ -2911,7 +2911,7 @@ function CoordinatorScreen({
 
       {isCoordinator && week ? (
         <section className="coordinator-section admin-override">
-          <div className="section-heading-row"><h2>Overrides</h2><span className="helper-copy">Automated at Sat 3 PM &amp; Sun 8 PM</span></div>
+          <div className="section-heading-row"><h2>Overrides</h2><span className="helper-copy">Automated Sun 7 AM &amp; 8 PM</span></div>
           <div className="coordinator-generate">
             {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
             {scheduleStatus === "draft" ? (
@@ -3959,7 +3959,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     items: [
       {
         q: "What does tentative mean?",
-        a: "A tentative assignment means the scheduler has proposed you as the driver for that trip, but you haven't confirmed yet. You need to confirm or decline by the deadline (typically 3:00 PM Sunday).",
+        a: "A tentative assignment means the scheduler has proposed you as the driver for that trip, but you haven't confirmed yet. You need to confirm or decline by the deadline (typically 7 PM Sunday).",
       },
       {
         q: "How do I confirm my drives?",
@@ -3971,7 +3971,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "What is the confirmation deadline?",
-        a: "The deadline is shown on the Home screen (typically 3:00 PM Sunday). Please confirm or decline by the deadline so the coordinator knows the final roster. If you don't confirm, your assignment stays tentative.",
+        a: "The deadline is shown on the Home screen (typically 7 PM Sunday). Please confirm or decline by the deadline so the coordinator knows the final roster. If you don't confirm, your assignment stays tentative.",
       },
     ],
   },
