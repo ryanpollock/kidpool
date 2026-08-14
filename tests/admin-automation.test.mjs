@@ -58,6 +58,10 @@ const fixNotificationScheduleMigrationUrl = new URL(
   "../supabase/migrations/202608140003_fix_notification_schedule.sql",
   import.meta.url,
 );
+const moveNightBeforeMigrationUrl = new URL(
+  "../supabase/migrations/202608140004_move_night_before_to_745pm.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -554,15 +558,15 @@ test("night-before summary: cron wrapper uses environment-aware vault pattern", 
   assert.match(sql, /0 \* \* \* \*/);
 });
 
-test("send-push: night_before_summary branch sends personalized emails", async () => {
+test("send-push: night_before_summary branch sends personalized email + push", async () => {
   const ts = await readFile(sendPushUrl, "utf8");
 
   // Branch handled with its own early-return (per-recipient custom content)
   assert.match(ts, /type === "night_before_summary"/);
-  assert.match(ts, /night_before_summary: "who's driving tomorrow" email/);
+  assert.match(ts, /night_before_summary: "who's driving tomorrow" email \+ push/);
 
-  // Gates to 9–10 PM Pacific (after the 8:30 PM Sunday auto-publish)
-  assert.match(ts, /pacificHour < 21 \|\| pacificHour > 22/);
+  // No time gate — the cron fires at the right time (7:45 PM Pacific)
+  assert.doesNotMatch(ts, /pacificHour < 21/);
 
   // Idempotency key is date-stamped per recipient
   assert.match(ts, /night-before-\$\{tomorrow\}-\$\{profile\.id\}/);
@@ -575,6 +579,10 @@ test("send-push: night_before_summary branch sends personalized emails", async (
   assert.match(ts, /You're driving tomorrow/);
   assert.match(ts, /You're not driving tomorrow/);
   assert.match(ts, /Tomorrow's drivers/);
+
+  // Sends push notification (personal section only) alongside email
+  assert.match(ts, /pushSent/);
+  assert.match(ts, /webpush\.sendNotification/);
 
   // Resend tags include the type
   assert.match(ts, /value: "night_before_summary"/);
@@ -896,4 +904,18 @@ test("notification schedule: send-push has checkin_reminder + confirmation_remin
   // Both use per-date idempotency keys (DST-proof dedup)
   assert.match(ts, /checkin-reminder-\$\{todayStr\}-\$\{m\.profile_id\}/);
   assert.match(ts, /confirmation-reminder-\$\{todayStr\}-\$\{driverId\}/);
+});
+
+// ─── Night-before moved to 7:45 PM Pacific ───────────────────
+
+test("night-before 7:45pm: replaces hourly cron with fixed 7:45 PM schedule", async () => {
+  const sql = await readFile(moveNightBeforeMigrationUrl, "utf8");
+
+  // Unschedules the old hourly cron
+  assert.match(sql, /cron\.unschedule\('night-before-summary'\)/);
+
+  // New schedule: 7:45 PM Pacific = 02:45/03:45 UTC, Sun-Thu nights
+  assert.match(sql, /45 2,3 \* \* 0-4/);
+  assert.match(sql, /night-before-summary/);
+  assert.match(sql, /send_night_before_summary/);
 });

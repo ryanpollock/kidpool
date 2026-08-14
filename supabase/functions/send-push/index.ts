@@ -450,25 +450,17 @@ Deno.serve(async (req) => {
       return jsonResponse({ sent: pushSent, failed: pushFailed, email_sent: emailSent, email_failed: emailFailed, skipped, push_enabled: !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY), push_error: pushFailed > 0 ? lastPushError : undefined });
     }
 
-    // ── night_before_summary: "who's driving tomorrow" email ─────
-    // Triggered hourly by pg_cron. Self-gates to 9–10 PM Pacific so it fires
-    // once per evening before a school day, AFTER the Sunday auto-publish
-    // (8:30 PM Pacific — see 202608130001_publish_sunday_evening.sql). The
-    // 10 PM fire dedupes against the 9 PM send via the per-recipient
-    // Idempotency-Key below, so families get one email. Recipients are
-    // families with a child riding tomorrow (via rider_assignments on the
-    // published schedule). Each email is personalized — the recipient's own
-    // driving status is highlighted, followed by the full driver roster.
-    // Email-only, no push.
+    // ── night_before_summary: "who's driving tomorrow" email + push ──
+    // Triggered by a fixed cron at 7:45 PM Pacific (Sun-Thu nights).
+    // No time gate — the cron fires at the right time. DST-proofed via
+    // dual UTC (45 2,3 * * 0-4); off-DST fire deduped by idempotency key.
+    // Recipients are families with a child riding tomorrow (via
+    // rider_assignments on the published schedule). Each notification is
+    // personalized — the recipient's own driving status + full driver roster.
+    // Sends both email (full roster) and push (personal section only).
     if (type === "night_before_summary") {
       const now = new Date();
       const parts = pacificParts(now, false);
-      const pacificHour = parseInt(parts.hour, 10) % 24;
-
-      // Gate to 9–10 PM Pacific only (after the 8:30 PM Sunday publish)
-      if (pacificHour < 21 || pacificHour > 22) {
-        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "outside_window" });
-      }
 
       // Tomorrow's Pacific date (YYYY-MM-DD)
       const todayDate = new Date(Date.UTC(+parts.year, +parts.month - 1, +parts.day));
@@ -608,6 +600,13 @@ Deno.serve(async (req) => {
 
       let emailSent = 0;
       let emailFailed = 0;
+      let pushSent = 0;
+      let pushFailed = 0;
+
+      if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+        ensureVapid();
+      }
+
       for (const profile of recipientProfiles) {
         if (!profile.email) continue;
         if (isTestEmail(profile.email)) continue;
@@ -674,9 +673,37 @@ Deno.serve(async (req) => {
           console.error(`[send-push] Night-before email to ${profile.email} threw:`, e);
           emailFailed++;
         }
+
+        // Push notification (personal section only — full roster is in the email)
+        if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+          const pushTag = `night-before-${tomorrow}-${profile.id}`;
+          const pushPayload = JSON.stringify({
+            title: "Tomorrow's carpool",
+            body: personalSection,
+            tag: pushTag,
+            url: "/",
+          });
+          const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${profile.id}` });
+          for (const sub of subs) {
+            try {
+              await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                pushPayload,
+                { TTL: 86400 },
+              );
+              pushSent++;
+            } catch (error: any) {
+              pushFailed++;
+              const statusCode = error?.statusCode ?? 0;
+              if (statusCode === 410 || statusCode === 404) {
+                await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+              }
+            }
+          }
+        }
       }
 
-      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
+      return jsonResponse({ sent: pushSent, failed: pushFailed, email_sent: emailSent, email_failed: emailFailed });
     }
 
     // ── drive_reminder: 75-min pre-drive email + push to confirmed drivers ─
