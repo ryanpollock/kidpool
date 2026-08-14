@@ -107,7 +107,7 @@ async function sendEmailAndPush(
       try {
         await webpush.sendNotification(
           { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
-          { title: notifTitle, body: notifBody, tag: pushTag, url: "/" },
+          JSON.stringify({ title: notifTitle, body: notifBody, tag: pushTag, url: "/" }),
           { TTL: 86400 },
         );
       } catch (error: any) {
@@ -373,12 +373,22 @@ Deno.serve(async (req) => {
 
       let emailSent = 0;
       let emailFailed = 0;
+      let pushSent = 0;
+      let pushFailed = 0;
+      let lastPushError = "";
       let skipped = 0;
+
+      // Initialize VAPID for push (if keys are configured)
+      if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+        ensureVapid();
+      }
+
       for (const profile of profiles) {
         if (!profile.email) continue;
         if (isTestEmail(profile.email)) continue;
         if (filterEmail && profile.email !== filterEmail) continue;
 
+        // ── Email ──
         const idempotencyKey = `broadcast-${broadcastId}-${profile.id}`;
         try {
           const res = await fetch("https://api.resend.com/emails", {
@@ -412,9 +422,32 @@ Deno.serve(async (req) => {
           console.error(`[send-push] Broadcast email to ${profile.email} threw:`, e);
           emailFailed++;
         }
+
+        // ── Push notification ──
+        if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+          const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${profile.id}` });
+          for (const sub of subs) {
+            try {
+              await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                JSON.stringify({ title: subject, body: textBodyParam ?? subject, tag: `broadcast-${broadcastId}`, url: "/" }),
+                { TTL: 86400 },
+              );
+              pushSent++;
+            } catch (error: any) {
+              pushFailed++;
+              lastPushError = `${error?.statusCode ?? "?"}: ${error?.message ?? String(error)}`;
+              console.error(`[send-push] Broadcast push to ${profile.id} failed:`, lastPushError);
+              const statusCode = error?.statusCode ?? 0;
+              if (statusCode === 410 || statusCode === 404) {
+                await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+              }
+            }
+          }
+        }
       }
 
-      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed, skipped });
+      return jsonResponse({ sent: pushSent, failed: pushFailed, email_sent: emailSent, email_failed: emailFailed, skipped, push_enabled: !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY), push_error: pushFailed > 0 ? lastPushError : undefined });
     }
 
     // ── night_before_summary: "who's driving tomorrow" email ─────
