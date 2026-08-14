@@ -26,22 +26,22 @@ function getCronSecret() {
 const notifications = [
   {
     subject: "Check in for next week — deadline Saturday midnight",
-    html: `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1><p style="font-size:15px;color:#0c2b52;line-height:1.5;">Check in for next week — deadline Saturday midnight.</p><p style="margin-top:24px;"><a href="https://carpoolcrew.co" style="display:inline-block;background:#118b8c;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-size:15px;">Open the app</a></p>`,
+    html: `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">Check in for next week — deadline Saturday midnight.</p>`,
     text: "Check in for next week — deadline Saturday midnight.",
   },
   {
     subject: "You're requested to drive 2 trips",
-    html: `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1><p style="font-size:15px;color:#0c2b52;line-height:1.5;">You're requested to drive 2 trips next week. Open the app to confirm by 7 PM tonight.</p><p style="margin-top:24px;"><a href="https://carpoolcrew.co" style="display:inline-block;background:#118b8c;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-size:15px;">Open the app</a></p>`,
+    html: `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">You're requested to drive 2 trips next week. Open the app to confirm by 7 PM tonight.</p>`,
     text: "You're requested to drive 2 trips next week. Open the app to confirm by 7 PM tonight.",
   },
   {
     subject: "1 hour left to confirm",
-    html: `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1><p style="font-size:15px;color:#0c2b52;line-height:1.5;">Confirm your drives now — deadline in 1 hour.</p><p style="margin-top:24px;"><a href="https://carpoolcrew.co" style="display:inline-block;background:#118b8c;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-size:15px;">Open the app</a></p>`,
+    html: `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">Confirm your drives now — deadline in 1 hour.</p>`,
     text: "Confirm your drives now — deadline in 1 hour.",
   },
   {
     subject: "Missed check-in deadline",
-    html: `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1><p style="font-size:15px;color:#0c2b52;line-height:1.5;">You missed the check-in deadline. Submit now — your kid may not get a spot unless you drive.</p><p style="margin-top:24px;"><a href="https://carpoolcrew.co" style="display:inline-block;background:#118b8c;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-size:15px;">Open the app</a></p>`,
+    html: `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">You missed the check-in deadline. Submit now — your kid may not get a spot unless you drive.</p>`,
     text: "You missed the check-in deadline. Submit now — your kid may not get a spot unless you drive.",
   },
 ];
