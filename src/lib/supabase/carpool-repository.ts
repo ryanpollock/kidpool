@@ -831,7 +831,7 @@ export class CarpoolRepository {
     const sundayDate = dateInTimezone(sundayStr);
 
     const checkinDeadline = new Date(`${saturdayDate}T15:00:00-07:00`);
-    const confirmationDeadline = new Date(`${sundayDate}T20:00:00-07:00`);
+    const confirmationDeadline = new Date(`${sundayDate}T19:00:00-07:00`);
 
     const week = unwrapRequired<Tables<"weeks">>(
       await this.client

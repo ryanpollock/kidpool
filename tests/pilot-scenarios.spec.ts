@@ -1001,23 +1001,13 @@ test.describe.serial("Pilot Scenarios", () => {
       INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(950)}', '${morningTrip}', '${driver.userId}', '${UID(941)}', 'prefer') ON CONFLICT DO NOTHING;
     `);
 
-    await generateSchedule(coord.email, weekId);
+    const genResult = await generateSchedule(coord.email, weekId);
     await page.waitForTimeout(1000);
 
-    await signInWithTestAuth(page, coord.email);
-    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
-    await page.getByTestId("nav-coordinate").click();
-    await expect(page.getByTestId("coordinator-screen")).toBeVisible({ timeout: 10000 });
-    await page.waitForTimeout(2000);
-
-    const publishBtn = page.getByTestId("publish-schedule");
-    await expect(publishBtn).toBeVisible({ timeout: 5000 });
-    expect(await publishBtn.isDisabled()).toBe(false);
-    const btnText = (await publishBtn.textContent()) ?? "";
-    expect(btnText.toLowerCase()).toContain("expire");
-
-    await publishBtn.click();
-    await page.waitForTimeout(3000);
+    // Deadline is in the past → Edge Function auto-publishes. Assert that
+    // instead of looking for a manual publish button (which won't exist).
+    assert.ok(genResult.success, "Generate should succeed");
+    assert.ok(genResult.auto_published, "Edge Function should auto-publish when deadline has passed");
 
     const versionResult = runSql(`SELECT status FROM public.schedule_versions WHERE week_id = '${weekId}' ORDER BY version_number DESC LIMIT 1;`);
     const rows = versionResult.rows ?? [];
