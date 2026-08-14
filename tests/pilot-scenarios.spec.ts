@@ -1117,7 +1117,10 @@ test.describe.serial("Pilot Scenarios", () => {
     if (!driver) { test.skip(); return; }
 
     const { weekId, tripIds } = setupNextWeekWithTrips();
-    const morningTrip = tripIds[0];
+    // Use Tuesday morning (tripIds[2]) — Monday Aug 17 is "First day of school"
+    // (a no-school day in the calendar), so the app renders "No school" instead
+    // of a driver roster for that day. Tuesday has a normal roster.
+    const morningTrip = tripIds[2];
 
     runSql(`
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1000)}', '${GROUP_ID}', '${driver.householdId}', 'PillKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
@@ -1618,7 +1621,9 @@ test.describe.serial("Pilot Scenarios", () => {
     if (!driver) { test.skip(); return; }
 
     const { weekId, tripIds } = setupNextWeekWithTrips();
-    const morningTrip = tripIds[0];
+    // Use Tuesday morning (tripIds[2]) — Monday Aug 17 is "First day of school"
+    // (a no-school day), so the app renders "No school" instead of the roster.
+    const morningTrip = tripIds[2];
 
     runSql(`
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(1700)}', '${GROUP_ID}', '${driver.householdId}', 'LabelKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;

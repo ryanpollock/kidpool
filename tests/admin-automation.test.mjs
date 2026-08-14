@@ -378,7 +378,7 @@ test("send-push: deadline_reminder tag includes date for idempotency", async () 
   // so the email idempotency key changes daily (at most one reminder email
   // per family per day, even if cron fires hourly). Using SF time instead of
   // UTC prevents duplicate reminders when cron fires around midnight UTC.
-  assert.match(ts, /deadline-reminder-\$\{new Intl\.DateTimeFormat\("en-CA", \{ timeZone: "America\/Los_Angeles"/);
+  assert.match(ts, /checkin-reminder-\$\{todayStr\}-\$\{m\.profile_id\}/);
 });
 
 // ─── Welcome email ─────────────────────────────────────────
@@ -427,7 +427,7 @@ test("send-push: welcome type sends email-only onboarding welcome", async () => 
 
   // HTML covers the 4 key topics (household section removed — app teaches it inline)
   assert.match(ts, /The three tabs/);
-  assert.match(ts, /Check in by Saturday 3 PM/);
+  assert.match(ts, /Check in by Saturday midnight/);
   assert.match(ts, /Set your standard week/);
   assert.match(ts, /Install the app on your phone/);
 
@@ -485,7 +485,7 @@ test("prototype: tab renamed to Admin, triage board layout", async () => {
   assert.match(tsx, /Needs your attention/);
   assert.match(tsx, /On track/);
   assert.match(tsx, /admin-override/);
-  assert.match(tsx, /Automated at Sat 3 PM/);
+  assert.match(tsx, /Automated Sun 7 AM/);
 
   // Status line with auto-publish info
   assert.match(tsx, /admin-status-line/);
