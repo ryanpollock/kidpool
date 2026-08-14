@@ -3802,10 +3802,12 @@ function DirectoryScreen({
   groupId,
   repository,
   onBack,
+  onOpenParent,
 }: {
   groupId: string;
   repository: CarpoolRepository;
   onBack: () => void;
+  onOpenParent: (parentId: string) => void;
 }) {
   const [entries, setEntries] = useState<DirectoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -3864,10 +3866,15 @@ function DirectoryScreen({
                   <div key={m.id} className="directory-row" data-testid="directory-row">
                     <PhotoButton url={m.avatar_url} name={m.full_name} className="account-avatar directory-avatar" />
                     <div className="directory-row-info">
-                      <div className="directory-row-name">
+                      <button
+                        className="directory-row-name"
+                        data-testid={`directory-parent-${m.id}`}
+                        onClick={() => onOpenParent(m.id)}
+                      >
                         <strong>{m.full_name}</strong>
                         {m.role === "coordinator" ? <span className="role-badge">Admin</span> : null}
-                      </div>
+                        <ChevronRightIcon />
+                      </button>
                       <div className="directory-row-contact">
                         {m.share_email && m.email ? (
                           <a href={`mailto:${m.email}`} className="directory-contact-item">{m.email}</a>
@@ -3888,6 +3895,140 @@ function DirectoryScreen({
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function ParentDetailWrapper({
+  parentId,
+  groupId,
+  groupChildren,
+  repository,
+  onBack,
+}: {
+  parentId: string;
+  groupId: string;
+  groupChildren: Tables<"children">[];
+  repository: CarpoolRepository;
+  onBack: () => void;
+}) {
+  const [entry, setEntry] = useState<DirectoryEntry | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    repository
+      .listGroupDirectory(groupId)
+      .then((rows) => {
+        if (!mounted) return;
+        const found = (rows as DirectoryEntry[]).find((r) => r.id === parentId);
+        setEntry(found ?? null);
+      })
+      .catch(() => { if (mounted) setEntry(null); })
+      .finally(() => { if (mounted) setLoading(false); });
+    return () => { mounted = false; };
+  }, [parentId, groupId, repository]);
+
+  if (loading) {
+    return (
+      <div className="screen-content parent-detail-screen" data-testid="parent-detail-screen">
+        <header className="subpage-header">
+          <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
+          <div><span className="eyebrow">Loading…</span><h1>Parent</h1></div>
+        </header>
+        <p className="helper-copy">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!entry) {
+    return (
+      <div className="screen-content parent-detail-screen" data-testid="parent-detail-screen">
+        <header className="subpage-header">
+          <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
+          <div><span className="eyebrow">Not found</span><h1>Parent</h1></div>
+        </header>
+        <p className="helper-copy">This parent is no longer in the directory.</p>
+      </div>
+    );
+  }
+
+  const householdChildren = groupChildren.filter((c) => c.household_id === entry.household_id);
+
+  return (
+    <ParentDetailScreen
+      entry={entry}
+      children={householdChildren}
+      onBack={onBack}
+    />
+  );
+}
+
+function ParentDetailScreen({
+  entry,
+  children,
+  onBack,
+}: {
+  entry: DirectoryEntry;
+  children: Tables<"children">[];
+  onBack: () => void;
+}) {
+  return (
+    <div className="screen-content parent-detail-screen" data-testid="parent-detail-screen">
+      <header className="subpage-header">
+        <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
+        <div><span className="eyebrow">{entry.household_name}</span><h1>{entry.full_name}</h1></div>
+      </header>
+
+      <div className="parent-detail-photo">
+        <PhotoButton url={entry.avatar_url} name={entry.full_name} className="parent-detail-avatar" />
+        {entry.role === "coordinator" ? <span className="role-badge role-badge--large">Admin</span> : null}
+      </div>
+
+      <section className="drive-detail-meta">
+        <div className="drive-detail-row">
+          <span className="drive-detail-label">Email</span>
+          {entry.share_email && entry.email ? (
+            <a href={`mailto:${entry.email}`} className="drive-detail-contact">{entry.email}</a>
+          ) : (
+            <strong className="drive-detail-hidden">Email hidden</strong>
+          )}
+        </div>
+        <div className="drive-detail-row">
+          <span className="drive-detail-label">Phone</span>
+          {entry.share_phone && entry.phone ? (
+            <a href={`tel:${entry.phone.replace(/\s/g, "")}`} className="drive-detail-contact">{entry.phone}</a>
+          ) : (
+            <strong className="drive-detail-hidden">Phone hidden</strong>
+          )}
+        </div>
+      </section>
+
+      <section className="drive-detail-children">
+        <h2>Children ({children.length})</h2>
+        {children.length === 0 ? (
+          <p className="helper-copy">No children in this household.</p>
+        ) : (
+          <div className="child-photo-grid">
+            {children.map((child) => (
+              <div key={child.id} className="child-photo-card" data-testid="child-photo-card">
+                <PhotoButton url={child.photo_url} name={`${child.first_name} ${child.last_name}`} className="child-photo-thumb" />
+                <strong>{child.first_name} {child.last_name}</strong>
+                {child.phone ? (
+                  <a
+                    href={`tel:${child.phone.replace(/\s/g, "")}`}
+                    className="call-kid-link"
+                    data-testid={`call-kid-${child.id}`}
+                  >
+                    <MobileIcon width="13" height="13" /> Call {child.first_name}
+                  </a>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -4249,6 +4390,7 @@ export default function Prototype() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [directoryOpen, setDirectoryOpen] = useState(false);
+  const [directoryParentId, setDirectoryParentId] = useState<string | null>(null);
   const [driveDetailId, setDriveDetailId] = useState<string | null>(null);
   const [faqOpen, setFaqOpen] = useState(false);
   const [pushPermissionShown, setPushPermissionShown] = useState(false);
@@ -5020,6 +5162,7 @@ export default function Prototype() {
     setAccountOpen(false);
     setReviewOpen(false);
     setDirectoryOpen(false);
+    setDirectoryParentId(null);
     setDriveDetailId(null);
     setFaqOpen(false);
     setActiveTab("home");
@@ -5083,11 +5226,23 @@ const navItems = useMemo(() => {
     }
 
     if (directoryOpen && identity) {
+      if (directoryParentId) {
+        return (
+          <ParentDetailWrapper
+            parentId={directoryParentId}
+            groupId={identity.group.id}
+            groupChildren={groupChildren}
+            repository={repository}
+            onBack={() => setDirectoryParentId(null)}
+          />
+        );
+      }
       return (
         <DirectoryScreen
           groupId={identity.group.id}
           repository={repository}
           onBack={() => setDirectoryOpen(false)}
+          onOpenParent={(id) => setDirectoryParentId(id)}
         />
       );
     }
@@ -5367,7 +5522,7 @@ const navItems = useMemo(() => {
           </main>
         </MobileScroll>
       </AppErrorBoundary>
-      {!reviewOpen && !accountOpen && !directoryOpen && !driveDetailId && !faqOpen ? (
+      {!reviewOpen && !accountOpen && !directoryOpen && !directoryParentId && !driveDetailId && !faqOpen ? (
         <nav className="bottom-nav" aria-label="Primary navigation"
           style={{ gridTemplateColumns: `repeat(${navItems.length}, 1fr)` }}>
           {navItems.map(({ id, label, icon: Icon }) => (
