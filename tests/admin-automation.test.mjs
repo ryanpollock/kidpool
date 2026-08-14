@@ -50,6 +50,10 @@ const fixVolunteerReacceptMigrationUrl = new URL(
   "../supabase/migrations/202608140001_fix_volunteer_reaccept.sql",
   import.meta.url,
 );
+const allowReleasedReacceptMigrationUrl = new URL(
+  "../supabase/migrations/202608140002_allow_released_reaccept.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -756,4 +760,67 @@ test("fix volunteer re-accept: data fix moves riders back to volunteer", async (
 
   // Audit event for the revert
   assert.match(sql, /released_assignment_reverted/);
+});
+
+// ─── Allow released re-accept with rider transfer ────────────
+
+test("released re-accept: RPC allows released status and transfers riders", async () => {
+  const sql = await readFile(allowReleasedReacceptMigrationUrl, "utf8");
+
+  // Rewrites the RPC with CREATE OR REPLACE
+  assert.match(sql, /create or replace function public\.respond_to_driver_assignment\(/);
+  assert.match(sql, /security definer/);
+
+  // 'released' is now in the allowed statuses
+  assert.match(sql, /'tentative', 'confirmed', 'declined', 'expired', 'released'/);
+
+  // 0-rider guard covers both 'expired' AND 'declined' (not just expired)
+  assert.match(sql, /if assignment\.status in \('expired', 'declined'\)/);
+
+  // released guard: blocks if another confirmed/tentative driver exists
+  assert.match(sql, /if assignment\.status = 'released'/);
+  assert.match(sql, /v_other_active_count > 0/);
+
+  // Rider transfer on released re-accept
+  assert.match(sql, /if driver_response = 'confirmed' and assignment\.status = 'confirmed'/);
+  assert.match(sql, /status in \('declined', 'expired'\)/);
+  assert.match(sql, /update public\.rider_assignments/);
+  assert.match(sql, /set driver_assignment_id = assignment\.id/);
+
+  // Audit for rider transfer
+  assert.match(sql, /riders_transferred/);
+});
+
+test("released re-accept: reacceptDrive sends volunteered notification", async () => {
+  const ts = await readFile(prototypeUrl, "utf8");
+
+  // reacceptDrive sends both drive_confirmed and volunteered
+  assert.match(ts, /drive_confirmed/);
+  assert.match(ts, /volunteered/);
+});
+
+test("released re-accept: Review screen sends volunteered on re-accept (not tentative)", async () => {
+  const ts = await readFile(prototypeUrl, "utf8");
+
+  // Check prior status before sending volunteered on confirm
+  assert.match(ts, /priorStatus/);
+  assert.match(ts, /priorStatus === "declined" || priorStatus === "expired" || priorStatus === "released"/);
+});
+
+test("released re-accept: UI shows released in reacceptableAssignments", async () => {
+  const ts = await readFile(prototypeUrl, "utf8");
+
+  // released is in the reacceptable filter
+  assert.match(ts, /a\.assignment\.status === "released"/);
+});
+
+test("released re-accept: repository suppresses I-can-drive for released trips", async () => {
+  const ts = await readFile(repositoryUrl, "utf8");
+
+  // Fetches the user's released assignments
+  assert.match(ts, /eq\("status", "released"\)/);
+
+  // Builds a set of released trip_ids to suppress
+  assert.match(ts, /myReleasedTripIds/);
+  assert.match(ts, /myReleasedTripIds\.has\(da\.trip_id\)/);
 });
