@@ -1104,6 +1104,7 @@ function HomeScreen({
   confirmError,
   schedulePublished,
   hasHomeSchedule,
+  homeSchedule,
   homeScheduleVersionId,
   homeScheduleError,
   familyChildInSchedule,
@@ -1145,6 +1146,7 @@ function HomeScreen({
   confirmError: string | null;
   schedulePublished: boolean;
   hasHomeSchedule: boolean;
+  homeSchedule: ScheduleVersionWithRosters | null;
   homeScheduleVersionId: string | null;
   homeScheduleError: string | null;
   familyChildInSchedule: boolean;
@@ -1190,9 +1192,22 @@ function HomeScreen({
   // there are no active drives — without this path the cancelled
   // driver would have no way back (Review screen is hidden when
   // activeAssignments is empty).
-  const reacceptableAssignments = myAssignments.filter(
-    (a) => a.assignment.status === "declined" || a.assignment.status === "expired" || a.assignment.status === "released",
-  );
+  // 'released' assignments (another driver took over) are only shown
+  // when the drive is NOT covered — i.e., no confirmed/tentative driver
+  // exists for the same trip in the published schedule. When another
+  // driver is actively driving, hide the released assignment so the
+  // original driver doesn't see a stale "re-accept" prompt.
+  const reacceptableAssignments = myAssignments.filter((a) => {
+    if (a.assignment.status === "declined" || a.assignment.status === "expired") return true;
+    if (a.assignment.status === "released") {
+      const rosters = homeSchedule?.rostersByTrip.get(a.trip.id) ?? [];
+      const hasActiveDriver = rosters.some(
+        (r: ScheduleRosterEntry) => r.driverAssignment.status === "confirmed" || r.driverAssignment.status === "tentative",
+      );
+      return !hasActiveDriver;
+    }
+    return false;
+  });
   const hasReacceptable = reacceptableAssignments.length > 0;
   const tentative = activeAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = activeAssignments.filter((a) => a.assignment.status === "confirmed");
@@ -5221,6 +5236,7 @@ const navItems = useMemo(() => {
         confirmError={confirmError}
         schedulePublished={homeSchedule?.version.status === "published"}
         hasHomeSchedule={homeSchedule !== null}
+        homeSchedule={homeSchedule}
         homeScheduleVersionId={homeSchedule?.version.id ?? null}
         homeScheduleError={homeScheduleError}
         familyChildInSchedule={familyChildInSchedule}
