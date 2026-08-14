@@ -773,9 +773,16 @@ Deno.serve(async (req) => {
     // Google Calendar and Outlook links as fallbacks. Idempotency key is
     // per-assignment so a re-confirm dedupes.
     if (type === "drive_confirmed" && assignment_id) {
-      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,updated_at", { id: `eq.${assignment_id}` });
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,updated_at,status", { id: `eq.${assignment_id}` });
       if (assignment.length === 0) return jsonError("Assignment not found", 404);
       const da = assignment[0];
+
+      // Guard: only send calendar invite for active assignments (confirmed or tentative).
+      // A 'released' or 'declined' assignment means the driver is no longer driving —
+      // don't send them a calendar invite for a drive they're not doing.
+      if (da.status !== "confirmed" && da.status !== "tentative") {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true, reason: `assignment_${da.status}` });
+      }
 
       const tripData = await supaFetch("trips", "id,service_date,direction,meeting_time,departure_time,origin,destination,week_id,group_id", { id: `eq.${da.trip_id}` });
       if (tripData.length === 0) return jsonError("Trip not found", 404);
@@ -923,9 +930,17 @@ Deno.serve(async (req) => {
     // Idempotency key includes updated_at so a re-decline after re-accept
     // gets a fresh key.
     if (type === "drive_cancelled" && assignment_id) {
-      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,updated_at", { id: `eq.${assignment_id}` });
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,updated_at,status", { id: `eq.${assignment_id}` });
       if (assignment.length === 0) return jsonError("Assignment not found", 404);
       const da = assignment[0];
+
+      // Guard: only send calendar cancellation for assignments the driver actually
+      // declined or let expire. A 'released' assignment means someone else took over —
+      // don't send a cancellation to the original driver (the volunteer gets the cancel
+      // email if they decline their own assignment).
+      if (da.status !== "declined" && da.status !== "expired") {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true, reason: `assignment_${da.status}` });
+      }
 
       const tripData = await supaFetch("trips", "id,service_date,direction,meeting_time,departure_time,origin,destination,week_id,group_id", { id: `eq.${da.trip_id}` });
       if (tripData.length === 0) return jsonError("Trip not found", 404);
