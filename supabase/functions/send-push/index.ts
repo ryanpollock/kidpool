@@ -1229,77 +1229,46 @@ Deno.serve(async (req) => {
       title = "Schedule published";
       bodyText = `The schedule for this week has been published. Open the app to see your drives.`;
       tag = `published-${version_id}`;
-    } else if (type === "deadline_reminder") {
-      const now = new Date();
-      const twoDaysFromNow = new Date(now.getTime() + 48 * 60 * 60 * 1000);
-      const nowStr = now.toISOString();
-      const twoDaysStr = twoDaysFromNow.toISOString();
-      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+    } else if (type === "checkin_reminder") {
+      // Check-in reminder: sends push + email to unsubmitted households for the
+      // nearest upcoming week. The title/body are passed from the cron wrapper
+      // (3 slots: Sat 9 AM, 6 PM, 11 PM Pacific). No time gate — the cron fires
+      // at the right time. Per-date idempotency key dedupes the off-DST fire.
+      const reminderTitle: string = body.title ?? "Check in for next week";
+      const reminderBody: string = body.body ?? "Check in for next week.";
+      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      const nowStr = new Date().toISOString();
+      const twoDaysStr = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
-      // Find weeks where check-in deadline is within 48h (upcoming) OR just passed (< 25h ago)
       const upcomingWeeks = await supaFetch("weeks", "*", [
         ["checkin_deadline", `gte.${nowStr}`],
         ["checkin_deadline", `lte.${twoDaysStr}`],
       ]);
-      const pastWeeks = await supaFetch("weeks", "*", [
-        ["checkin_deadline", `lt.${nowStr}`],
-        ["checkin_deadline", `gte.${new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString()}`],
-      ]);
 
-      // ── Upcoming deadline: time-aware reminders to non-submitters ──
       for (const week of upcomingWeeks) {
         const checkins = await supaFetch("weekly_checkins", "household_id", { week_id: `eq.${week.id}`, status: "eq.submitted" });
         const submittedHouseholds = new Set(checkins.map((c: any) => c.household_id));
         const allMemberships = await supaFetch("memberships", "profile_id,household_id", { group_id: `eq.${week.group_id}`, status: "eq.active" });
         const unsubmitted = allMemberships.filter((m: any) => !submittedHouseholds.has(m.household_id));
 
-        const hoursLeft = week.checkin_deadline ? (new Date(week.checkin_deadline).getTime() - now.getTime()) / (60 * 60 * 1000) : 0;
-        let reminderTitle: string;
-        let reminderBody: string;
-        if (hoursLeft > 24) {
-          reminderTitle = "Check in for next week";
-          reminderBody = `Check in for next week — deadline Saturday midnight.`;
-        } else if (hoursLeft > 6) {
-          reminderTitle = "Check-in deadline approaching";
-          reminderBody = `Submit your check-in by Saturday midnight.`;
-        } else if (hoursLeft > 1) {
-          reminderTitle = "Check in today";
-          reminderBody = `Today's the day — check in by midnight.`;
-        } else {
-          reminderTitle = "1 hour left to check in";
-          reminderBody = `Submit your check-in now — deadline in 1 hour.`;
-        }
-
         for (const m of unsubmitted) {
-          // Per-day idempotency: one reminder per day per profile
           const idempotencyKey = `checkin-reminder-${todayStr}-${m.profile_id}`;
           await sendEmailAndPush(m.profile_id, reminderTitle, reminderBody, idempotencyKey, `checkin-reminder-${todayStr}-${m.profile_id}`);
         }
       }
 
-      // ── Missed deadline: one-time notification to non-submitters ──
-      for (const week of pastWeeks) {
-        const checkins = await supaFetch("weekly_checkins", "household_id", { week_id: `eq.${week.id}`, status: "eq.submitted" });
-        const submittedHouseholds = new Set(checkins.map((c: any) => c.household_id));
-        const allMemberships = await supaFetch("memberships", "profile_id,household_id", { group_id: `eq.${week.group_id}`, status: "eq.active" });
-        const unsubmitted = allMemberships.filter((m: any) => !submittedHouseholds.has(m.household_id));
-
-        for (const m of unsubmitted) {
-          // Per-week idempotency: missed notification fires once per week per profile
-          const idempotencyKey = `missed-checkin-${week.id}-${m.profile_id}`;
-          await sendEmailAndPush(m.profile_id, "Missed check-in deadline", `You missed the check-in deadline. Submit now — your kid may not get a spot unless you drive.`, idempotencyKey, `missed-checkin-${week.id}-${m.profile_id}`);
-        }
-      }
-
       return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
     } else if (type === "confirmation_reminder") {
-      const now = new Date();
-      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      const nowStr = now.toISOString();
-      const tomorrowStr = tomorrow.toISOString();
-      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+      // Confirmation reminder: sends push + email to drivers with tentative
+      // assignments. The title/body are passed from the cron wrapper
+      // (2 slots: Sun 8 AM, 7 PM Pacific). No time gate — the cron fires at
+      // the right time. Per-date idempotency key dedupes the off-DST fire.
+      const reminderTitle: string = body.title ?? "Confirm your drives";
+      const reminderBody: string = body.body ?? "Confirm your drives.";
+      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      const nowStr = new Date().toISOString();
+      const tomorrowStr = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
-      // Upcoming: confirmation deadline within 24h — remind drivers with tentative assignments
       const upcomingWeeks = await supaFetch("weeks", "*", [
         ["confirmation_deadline", `gte.${nowStr}`],
         ["confirmation_deadline", `lte.${tomorrowStr}`],
@@ -1314,48 +1283,10 @@ Deno.serve(async (req) => {
             driverTripCounts.set(a.driver_profile_id, (driverTripCounts.get(a.driver_profile_id) ?? 0) + 1);
           }
 
-          const hoursLeft = week.confirmation_deadline ? (new Date(week.confirmation_deadline).getTime() - now.getTime()) / (60 * 60 * 1000) : 0;
-          let cTitle: string;
-          let cBody: string;
-          if (hoursLeft > 6) {
-            cTitle = "Confirm your drives";
-            cBody = `You have drives to confirm by 7 PM tonight. Open the app to review.`;
-          } else if (hoursLeft > 1) {
-            cTitle = "Confirm your drives soon";
-            cBody = `You have drives to confirm — deadline is 7 PM tonight.`;
-          } else {
-            cTitle = "1 hour left to confirm";
-            cBody = `Confirm your drives now — deadline in 1 hour.`;
-          }
-
           for (const [driverId, count] of driverTripCounts) {
-            const body = count > 1 ? cBody.replace("drives", `${count} drives`) : cBody.replace("drives", "a drive");
+            const body = count > 1 ? reminderBody.replace("drives", `${count} drives`) : reminderBody.replace("drives", "a drive");
             const idempotencyKey = `confirmation-reminder-${todayStr}-${driverId}`;
-            await sendEmailAndPush(driverId, cTitle, body, idempotencyKey, `confirmation-reminder-${todayStr}-${driverId}`);
-          }
-        }
-      }
-
-      // Missed: confirmation deadline passed — notify drivers with expired assignments
-      const pastWeeks = await supaFetch("weeks", "*", [
-        ["confirmation_deadline", `lt.${nowStr}`],
-        ["confirmation_deadline", `gte.${new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString()}`],
-      ]);
-
-      for (const week of pastWeeks) {
-        const versions = await supaFetch("schedule_versions", "id", { week_id: `eq.${week.id}`, group_id: `eq.${week.group_id}`, status: "in.(draft,published)" });
-        for (const version of versions) {
-          const expired = await supaFetch("driver_assignments", "driver_profile_id,trip_id", { schedule_version_id: `eq.${version.id}`, status: `eq.expired` });
-          const driverTripCounts = new Map<string, number>();
-          for (const a of expired) {
-            driverTripCounts.set(a.driver_profile_id, (driverTripCounts.get(a.driver_profile_id) ?? 0) + 1);
-          }
-          for (const [driverId, count] of driverTripCounts) {
-            const body = count > 1
-              ? `Your ${count} drives expired — you didn't confirm in time. Re-accept in the app if you can still drive.`
-              : `Your drive expired — you didn't confirm in time. Re-accept in the app if you can still drive.`;
-            const idempotencyKey = `missed-confirmation-${week.id}-${driverId}`;
-            await sendEmailAndPush(driverId, "Drives expired", body, idempotencyKey, `missed-confirmation-${week.id}-${driverId}`);
+            await sendEmailAndPush(driverId, reminderTitle, body, idempotencyKey, `confirmation-reminder-${todayStr}-${driverId}`);
           }
         }
       }

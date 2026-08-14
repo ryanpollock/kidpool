@@ -54,6 +54,10 @@ const allowReleasedReacceptMigrationUrl = new URL(
   "../supabase/migrations/202608140002_allow_released_reaccept.sql",
   import.meta.url,
 );
+const fixNotificationScheduleMigrationUrl = new URL(
+  "../supabase/migrations/202608140003_fix_notification_schedule.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -823,4 +827,73 @@ test("released re-accept: repository suppresses I-can-drive for released trips",
   // Builds a set of released trip_ids to suppress
   assert.match(ts, /myReleasedTripIds/);
   assert.match(ts, /myReleasedTripIds\.has\(da\.trip_id\)/);
+});
+
+// ─── Fixed-time notification schedule ────────────────────────
+
+test("notification schedule: unschedules hourly crons and creates 5 fixed-time crons", async () => {
+  const sql = await readFile(fixNotificationScheduleMigrationUrl, "utf8");
+
+  // Unschedules the 2 hourly crons
+  assert.match(sql, /cron\.unschedule\('checkin-deadline-reminder'\)/);
+  assert.match(sql, /cron\.unschedule\('confirmation-deadline-reminder'\)/);
+
+  // Re-applies the 8:30 PM Pacific Sunday publish schedule (was overwritten)
+  assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
+  assert.match(sql, /30 3,4 \* \* 1/);
+
+  // 3 check-in reminder crons (Sat 9 AM, 6 PM, 11 PM Pacific)
+  assert.match(sql, /checkin-reminder-9am/);
+  assert.match(sql, /0 16,17 \* \* 6/);
+  assert.match(sql, /checkin-reminder-6pm/);
+  assert.match(sql, /0 1,2 \* \* 0/);
+  assert.match(sql, /checkin-reminder-11pm/);
+  assert.match(sql, /0 6,7 \* \* 0/);
+
+  // 2 confirmation reminder crons (Sun 8 AM, 7 PM Pacific)
+  assert.match(sql, /confirmation-reminder-8am/);
+  assert.match(sql, /0 15,16 \* \* 0/);
+  assert.match(sql, /confirmation-reminder-7pm/);
+  assert.match(sql, /0 2,3 \* \* 1/);
+
+  // All 5 wrapper functions use 120s timeout
+  assert.match(sql, /timeout_milliseconds := 120000/);
+
+  // All 5 use vault secrets (environment-aware)
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
+
+  // All 5 are security definer + revoked
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_checkin_reminder_9am\(\) from public, authenticated/);
+  assert.match(sql, /revoke all on function public\.send_confirmation_reminder_8am\(\) from public, authenticated/);
+});
+
+test("notification schedule: send-push has checkin_reminder + confirmation_reminder branches", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // New branches exist
+  assert.match(ts, /type === "checkin_reminder"/);
+  assert.match(ts, /type === "confirmation_reminder"/);
+
+  // Old branches are gone (deadline_reminder removed; confirmation_reminder
+  // is reused but the old urgency-tier logic and missed-deadline logic are gone)
+  assert.doesNotMatch(ts, /type === "deadline_reminder"/);
+  assert.doesNotMatch(ts, /hoursLeft > 24/);
+  assert.doesNotMatch(ts, /Missed check-in deadline/);
+  assert.doesNotMatch(ts, /Drives expired/);
+
+  // checkin_reminder: finds unsubmitted households and sends
+  assert.match(ts, /checkin_reminder/);
+  assert.match(ts, /eq\.submitted/);
+  assert.match(ts, /sendEmailAndPush/);
+
+  // confirmation_reminder: finds tentative drivers and sends
+  assert.match(ts, /confirmation_reminder/);
+  assert.match(ts, /eq\.tentative/);
+  assert.match(ts, /sendEmailAndPush/);
+
+  // Both use per-date idempotency keys (DST-proof dedup)
+  assert.match(ts, /checkin-reminder-\$\{todayStr\}-\$\{m\.profile_id\}/);
+  assert.match(ts, /confirmation-reminder-\$\{todayStr\}-\$\{driverId\}/);
 });
