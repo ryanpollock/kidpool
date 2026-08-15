@@ -859,6 +859,392 @@ Questions? Reply to this email or check the FAQ in the app.`;
       return jsonResponse({ sent, failed, removed, email_sent: emailSent, email_failed: emailFailed });
     }
 
+<<<<<<< Updated upstream
+=======
+    // ── drive_confirmed: email calendar invite to the confirmed driver ──
+    // Triggered by the client immediately after respondToDriverAssignment
+    // returns "confirmed". Sends an email with a .ics attachment covering the
+    // full drive duration: 15 min before meeting (drive to pickup) through
+    // 45 min after departure (drive to school + drive home). Also includes
+    // Google Calendar and Outlook links as fallbacks. Idempotency key is
+    // per-assignment so a re-confirm dedupes.
+    if (type === "drive_confirmed" && assignment_id) {
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,updated_at,status", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      // Guard: only send calendar invite for active assignments (confirmed or tentative).
+      // A 'released' or 'declined' assignment means the driver is no longer driving —
+      // don't send them a calendar invite for a drive they're not doing.
+      if (da.status !== "confirmed" && da.status !== "tentative") {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true, reason: `assignment_${da.status}` });
+      }
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,meeting_time,departure_time,origin,destination,week_id,group_id", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const driverProfile = await supaFetch("profiles", "id,full_name,email", { id: `eq.${da.driver_profile_id}` });
+      if (driverProfile.length === 0) return jsonError("Driver not found", 404);
+      const driver = driverProfile[0];
+      if (!driver.email || isTestEmail(driver.email)) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
+      }
+      if (!RESEND_API_KEY) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_resend_key" });
+      }
+
+      // Fetch rider assignments (kids in this car)
+      const riderAssignments = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${assignment_id}` });
+      const childIds = riderAssignments.map((ra: any) => ra.child_id);
+      const children = childIds.length > 0 ? await supaFetch("children", "first_name,last_name", { id: `in.(${childIds.join(",")})` }) : [];
+      const kidNames = children.map((c: any) => `${c.first_name} ${c.last_name}`.trim());
+
+      // Fetch vehicle label
+      let vehicleLabel = "";
+      if (da.vehicle_id) {
+        const vehicles = await supaFetch("vehicles", "label", { id: `eq.${da.vehicle_id}` });
+        if (vehicles.length > 0) vehicleLabel = vehicles[0].label;
+      }
+
+      const groupId = da.group_id;
+      const timezone = "America/Los_Angeles";
+      const firstName = (driver.full_name ?? "there").split(" ")[0];
+      const dirLabel = trip.direction === "morning" ? "morning" : "afternoon";
+      const meetingTime = formatTime(trip.meeting_time);
+      const departureTime = formatTime(trip.departure_time);
+
+      // Calendar event: 15 min before meeting through 45 min after departure
+      const eventStart = addMinutes(trip.meeting_time, -15);
+      const eventEnd = addMinutes(trip.departure_time, 45);
+      const dtstart = toIcsLocal(trip.service_date, eventStart);
+      const dtend = toIcsLocal(trip.service_date, eventEnd);
+      const dtstamp = toIcsLocal(
+        new Date().toISOString().slice(0, 10),
+        new Date().toTimeString().slice(0, 5),
+      );
+      const summary = `Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive to ${trip.destination}`;
+      const ridersStr = kidNames.length > 0 ? kidNames.join(", ") : "No riders assigned";
+      const description = `Riders: ${ridersStr}\\nVehicle: ${vehicleLabel || "Unknown"}\\nMeet at ${meetingTime} at ${trip.origin}\\nDepart ${departureTime}`;
+      const icsContent = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Carpool Crew//EN",
+        `X-WR-TIMEZONE:${timezone}`,
+        "BEGIN:VEVENT",
+        `UID:drive-confirmed-${assignment_id}@carpoolcrew.co`,
+        `DTSTAMP:${dtstamp}`,
+        `DTSTART;TZID=${timezone}:${dtstart}`,
+        `DTEND;TZID=${timezone}:${dtend}`,
+        `SUMMARY:${summary}`,
+        `DESCRIPTION:${description}`,
+        `LOCATION:${trip.origin}`,
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ].join("\r\n");
+
+      // Base64-encode the ICS for the Resend attachment
+      const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
+
+      // Google Calendar link (fallback)
+      const googleStart = toIcsLocal(trip.service_date, eventStart);
+      const googleEnd = toIcsLocal(trip.service_date, eventEnd);
+      const googleParams = new URLSearchParams({
+        action: "TEMPLATE",
+        text: summary,
+        dates: `${googleStart}/${googleEnd}`,
+        ctz: timezone,
+        location: trip.origin,
+        details: description.replaceAll("\\n", "\n"),
+      });
+      const googleUrl = `https://calendar.google.com/calendar/render?${googleParams.toString()}`;
+
+      const kidsStr = kidNames.length > 0 ? ` Kids in your car: ${kidNames.join(", ")}.` : "";
+      const htmlBody =
+        `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+        `<h1 style="font-size:22px;margin:0 0 16px;">You're driving, ${escapeHtml(firstName)}</h1>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Your ${dirLabel} drive is confirmed for ${escapeHtml(trip.service_date)}. Meet at ${escapeHtml(trip.origin)} at ${escapeHtml(meetingTime)}. Depart ${escapeHtml(departureTime)}.${kidsStr}</p>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">A calendar invite is attached to this email. Open it to add the event to your calendar — it covers the full drive (15 min before pickup through 45 min after departure).</p>` +
+        `<p style="font-size:14px;line-height:1.6;margin:0 0 16px;">Or add via <a href="${googleUrl}">Google Calendar</a>.</p>` +
+        `<p style="margin-top:24px;">${APP_URL ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>` : ""}</p>` +
+        `</body></html>`;
+
+      const textBody =
+        `You're driving, ${firstName}\n\n` +
+        `Your ${dirLabel} drive is confirmed for ${trip.service_date}. Meet at ${trip.origin} at ${meetingTime}. Depart ${departureTime}.${kidsStr}\n\n` +
+        `A calendar invite is attached to this email. Open it to add the event to your calendar — it covers the full drive (15 min before pickup through 45 min after departure).\n\n` +
+        `Or add via Google Calendar: ${googleUrl}`;
+
+      const idempotencyKey = `drive-confirmed-${assignment_id}-${da.updated_at}`;
+      let emailSent = 0;
+      let emailFailed = 0;
+      try {
+        const res = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: driver.email,
+            reply_to: RESEND_REPLY_TO,
+            subject: `You're driving ${dirLabel} — ${trip.service_date}`,
+            html: htmlBody,
+            text: textBody,
+            attachments: [
+              {
+                filename: "carpool-crew-drive.ics",
+                content: icsBase64,
+              },
+            ],
+            tags: [
+              { name: "type", value: "drive_confirmed" },
+              { name: "group", value: groupId ?? "unknown" },
+            ],
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.text();
+          console.error(`[send-push] Drive confirmed email to ${driver.email} failed:`, err);
+          emailFailed++;
+        } else {
+          emailSent++;
+        }
+      } catch (e) {
+        console.error(`[send-push] Drive confirmed email to ${driver.email} threw:`, e);
+        emailFailed++;
+      }
+      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
+    }
+
+    // ── drive_cancelled: calendar cancellation email to the driver ──
+    // Triggered by the client when a driver declines a previously confirmed
+    // drive. Sends a .ics with METHOD:CANCEL so the driver's calendar app
+    // removes the event. Also sends a plain-text "drive cancelled" email.
+    // Idempotency key includes updated_at so a re-decline after re-accept
+    // gets a fresh key.
+    if (type === "drive_cancelled" && assignment_id) {
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,updated_at,status", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      // Guard: only send calendar cancellation for assignments the driver actually
+      // declined or let expire. A 'released' assignment means someone else took over —
+      // don't send a cancellation to the original driver (the volunteer gets the cancel
+      // email if they decline their own assignment).
+      if (da.status !== "declined" && da.status !== "expired") {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true, reason: `assignment_${da.status}` });
+      }
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,meeting_time,departure_time,origin,destination,week_id,group_id", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const driverProfile = await supaFetch("profiles", "id,full_name,email", { id: `eq.${da.driver_profile_id}` });
+      if (driverProfile.length === 0) return jsonError("Driver not found", 404);
+      const driver = driverProfile[0];
+      if (!driver.email || isTestEmail(driver.email)) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
+      }
+      if (!RESEND_API_KEY) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_resend_key" });
+      }
+
+      const groupId = da.group_id;
+      const timezone = "America/Los_Angeles";
+      const firstName = (driver.full_name ?? "there").split(" ")[0];
+      const dirLabel = trip.direction === "morning" ? "morning" : "afternoon";
+
+      // ICS with METHOD:CANCEL so calendar apps remove the event
+      const dtstamp = toIcsLocal(
+        new Date().toISOString().slice(0, 10),
+        new Date().toTimeString().slice(0, 5),
+      );
+      const icsContent = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Carpool Crew//EN",
+        `X-WR-TIMEZONE:${timezone}`,
+        "METHOD:CANCEL",
+        "BEGIN:VEVENT",
+        `UID:drive-confirmed-${assignment_id}@carpoolcrew.co`,
+        `DTSTAMP:${dtstamp}`,
+        `DTSTART;TZID=${timezone}:${toIcsLocal(trip.service_date, addMinutes(trip.meeting_time, -15))}`,
+        `DTEND;TZID=${timezone}:${toIcsLocal(trip.service_date, addMinutes(trip.departure_time, 45))}`,
+        `SUMMARY:CANCELLED: Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive`,
+        "STATUS:CANCELLED",
+        `LOCATION:${trip.origin}`,
+        "END:VEVENT",
+        "END:VCALENDAR",
+      ].join("\r\n");
+
+      const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
+
+      const htmlBody =
+        `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+        `<h1 style="font-size:22px;margin:0 0 16px;">Drive cancelled, ${escapeHtml(firstName)}</h1>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Your ${dirLabel} drive on ${escapeHtml(trip.service_date)} has been cancelled. A calendar cancellation is attached so your calendar app can remove the event.</p>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Affected families have been notified that their child needs a new ride.</p>` +
+        `<p style="margin-top:24px;">${APP_URL ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>` : ""}</p>` +
+        `</body></html>`;
+
+      const textBody =
+        `Drive cancelled, ${firstName}\n\n` +
+        `Your ${dirLabel} drive on ${trip.service_date} has been cancelled. A calendar cancellation is attached so your calendar app can remove the event.\n\n` +
+        `Affected families have been notified that their child needs a new ride.`;
+
+      const idempotencyKey = `drive-cancelled-${assignment_id}-${da.updated_at}`;
+      let emailSent = 0;
+      let emailFailed = 0;
+      try {
+        const res = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: driver.email,
+            reply_to: RESEND_REPLY_TO,
+            subject: `Drive cancelled — ${trip.service_date}`,
+            html: htmlBody,
+            text: textBody,
+            attachments: [
+              {
+                filename: "carpool-crew-cancel.ics",
+                content: icsBase64,
+              },
+            ],
+            tags: [
+              { name: "type", value: "drive_cancelled" },
+              { name: "group", value: groupId ?? "unknown" },
+            ],
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.text();
+          console.error(`[send-push] Drive cancelled email to ${driver.email} failed:`, err);
+          emailFailed++;
+        } else {
+          emailSent++;
+        }
+      } catch (e) {
+        console.error(`[send-push] Drive cancelled email to ${driver.email} threw:`, e);
+        emailFailed++;
+      }
+      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
+    }
+
+    // ── rider_cancelled: "child won't be riding" email + push to driver ──
+    // Triggered when a parent cancels their child's ride via the Today card.
+    // The client calls sendPushNotification(assignment_id, null, "rider_cancelled", child_id).
+    if (type === "rider_cancelled" && assignment_id) {
+      const childId: string | undefined = body.child_id;
+      if (!childId) return jsonError("Missing child_id for rider_cancelled", 400);
+
+      // Load the driver assignment → trip + driver profile
+      const daRows = await supaFetch("driver_assignments", "id,trip_id,driver_profile_id,group_id,schedule_version_id", { id: `eq.${assignment_id}` });
+      if (daRows.length === 0) return jsonError("Driver assignment not found", 404);
+      const da = daRows[0];
+
+      // Load the trip
+      const tripRows = await supaFetch("trips", "service_date,direction,meeting_time,origin,destination", { id: `eq.${da.trip_id}` });
+      if (tripRows.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripRows[0];
+
+      // Load the child
+      const childRows = await supaFetch("children", "first_name,last_name", { id: `eq.${childId}` });
+      if (childRows.length === 0) return jsonError("Child not found", 404);
+      const child = childRows[0];
+      const childName = `${child.first_name} ${child.last_name}`;
+
+      // Load the driver's profile for email
+      const driverRows = await supaFetch("profiles", "id,full_name,email", { id: `eq.${da.driver_profile_id}` });
+      if (driverRows.length === 0) return jsonError("Driver profile not found", 404);
+      const driver = driverRows[0];
+      if (isTestEmail(driver.email)) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
+      }
+
+      const dirLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
+      const tripDate = new Date(trip.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+      const cta = APP_URL
+        ? `<p style="margin:24px 0 0;"><a href="${APP_URL}" style="display:inline-block;padding:10px 24px;background:#118b8c;color:#fff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">Open the app</a></p>`
+        : "";
+
+      const htmlBody = `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">
+<h1 style="font-size:22px;margin:0 0 16px;">Ride update</h1>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>${escapeHtml(childName)}</strong> won't be riding ${escapeHtml(dirLabel.toLowerCase())} on ${escapeHtml(tripDate)}.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Their parent cancelled this ride. You're still scheduled to drive — other children may still need a ride.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Trip: ${escapeHtml(trip.meeting_time)} · ${escapeHtml(trip.origin)} → ${escapeHtml(trip.destination)}</p>
+${cta}
+</body></html>`;
+
+      const textBody = `Ride update
+
+${childName} won't be riding ${dirLabel.toLowerCase()} on ${tripDate}.
+
+Their parent cancelled this ride. You're still scheduled to drive — other children may still need a ride.
+
+Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
+
+      let emailSent = 0;
+      let emailFailed = 0;
+      if (RESEND_API_KEY) {
+        try {
+          const resp = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": `rider-cancelled-${assignment_id}-${childId}`,
+            },
+            body: JSON.stringify({
+              from: RESEND_FROM_EMAIL,
+              to: driver.email,
+              reply_to: RESEND_REPLY_TO || undefined,
+              subject: `${childName} won't be riding ${dirLabel} — ${tripDate}`,
+              html: htmlBody,
+              text: textBody,
+              tags: [
+                { name: "type", value: "rider_cancelled" },
+                { name: "group", value: da.group_id },
+              ],
+            }),
+          });
+          if (!resp.ok) {
+            console.error("[send-push] rider_cancelled email failed:", await resp.text());
+            emailFailed++;
+          } else {
+            emailSent++;
+          }
+        } catch (e) {
+          console.error(`[send-push] rider_cancelled email to ${driver.email} threw:`, e);
+          emailFailed++;
+        }
+      }
+
+      // Send push notification to the driver
+      let sent = 0;
+      let failed = 0;
+      const pushTitle = `${childName} won't be riding ${dirLabel.toLowerCase()}`;
+      const pushBody = `Their parent cancelled this ride for ${tripDate}.`;
+      try {
+        await sendEmailAndPush(da.driver_profile_id, pushTitle, pushBody, `rider-cancelled-${assignment_id}-${childId}`, `rider-cancelled-${assignment_id}-${childId}`, da.group_id);
+        sent++;
+      } catch (e) {
+        console.error("[send-push] rider_cancelled push failed:", e);
+        failed++;
+      }
+
+      return jsonResponse({ sent, failed, email_sent: emailSent, email_failed: emailFailed });
+    }
+
+>>>>>>> Stashed changes
     let recipientProfileIds: string[] = [];
     let title = "";
     let bodyText = "";

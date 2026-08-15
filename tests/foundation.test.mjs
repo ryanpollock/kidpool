@@ -351,3 +351,28 @@ test("Add to calendar button renders in Prototype with BottomSheet options", asy
   assert.match(source, /buildOutlookUrl/);
   assert.match(source, /downloadIcs/);
 });
+
+test("Today card renders child ride info on the Home screen", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+  assert.match(source, /data-testid="today-card"/);
+  assert.match(source, /today-card-ride/);
+  assert.match(source, /No ride scheduled/);
+  assert.match(source, /cancel-ride-/);
+  assert.match(source, /add-ride-back-/);
+});
+
+test("cancel and add-ride-back methods exist in repository", async () => {
+  const repoUrl = new URL("../src/lib/supabase/carpool-repository.ts", import.meta.url);
+  const source = await readFile(repoUrl, "utf8");
+  assert.match(source, /async cancelRideForChild/);
+  assert.match(source, /async addRideBackForChild/);
+  assert.match(source, /cancel_ride_for_child/);
+  assert.match(source, /add_ride_back_for_child/);
+});
+
+test("cancel and add-ride-back RPC types exist in database types", async () => {
+  const typesUrl = new URL("../src/lib/supabase/database.types.ts", import.meta.url);
+  const source = await readFile(typesUrl, "utf8");
+  assert.match(source, /cancel_ride_for_child:/);
+  assert.match(source, /add_ride_back_for_child:/);
+});
