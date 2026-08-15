@@ -608,7 +608,7 @@ export class CarpoolRepository {
   ): Promise<string> {
     const ext = (file.name.split(".").pop() ?? "jpg").toLowerCase();
     const safeExt = /^[a-z0-9]+$/.test(ext) ? ext : "jpg";
-    const path = `${profileId}.${safeExt}`;
+    const path = `${profileId}/avatar.${safeExt}`;
     const { error } = await this.client.storage
       .from("parent-avatars")
       .upload(path, file, { upsert: true, contentType: file.type || undefined });
