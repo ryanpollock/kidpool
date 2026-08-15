@@ -85,6 +85,9 @@ const assignmentsThisWeek = new Map<string, number>();
       .filter((r) => r.trip_id === trip.id && r.needs_ride)
       .map((r) => childById.get(r.child_id))
       .filter((c): c is SchedulingChild => c !== undefined)
+      // ↑ Drops ride requests for deactivated children (childById only contains
+      // active=true children). See deactivateChild in carpool-repository.ts
+      // for the known data-hygiene gap — stale rows stay in the DB.
       .sort((a, b) => childSortKey(a).localeCompare(childSortKey(b)));
 
     const riderHouseholds = new Set(riders.map((r) => r.household_id));
