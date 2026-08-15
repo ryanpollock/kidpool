@@ -249,6 +249,124 @@ Deno.serve(async (req) => {
       return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
     }
 
+    // ── no_rides_requested: "did you mean to request rides?" email ──
+    // Triggered by a DB trigger on weekly_checkins when a parent submits
+    // a check-in with zero ride_requests (needs_ride=true) for their active
+    // children. The trigger passes only checkin_id; this function fetches
+    // the checkin, household, children, week, and submitter profile to
+    // build a personalized email. Idempotency key: no-rides-${checkin_id}.
+    if (type === "no_rides_requested") {
+      const checkinId: string | undefined = body.checkin_id;
+      if (!checkinId) return jsonError("Missing checkin_id", 400);
+      if (!RESEND_API_KEY) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_resend_key" });
+      }
+
+      // Fetch the checkin row.
+      const checkinRows = await supaFetch("weekly_checkins", "id,household_id,submitted_by,week_id,group_id", { id: `eq.${checkinId}` });
+      if (checkinRows.length === 0) return jsonError("Checkin not found", 404);
+      const checkin = checkinRows[0];
+      const groupId = checkin.group_id;
+
+      // Defensive re-verify: check for active children with needs_ride=true.
+      // Prevents a stale/racing trigger from spamming.
+      const rideRequests = await supaFetch("ride_requests", "id", { checkin_id: `eq.${checkinId}`, needs_ride: "eq.true" });
+      const activeChildren = await supaFetch("children", "id,first_name,last_name", { household_id: `eq.${checkin.household_id}`, group_id: `eq.${groupId}`, active: "eq.true" });
+      if (rideRequests.length > 0 || activeChildren.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "has_rides_or_no_children" });
+      }
+
+      // Fetch submitter profile for name + email.
+      const profiles = await supaFetch("profiles", "id,full_name,email", { id: `eq.${checkin.submitted_by}` });
+      if (profiles.length === 0) return jsonError("Submitter profile not found", 404);
+      const profile = profiles[0];
+      if (isTestEmail(profile.email)) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
+      }
+
+      // Fetch week date.
+      const weekRows = await supaFetch("weeks", "starts_on", { id: `eq.${checkin.week_id}` });
+      const weekDate = weekRows.length > 0
+        ? new Date(weekRows[0].starts_on + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric" })
+        : "next week";
+
+      // Personalize.
+      const firstName = (profile.full_name ?? "there").split(" ")[0];
+      const childNames = activeChildren.map((c: any) => c.first_name).join(", ");
+      const childLabel = activeChildren.length === 1 ? childNames : "your children";
+      const cta = APP_URL
+        ? `<p style="margin:24px 0 0;"><a href="${APP_URL}" style="display:inline-block;padding:10px 24px;background:#118b8c;color:#fff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">Open the app</a></p>`
+        : "";
+
+      const htmlBody = `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">
+<h1 style="font-size:22px;margin:0 0 16px;">Did you mean to request rides?</h1>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Hi ${escapeHtml(firstName)},</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">We noticed you submitted your check-in for the week of ${escapeHtml(weekDate)}, but didn't request any rides for ${escapeHtml(childLabel)}.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">If that was intentional — maybe they're not riding that week — no action needed.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">If it was an oversight:</p>
+<ol style="font-size:15px;line-height:1.6;margin:0 0 16px;padding-left:20px;">
+<li>Open the <strong>Next Week</strong> tab</li>
+<li>Scroll to the bottom and tap <strong>Reopen to change ride needs</strong></li>
+<li>Tap each day your child needs a ride (morning and/or afternoon)</li>
+<li>Tap <strong>Submit</strong> again</li>
+</ol>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Questions? Reply to this email or check the FAQ in the app.</p>
+${cta}
+</body></html>`;
+
+      const textBody = `Did you mean to request rides?
+
+Hi ${firstName},
+
+We noticed you submitted your check-in for the week of ${weekDate}, but didn't request any rides for ${childLabel}.
+
+If that was intentional — maybe they're not riding that week — no action needed.
+
+If it was an oversight:
+1. Open the "Next Week" tab
+2. Scroll to the bottom and tap "Reopen to change ride needs"
+3. Tap each day your child needs a ride (morning and/or afternoon)
+4. Tap "Submit" again
+
+Questions? Reply to this email or check the FAQ in the app.`;
+
+      let emailSent = 0;
+      let emailFailed = 0;
+      try {
+        const resp = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": `no-rides-${checkinId}`,
+          },
+          body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: profile.email,
+            reply_to: RESEND_REPLY_TO || undefined,
+            subject: "Did you mean to request rides for next week?",
+            html: htmlBody,
+            text: textBody,
+            tags: [
+              { name: "type", value: "no_rides_requested" },
+              { name: "group", value: groupId },
+            ],
+          }),
+        });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          console.error("[send-push] no_rides_requested email failed:", errText);
+          emailFailed++;
+        } else {
+          emailSent++;
+        }
+      } catch (e) {
+        console.error(`[send-push] no_rides_requested email to ${profile.email} threw:`, e);
+        emailFailed++;
+      }
+      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
+    }
+
     // ── broadcast: one-off email to all active members ─────────
     // Reusable type for sending arbitrary content to the whole group.
     // Request body: { type, broadcast_id, subject, html_body, text_body }
