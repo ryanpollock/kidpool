@@ -1060,3 +1060,318 @@ test("Backend: submitCheckin allows empty check-in (no ride requests)", { skip: 
   cleanupAllTestData();
   deleteTestUser(family.userId);
 });
+
+// ── Cancel ride / Add ride back RPC tests ──────────────────────
+
+function rpcCall(jwt, rpcName, body) {
+  const result = execSync(
+    `curl -s -w "\\n%{http_code}" -X POST -H "apikey: ${ANON_KEY}" -H "Authorization: Bearer ${jwt}" -H "Content-Type: application/json" -d '${JSON.stringify(body)}' "${SUPABASE_URL}/rest/v1/rpc/${rpcName}"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  );
+  const lines = result.trim().split("\n");
+  const httpCode = lines[lines.length - 1];
+  const responseBody = lines.slice(0, -1).join("\n").trim();
+  if (httpCode === "204" || !responseBody) return {};
+  try {
+    return JSON.parse(responseBody);
+  } catch {
+    return { raw: responseBody };
+  }
+}
+
+test("RPC: cancel_ride_for_child — parent can cancel own child's ride", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(40, "CancelCoord", "member", true);
+  const driver = setupHousehold(41, "CancelDriver", "member", false);
+  const rider = setupHousehold(42, "CancelRider", "member", false);
+
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const tripId = tripIds[0];
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(341)}', '${GROUP_ID}', '${driver.householdId}', 'DriverCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(241)}', '${GROUP_ID}', '${driver.householdId}', 'D1', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(242)}', '${GROUP_ID}', '${rider.householdId}', 'R1', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(541)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(542)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(541)}', '${tripId}', '${UID(241)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(542)}', '${tripId}', '${UID(242)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(541)}', '${tripId}', '${driver.userId}', '${UID(341)}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  // Generate + publish schedule
+  const coordToken = signInUser("cancelcoord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Schedule generation should succeed");
+
+  runSql(`UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE week_id = '${weekId}' AND status = 'draft';`);
+
+  // Find the driver assignment + rider assignments
+  const assignments = restGet("driver_assignments", { group_id: GROUP_ID, trip_id: tripId });
+  assert.ok(assignments.length > 0, "Should have driver assignments");
+  const driverAssignment = assignments[0];
+
+  const riderAssignments = restGet("rider_assignments", { driver_assignment_id: driverAssignment.id });
+  assert.ok(riderAssignments.length >= 2, "Should have 2 rider assignments");
+
+  // Rider parent cancels their child's ride
+  const riderToken = signInUser("cancelrider@test.kidpool");
+  const riderJwt = riderToken.access_token;
+  const cancelResult = rpcCall(riderJwt, "cancel_ride_for_child", {
+    p_child_id: UID(242),
+    p_driver_assignment_id: driverAssignment.id,
+  });
+  assert.ok(!cancelResult.code && !cancelResult.message, `Cancel should succeed. Got: ${JSON.stringify(cancelResult)}`);
+
+  // Verify rider assignment for R1 is deleted, D1 still exists
+  const remaining = restGet("rider_assignments", { driver_assignment_id: driverAssignment.id });
+  const r1StillExists = remaining.some((ra) => ra.child_id === UID(242));
+  const d1StillExists = remaining.some((ra) => ra.child_id === UID(241));
+  assert.ok(!r1StillExists, "R1's rider assignment should be deleted");
+  assert.ok(d1StillExists, "D1's rider assignment should still exist");
+
+  // Verify audit event
+  const audits = restGet("audit_events", { group_id: GROUP_ID });
+  const cancelAudit = audits.find((a) => a.action === "ride_cancelled");
+  assert.ok(cancelAudit, "Audit event for ride_cancelled should exist");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+  deleteTestUser(rider.userId);
+});
+
+test("RPC: cancel_ride_for_child — cannot cancel another family's ride", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(43, "OtherCoord", "member", true);
+  const driver = setupHousehold(44, "OtherDriver", "member", false);
+  const rider = setupHousehold(45, "OtherRider", "member", false);
+  const attacker = setupHousehold(46, "Attacker", "member", false);
+
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const tripId = tripIds[0];
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(344)}', '${GROUP_ID}', '${driver.householdId}', 'DriverCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(244)}', '${GROUP_ID}', '${driver.householdId}', 'D1', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(245)}', '${GROUP_ID}', '${rider.householdId}', 'R1', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(544)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(545)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(544)}', '${tripId}', '${UID(244)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(545)}', '${tripId}', '${UID(245)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(544)}', '${tripId}', '${driver.userId}', '${UID(344)}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  // Generate + publish
+  const coordToken = signInUser("othercoord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Schedule generation should succeed");
+  runSql(`UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE week_id = '${weekId}' AND status = 'draft';`);
+
+  const assignments = restGet("driver_assignments", { group_id: GROUP_ID, trip_id: tripId });
+  const driverAssignment = assignments[0];
+
+  // Attacker (different household) tries to cancel rider's child
+  const attackerToken = signInUser("attacker@test.kidpool");
+  const attackerJwt = attackerToken.access_token;
+  const cancelResult = rpcCall(attackerJwt, "cancel_ride_for_child", {
+    p_child_id: UID(245),
+    p_driver_assignment_id: driverAssignment.id,
+  });
+  assert.ok(cancelResult.code || cancelResult.message, `Attacker should not be able to cancel another family's ride. Got: ${JSON.stringify(cancelResult)}`);
+
+  // Verify rider assignment still exists
+  const remaining = restGet("rider_assignments", { driver_assignment_id: driverAssignment.id });
+  const r1StillExists = remaining.some((ra) => ra.child_id === UID(245));
+  assert.ok(r1StillExists, "R1's rider assignment should still exist after attacker's failed cancel");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+  deleteTestUser(rider.userId);
+  deleteTestUser(attacker.userId);
+});
+
+test("RPC: add_ride_back_for_child — parent can re-add after cancelling", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(47, "AddBackCoord", "member", true);
+  const driver = setupHousehold(48, "AddBackDriver", "member", false);
+  const rider = setupHousehold(49, "AddBackRider", "member", false);
+
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const tripId = tripIds[0];
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(348)}', '${GROUP_ID}', '${driver.householdId}', 'DriverCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(248)}', '${GROUP_ID}', '${driver.householdId}', 'D1', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(249)}', '${GROUP_ID}', '${rider.householdId}', 'R1', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(548)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(549)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(548)}', '${tripId}', '${UID(248)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(549)}', '${tripId}', '${UID(249)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(548)}', '${tripId}', '${driver.userId}', '${UID(348)}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  // Generate + publish
+  const coordToken = signInUser("addbackcoord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Schedule generation should succeed");
+  runSql(`UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE week_id = '${weekId}' AND status = 'draft';`);
+
+  const assignments = restGet("driver_assignments", { group_id: GROUP_ID, trip_id: tripId });
+  const driverAssignment = assignments[0];
+  const versions = restGet("schedule_versions", { week_id: weekId, status: "published" });
+  const versionId = versions[0].id;
+
+  // Cancel first
+  const riderToken = signInUser("addbackrider@test.kidpool");
+  const riderJwt = riderToken.access_token;
+  rpcCall(riderJwt, "cancel_ride_for_child", {
+    p_child_id: UID(249),
+    p_driver_assignment_id: driverAssignment.id,
+  });
+
+  // Verify cancelled
+  let remaining = restGet("rider_assignments", { driver_assignment_id: driverAssignment.id });
+  assert.ok(!remaining.some((ra) => ra.child_id === UID(249)), "R1 should be cancelled");
+
+  // Add ride back
+  const addResult = rpcCall(riderJwt, "add_ride_back_for_child", {
+    p_child_id: UID(249),
+    p_driver_assignment_id: driverAssignment.id,
+    p_trip_id: tripId,
+    p_schedule_version_id: versionId,
+    p_group_id: GROUP_ID,
+  });
+  assert.ok(!addResult.code && !addResult.message, `Add ride back should succeed. Got: ${JSON.stringify(addResult)}`);
+
+  // Verify re-created
+  remaining = restGet("rider_assignments", { driver_assignment_id: driverAssignment.id });
+  const r1Exists = remaining.some((ra) => ra.child_id === UID(249));
+  assert.ok(r1Exists, "R1's rider assignment should be re-created");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+  deleteTestUser(rider.userId);
+});
+
+test("RPC: add_ride_back_for_child — idempotent (calling twice doesn't duplicate)", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(50, "IdempotentCoord", "member", true);
+  const driver = setupHousehold(51, "IdempotentDriver", "member", false);
+  const rider = setupHousehold(52, "IdempotentRider", "member", false);
+
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const tripId = tripIds[0];
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(351)}', '${GROUP_ID}', '${driver.householdId}', 'DriverCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(251)}', '${GROUP_ID}', '${driver.householdId}', 'D1', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(252)}', '${GROUP_ID}', '${rider.householdId}', 'R1', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(551)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(552)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(551)}', '${tripId}', '${UID(251)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(552)}', '${tripId}', '${UID(252)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(551)}', '${tripId}', '${driver.userId}', '${UID(351)}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  // Generate + publish
+  const coordToken = signInUser("idempotentcoord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Schedule generation should succeed");
+  runSql(`UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE week_id = '${weekId}' AND status = 'draft';`);
+
+  const assignments = restGet("driver_assignments", { group_id: GROUP_ID, trip_id: tripId });
+  const driverAssignment = assignments[0];
+  const versions = restGet("schedule_versions", { week_id: weekId, status: "published" });
+  const versionId = versions[0].id;
+
+  // Cancel + add back
+  const riderToken = signInUser("idempotentrider@test.kidpool");
+  const riderJwt = riderToken.access_token;
+  rpcCall(riderJwt, "cancel_ride_for_child", { p_child_id: UID(252), p_driver_assignment_id: driverAssignment.id });
+  rpcCall(riderJwt, "add_ride_back_for_child", { p_child_id: UID(252), p_driver_assignment_id: driverAssignment.id, p_trip_id: tripId, p_schedule_version_id: versionId, p_group_id: GROUP_ID });
+
+  // Call add back again (should not duplicate)
+  rpcCall(riderJwt, "add_ride_back_for_child", { p_child_id: UID(252), p_driver_assignment_id: driverAssignment.id, p_trip_id: tripId, p_schedule_version_id: versionId, p_group_id: GROUP_ID });
+
+  // Verify only 1 rider assignment for R1
+  const remaining = restGet("rider_assignments", { driver_assignment_id: driverAssignment.id, child_id: UID(252) });
+  assert.equal(remaining.length, 1, `Should have exactly 1 rider assignment for R1 (idempotent). Got ${remaining.length}`);
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+  deleteTestUser(rider.userId);
+});
+
+test("RPC: scheduler still works after parent cancels a ride", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(53, "SchedCoord", "member", true);
+  const driver = setupHousehold(54, "SchedDriver", "member", false);
+  const rider = setupHousehold(55, "SchedRider", "member", false);
+
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const tripId = tripIds[0];
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(354)}', '${GROUP_ID}', '${driver.householdId}', 'DriverCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(254)}', '${GROUP_ID}', '${driver.householdId}', 'D1', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(255)}', '${GROUP_ID}', '${rider.householdId}', 'R1', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(554)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(555)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(554)}', '${tripId}', '${UID(254)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(555)}', '${tripId}', '${UID(255)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(554)}', '${tripId}', '${driver.userId}', '${UID(354)}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  // Generate + publish
+  const coordToken = signInUser("schedcoord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Schedule generation should succeed");
+  runSql(`UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE week_id = '${weekId}' AND status = 'draft';`);
+
+  // Cancel rider's ride
+  const assignments = restGet("driver_assignments", { group_id: GROUP_ID, trip_id: tripId });
+  const driverAssignment = assignments[0];
+  const riderToken = signInUser("schedrider@test.kidpool");
+  const riderJwt = riderToken.access_token;
+  rpcCall(riderJwt, "cancel_ride_for_child", { p_child_id: UID(255), p_driver_assignment_id: driverAssignment.id });
+
+  // Regenerate schedule — should succeed and re-create the rider
+  const regenResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(regenResult.success, "Schedule regeneration should succeed after cancel");
+
+  // Verify new version has rider assignment for R1
+  const versions = restGet("schedule_versions", { week_id: weekId });
+  const latestVersion = versions.sort((a, b) => b.version_number - a.version_number)[0];
+  const newAssignments = restGet("driver_assignments", { schedule_version_id: latestVersion.id, trip_id: tripId });
+  assert.ok(newAssignments.length > 0, "New version should have driver assignments");
+  const newRiderAssignments = restGet("rider_assignments", { driver_assignment_id: newAssignments[0].id });
+  const r1Reassigned = newRiderAssignments.some((ra) => ra.child_id === UID(255));
+  assert.ok(r1Reassigned, "R1 should be re-assigned in the new version (scheduler reads ride_requests, not rider_assignments)");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+  deleteTestUser(rider.userId);
+});
