@@ -526,6 +526,20 @@ export type Database = {
         Args: { target_assignment_id: string };
         Returns: DriverAssignmentRow;
       };
+      cancel_ride_for_child: {
+        Args: { p_child_id: string; p_driver_assignment_id: string };
+        Returns: void;
+      };
+      add_ride_back_for_child: {
+        Args: {
+          p_child_id: string;
+          p_driver_assignment_id: string;
+          p_trip_id: string;
+          p_schedule_version_id: string;
+          p_group_id: string;
+        };
+        Returns: void;
+      };
       volunteer_for_uncovered_trip: {
         Args: { p_trip_id: string; p_schedule_version_id: string };
         Returns: DriverAssignmentRow;
