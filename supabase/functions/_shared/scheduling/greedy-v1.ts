@@ -70,8 +70,11 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
     const riders = inputs.rideRequests
       .filter((r) => r.trip_id === trip.id && r.needs_ride)
       .map((r) => childById.get(r.child_id))
-      .filter((c): c is SchedulingChild => c !== undefined)
-      .sort((a, b) => childSortKey(a).localeCompare(childSortKey(b)));
+.filter((c): c is SchedulingChild => c !== undefined)
+    // ↑ Drops ride requests for deactivated children (childById only contains
+    // active=true children). See deactivateChild in carpool-repository.ts
+    // for the known data-hygiene gap — stale rows stay in the DB.
+    .sort((a, b) => childSortKey(a).localeCompare(childSortKey(b)));
 
     const eligibleAvailability = inputs.availability.filter(
       (a): a is SchedulingAvailability & { vehicle_id: string } =>
