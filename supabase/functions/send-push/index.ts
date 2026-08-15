@@ -1280,6 +1280,111 @@ Questions? Reply to this email or check the FAQ in the app.`;
       return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
     }
 
+    // ── rider_cancelled: "child won't be riding" email + push to driver ──
+    // Triggered when a parent cancels their child's ride via the Today card.
+    // The client calls sendPushNotification(assignment_id, null, "rider_cancelled", child_id).
+    if (type === "rider_cancelled" && assignment_id) {
+      const childId: string | undefined = body.child_id;
+      if (!childId) return jsonError("Missing child_id for rider_cancelled", 400);
+
+      // Load the driver assignment → trip + driver profile
+      const daRows = await supaFetch("driver_assignments", "id,trip_id,driver_profile_id,group_id,schedule_version_id", { id: `eq.${assignment_id}` });
+      if (daRows.length === 0) return jsonError("Driver assignment not found", 404);
+      const da = daRows[0];
+
+      // Load the trip
+      const tripRows = await supaFetch("trips", "service_date,direction,meeting_time,origin,destination", { id: `eq.${da.trip_id}` });
+      if (tripRows.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripRows[0];
+
+      // Load the child
+      const childRows = await supaFetch("children", "first_name,last_name", { id: `eq.${childId}` });
+      if (childRows.length === 0) return jsonError("Child not found", 404);
+      const child = childRows[0];
+      const childName = `${child.first_name} ${child.last_name}`;
+
+      // Load the driver's profile for email
+      const driverRows = await supaFetch("profiles", "id,full_name,email", { id: `eq.${da.driver_profile_id}` });
+      if (driverRows.length === 0) return jsonError("Driver profile not found", 404);
+      const driver = driverRows[0];
+      if (isTestEmail(driver.email)) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
+      }
+
+      const dirLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
+      const tripDate = new Date(trip.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+      const cta = APP_URL
+        ? `<p style="margin:24px 0 0;"><a href="${APP_URL}" style="display:inline-block;padding:10px 24px;background:#118b8c;color:#fff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">Open the app</a></p>`
+        : "";
+
+      const htmlBody = `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">
+<h1 style="font-size:22px;margin:0 0 16px;">Ride update</h1>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>${escapeHtml(childName)}</strong> won't be riding ${escapeHtml(dirLabel.toLowerCase())} on ${escapeHtml(tripDate)}.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Their parent cancelled this ride. You're still scheduled to drive — other children may still need a ride.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Trip: ${escapeHtml(trip.meeting_time)} · ${escapeHtml(trip.origin)} → ${escapeHtml(trip.destination)}</p>
+${cta}
+</body></html>`;
+
+      const textBody = `Ride update
+
+${childName} won't be riding ${dirLabel.toLowerCase()} on ${tripDate}.
+
+Their parent cancelled this ride. You're still scheduled to drive — other children may still need a ride.
+
+Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
+
+      let emailSent = 0;
+      let emailFailed = 0;
+      if (RESEND_API_KEY) {
+        try {
+          const resp = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": `rider-cancelled-${assignment_id}-${childId}`,
+            },
+            body: JSON.stringify({
+              from: RESEND_FROM_EMAIL,
+              to: driver.email,
+              reply_to: RESEND_REPLY_TO || undefined,
+              subject: `${childName} won't be riding ${dirLabel} — ${tripDate}`,
+              html: htmlBody,
+              text: textBody,
+              tags: [
+                { name: "type", value: "rider_cancelled" },
+                { name: "group", value: da.group_id },
+              ],
+            }),
+          });
+          if (!resp.ok) {
+            console.error("[send-push] rider_cancelled email failed:", await resp.text());
+            emailFailed++;
+          } else {
+            emailSent++;
+          }
+        } catch (e) {
+          console.error(`[send-push] rider_cancelled email to ${driver.email} threw:`, e);
+          emailFailed++;
+        }
+      }
+
+      // Send push notification to the driver
+      let sent = 0;
+      let failed = 0;
+      const pushTitle = `${childName} won't be riding ${dirLabel.toLowerCase()}`;
+      const pushBody = `Their parent cancelled this ride for ${tripDate}.`;
+      try {
+        await sendEmailAndPush(da.driver_profile_id, pushTitle, pushBody, `rider-cancelled-${assignment_id}-${childId}`, `rider-cancelled-${assignment_id}-${childId}`, da.group_id);
+        sent++;
+      } catch (e) {
+        console.error("[send-push] rider_cancelled push failed:", e);
+        failed++;
+      }
+
+      return jsonResponse({ sent, failed, email_sent: emailSent, email_failed: emailFailed });
+    }
+
     let recipientProfileIds: string[] = [];
     let title = "";
     let bodyText = "";

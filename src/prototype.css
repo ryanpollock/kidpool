@@ -2932,6 +2932,157 @@ a.directory-contact-item:hover {
   gap: 8px;
 }
 
+.today-card {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: white;
+}
+
+.today-card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.today-card-header strong {
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.today-card-header span {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.today-card-trip {
+  padding: 10px 0;
+}
+
+.today-card-trip + .today-card-trip {
+  border-top: 1px solid var(--line);
+}
+
+.today-card-trip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.today-card-trip-header span {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.today-card-trip-header small {
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.today-card-ride {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  font-size: 13px;
+}
+
+.today-card-ride--driving {
+  color: var(--teal);
+}
+
+.today-card-ride--cancelled {
+  opacity: 0.7;
+}
+
+.today-card-ride--none {
+  color: var(--ink-soft);
+}
+
+.today-card-ride span {
+  font-size: 13px;
+}
+
+.today-card-ride small {
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.today-card-drive-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--teal);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.today-card-cancel-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-soft);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.today-card-cancel-link:active {
+  opacity: 0.6;
+}
+
+.today-card-addback-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--teal);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.today-card-addback-link:active {
+  opacity: 0.6;
+}
+
+.today-card-cancel-confirm {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--amber);
+  border-radius: 10px;
+  background: var(--amber-pale);
+}
+
+.today-card-cancel-confirm p {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #785b2a;
+  margin: 0 0 8px;
+}
+
+.today-card-cancel-confirm button {
+  margin-right: 8px;
+}
+
 .decline-alert {
   margin-top: 16px;
   padding: 15px 16px;

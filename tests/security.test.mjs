@@ -27,6 +27,10 @@ const exchange6Url = new URL(
   "../supabase/migrations/202607310001_exchange_6_confirmation_reason.sql",
   import.meta.url,
 );
+const cancelRideMigrationUrl = new URL(
+  "../supabase/migrations/202608150002_cancel_ride_rpc.sql",
+  import.meta.url,
+);
 
 const protectedTables = [
   "profiles",
@@ -262,4 +266,22 @@ test("Exchange 7 join_household_by_code RPC authenticates before write", async (
   const sql = await loadSql();
   assert.match(sql, /join_household_by_code[\s\S]*?security definer/);
   assert.match(sql, /join_household_by_code[\s\S]*?if auth\.uid\(\) is null then/);
+});
+
+test("cancel_ride_for_child RPC is security definer and enforces household membership", async () => {
+  const sql = await readFile(cancelRideMigrationUrl, "utf8");
+  assert.match(sql, /security definer/);
+  assert.match(sql, /if auth\.uid\(\) is null then/);
+  assert.match(sql, /is_household_member/);
+  assert.match(sql, /insert into public\.audit_events/);
+  assert.match(sql, /ride_cancelled/);
+});
+
+test("add_ride_back_for_child RPC is security definer, enforces household membership, and is idempotent", async () => {
+  const sql = await readFile(cancelRideMigrationUrl, "utf8");
+  assert.match(sql, /add_ride_back_for_child[\s\S]*?security definer/);
+  assert.match(sql, /add_ride_back_for_child[\s\S]*?if auth\.uid\(\) is null then/);
+  assert.match(sql, /add_ride_back_for_child[\s\S]*?is_household_member/);
+  assert.match(sql, /on conflict do nothing/i);
+  assert.match(sql, /add_ride_back_for_child[\s\S]*?insert into public\.audit_events/);
 });

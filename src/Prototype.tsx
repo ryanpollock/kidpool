@@ -1147,6 +1147,10 @@ function HomeScreen({
   todayDate,
   onOpenDrive,
   showAvatarNudge,
+  householdId,
+  householdChildren,
+  onCancelRide,
+  onAddRideBack,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -1189,9 +1193,16 @@ function HomeScreen({
   todayDate: string;
   onOpenDrive: (assignmentId: string) => void;
   showAvatarNudge: boolean;
+  householdId: string | null;
+  householdChildren: Tables<"children">[];
+  onCancelRide: (childId: string, driverAssignmentId: string, childName: string) => Promise<void>;
+  onAddRideBack: (childId: string, driverAssignmentId: string, tripId: string, versionId: string, groupId: string) => Promise<void>;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const [cancelingId, setCancelingId] = useState<string | null>(null);
+  const [cancelledRides, setCancelledRides] = useState<Set<string>>(new Set());
+  const [cancellingRideKey, setCancellingRideKey] = useState<string | null>(null);
+  const [rideWorking, setRideWorking] = useState(false);
   const activeAssignments = myAssignments.filter(
     (a) => a.assignment.status !== "declined" && a.assignment.status !== "released" && a.assignment.status !== "expired",
   );
@@ -1397,6 +1408,161 @@ function HomeScreen({
       )}
 
       {confirmError ? <div className="auth-error" role="alert">{confirmError}</div> : null}
+
+      {(() => {
+        if (!schedulePublished || !homeSchedule || !householdId || householdChildren.length === 0) return null;
+        const todaysTrips = homeSchedule.trips
+          .filter(t => t.service_date === todayDate)
+          .sort((a, b) => a.direction === "morning" ? -1 : 1);
+        if (todaysTrips.length === 0) return null;
+        const todayInfo = formatTripDate(todayDate);
+        return (
+          <section className="today-card" data-testid="today-card">
+            <div className="today-card-header">
+              <strong>Today — {todayInfo.weekdayFull}</strong>
+              <span>{todayInfo.short}</span>
+            </div>
+            {todaysTrips.map((trip) => {
+              const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
+              const periodLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
+              const rosters = (homeSchedule.rostersByTrip.get(trip.id) ?? [])
+                .filter(r => r.driverAssignment.status === "tentative" || r.driverAssignment.status === "confirmed");
+              const isUserDrivingThisTrip = myAssignments.some(a =>
+                a.trip.id === trip.id &&
+                a.assignment.status !== "declined" &&
+                a.assignment.status !== "released" &&
+                a.assignment.status !== "expired"
+              );
+              return (
+                <div className="today-card-trip" key={trip.id}>
+                  <div className="today-card-trip-header">
+                    <PeriodIcon width="16" height="16" />
+                    <span>{periodLabel}</span>
+                    <small>{trip.meeting_time} · {trip.origin} → {trip.destination}</small>
+                  </div>
+                  {isUserDrivingThisTrip ? (
+                    <div className="today-card-ride today-card-ride--driving">
+                      <strong>You're driving</strong>
+                      {(() => {
+                        const myTripAssignment = myAssignments.find(a =>
+                          a.trip.id === trip.id &&
+                          a.assignment.status !== "declined" &&
+                          a.assignment.status !== "released" &&
+                          a.assignment.status !== "expired"
+                        );
+                        return myTripAssignment ? (
+                          <button
+                            className="today-card-drive-link"
+                            onClick={() => onOpenDrive(myTripAssignment.assignment.id)}
+                          >
+                            {myTripAssignment.children.length} rider{myTripAssignment.children.length !== 1 ? "s" : ""} · tap for roster <ChevronRightIcon />
+                          </button>
+                        ) : null;
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="today-card-children">
+                      {householdChildren.map((child) => {
+                        const rideKey = `${child.id}:${trip.id}`;
+                        const roster = rosters.find(r =>
+                          r.children.some(c => c.id === child.id)
+                        );
+                        const isCancelling = cancellingRideKey === `${child.id}:${trip.id}:${roster?.driverAssignment.id ?? ""}`;
+                        if (roster) {
+                          return (
+                            <div className="today-card-ride" key={child.id}>
+                              <span>
+                                <strong>{child.first_name}</strong> riding with{" "}
+                                <strong>{roster.driverProfile.full_name}</strong>
+                              </span>
+                              <small>{roster.vehicle.label}</small>
+                              {isCancelling ? (
+                                <div className="today-card-cancel-confirm" data-testid={`cancel-ride-confirm-${child.id}`}>
+                                  <p>Cancel {child.first_name}'s ride? {roster.driverProfile.full_name} will be notified.</p>
+                                  <button
+                                    className="decline-button"
+                                    data-testid={`confirm-cancel-ride-${child.id}`}
+                                    disabled={rideWorking}
+                                    onClick={async () => {
+                                      setRideWorking(true);
+                                      try {
+                                        await onCancelRide(child.id, roster.driverAssignment.id, `${child.first_name} ${child.last_name}`);
+                                        setCancelledRides(prev => new Set(prev).add(rideKey));
+                                        setCancellingRideKey(null);
+                                      } catch (e) {
+                                        console.error("[carpool] cancel ride failed:", e);
+                                      } finally {
+                                        setRideWorking(false);
+                                      }
+                                    }}
+                                  >
+                                    {rideWorking ? "Canceling…" : "Yes, cancel ride"}
+                                  </button>
+                                  <button className="text-button" disabled={rideWorking} onClick={() => setCancellingRideKey(null)}>Keep ride</button>
+                                </div>
+                              ) : (
+                                <button
+                                  className="today-card-cancel-link"
+                                  data-testid={`cancel-ride-${child.id}`}
+                                  disabled={rideWorking}
+                                  onClick={() => setCancellingRideKey(`${child.id}:${trip.id}:${roster.driverAssignment.id}`)}
+                                >
+                                  Cancel {child.first_name}'s ride
+                                </button>
+                              )}
+                            </div>
+                          );
+                        }
+                        if (cancelledRides.has(rideKey)) {
+                          return (
+                            <div className="today-card-ride today-card-ride--cancelled" key={child.id}>
+                              <span><strong>{child.first_name}'s</strong> ride cancelled</span>
+                              <button
+                                className="today-card-addback-link"
+                                data-testid={`add-ride-back-${child.id}`}
+                                disabled={rideWorking}
+                                onClick={async () => {
+                                  if (!homeSchedule) return;
+                                  setRideWorking(true);
+                                  try {
+                                    await onAddRideBack(
+                                      child.id,
+                                      rosters[0]?.driverAssignment.id ?? "",
+                                      trip.id,
+                                      homeSchedule.version.id,
+                                      homeSchedule.version.group_id,
+                                    );
+                                    setCancelledRides(prev => {
+                                      const next = new Set(prev);
+                                      next.delete(rideKey);
+                                      return next;
+                                    });
+                                  } catch (e) {
+                                    console.error("[carpool] add ride back failed:", e);
+                                  } finally {
+                                    setRideWorking(false);
+                                  }
+                                }}
+                              >
+                                Add {child.first_name}'s ride back
+                              </button>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="today-card-ride today-card-ride--none" key={child.id}>
+                            <span>No ride scheduled for <strong>{child.first_name}</strong></span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </section>
+        );
+      })()}
 
       {declinedAlerts.length > 0 ? (
         <section className="decline-alert" data-testid="decline-alert" aria-labelledby="decline-alert-heading">
@@ -5450,6 +5616,17 @@ const navItems = useMemo(() => {
         todayDate={todayDate}
         onOpenDrive={(id) => setDriveDetailId(id)}
         showAvatarNudge={shouldShowAvatarNudge}
+        householdId={householdId ?? null}
+        householdChildren={householdId ? groupChildren.filter(c => c.household_id === householdId) : []}
+        onCancelRide={async (childId, driverAssignmentId, childName) => {
+          await repository.cancelRideForChild(childId, driverAssignmentId);
+          void repository.sendPushNotification(driverAssignmentId, null, "rider_cancelled", childId);
+          await loadHomeSchedule();
+        }}
+        onAddRideBack={async (childId, driverAssignmentId, tripId, versionId, groupId) => {
+          await repository.addRideBackForChild(childId, driverAssignmentId, tripId, versionId, groupId);
+          await loadHomeSchedule();
+        }}
       />
     );
   };

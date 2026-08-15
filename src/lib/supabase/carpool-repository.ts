@@ -1212,6 +1212,33 @@ export class CarpoolRepository {
     );
   }
 
+  async cancelRideForChild(childId: string, driverAssignmentId: string): Promise<void> {
+    await unwrap(
+      await this.client.rpc("cancel_ride_for_child", {
+        p_child_id: childId,
+        p_driver_assignment_id: driverAssignmentId,
+      }),
+    );
+  }
+
+  async addRideBackForChild(
+    childId: string,
+    driverAssignmentId: string,
+    tripId: string,
+    scheduleVersionId: string,
+    groupId: string,
+  ): Promise<void> {
+    await unwrap(
+      await this.client.rpc("add_ride_back_for_child", {
+        p_child_id: childId,
+        p_driver_assignment_id: driverAssignmentId,
+        p_trip_id: tripId,
+        p_schedule_version_id: scheduleVersionId,
+        p_group_id: groupId,
+      }),
+    );
+  }
+
   async manuallyAssignDriver(
     tripId: string,
     scheduleVersionId: string,
@@ -1607,11 +1634,12 @@ export class CarpoolRepository {
   async sendPushNotification(
     assignmentId: string | null,
     versionId: string | null,
-    type: "declined" | "uncovered" | "published" | "volunteered" | "admin_escalation" | "manually_assigned" | "drive_confirmed" | "drive_cancelled",
+    type: "declined" | "uncovered" | "published" | "volunteered" | "admin_escalation" | "manually_assigned" | "drive_confirmed" | "drive_cancelled" | "rider_cancelled",
+    childId?: string,
   ): Promise<void> {
     try {
       await this.client.functions.invoke("send-push", {
-        body: { assignment_id: assignmentId, version_id: versionId, type },
+        body: { assignment_id: assignmentId, version_id: versionId, type, child_id: childId },
       });
     } catch (err) {
       console.error("[carpool] send-push invocation failed:", err);
