@@ -1838,7 +1838,8 @@ function PlanScreen({
   const [coParentUpdate, setCoParentUpdate] = useState<string | null>(null);
 
   const submitted = checkin?.status === "submitted";
-  const locked = submitted || weekPublished || weekStarted;
+  const rideLocked = submitted || weekPublished || weekStarted;
+  const driveLocked = weekPublished || weekStarted;
   const children = setup?.children ?? [];
   const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
 
@@ -1987,7 +1988,7 @@ function PlanScreen({
   }
 
   const toggleRide = async (tripId: string, childId: string) => {
-    if (locked || !checkin) return;
+    if (rideLocked || !checkin) return;
     const key = `${tripId}:${childId}`;
     const current = rideMap.get(key) ?? false;
     try {
@@ -1999,7 +2000,7 @@ function PlanScreen({
   };
 
   const setDrivePreference = async (tripId: string, pref: DrivePreference) => {
-    if (locked || !checkin) return;
+    if (driveLocked || !checkin) return;
     if (pref !== "cannot" && !activeVehicle) {
       setSubmitError("Add a vehicle in your account before volunteering to drive.");
       return;
@@ -2097,20 +2098,34 @@ function PlanScreen({
       ) : submitted ? (
         <div className="success-banner">
           <CheckCircledIcon width="24" height="24" />
-          <span><strong>Week submitted</strong><small>Your check-in is locked. Reopen to make changes.</small></span>
+          <span><strong>Week submitted</strong><small>Ride needs are locked. You can still edit your driving below. Reopen to change ride needs.</small></span>
+        </div>
+      ) : null}
+
+      {!rideLocked ? (
+        <div className="checkin-nudge" data-testid="checkin-nudge">
+          <strong>One parent needs to submit</strong>
+          <span>Review ride needs and driving, then tap Submit. The coordinator builds the schedule from submitted check-ins.</span>
+        </div>
+      ) : null}
+
+      {!driveLocked ? (
+        <div className="checkin-info">
+          <strong>How check-in works</strong>
+          <span>Both parents can edit ride needs for the kids. Driving availability is per-parent — each parent sets their own. One parent submits for the household.</span>
         </div>
       ) : null}
 
       {submitError ? <div className="auth-error" role="alert">{submitError}</div> : null}
 
-      {!locked ? (
+      {!rideLocked ? (
         <div className="checkin-summary">
           <span><strong>{[...rideMap.values()].filter(Boolean).length}</strong> rides needed</span>
           <span><strong>{[...driveMap.values()].filter((p) => p !== "cannot").length}</strong> trips you can drive</span>
         </div>
       ) : null}
 
-      {!locked ? (
+      {!rideLocked ? (
         children.map((child) => {
           const childRides = week.trips.filter((t) => rideMap.get(`${t.id}:${child.id}`)).length;
           if (childRides > 0) return null;
@@ -2150,7 +2165,7 @@ function PlanScreen({
                       <button
                         key={child.id}
                         className={riding ? "ride-pill ride-pill--on" : "ride-pill"}
-                        disabled={locked}
+                        disabled={rideLocked}
                         onClick={() => void toggleRide(trip.id, child.id)}
                         aria-pressed={riding}
                         aria-label={`${child.first_name} ${riding ? "needs a ride" : "does not need a ride"}`}
@@ -2165,6 +2180,7 @@ function PlanScreen({
 
               <div className="checkin-section">
                 <span className="checkin-section-label">Your driving</span>
+                {submitted && !driveLocked ? <small className="drive-editable-note">Editable — adjust anytime before the week starts</small> : null}
                 <div
                   className="drive-segments"
                   role="group"
@@ -2178,7 +2194,7 @@ function PlanScreen({
                       <button
                         key={pref}
                         className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
-                        disabled={locked || busy}
+                        disabled={driveLocked || busy}
                         onClick={() => void setDrivePreference(trip.id, pref)}
                         aria-pressed={active}
                         aria-label={preferenceLabel(pref)}
@@ -2215,7 +2231,7 @@ function PlanScreen({
 
       {weekPublished || weekStarted ? null : submitted ? (
         <button className="secondary-button" disabled={submitting} onClick={() => void reopen()}>
-          {submitting ? "Reopening…" : "Reopen my check-in"}
+          {submitting ? "Reopening…" : "Reopen to change ride needs"}
         </button>
       ) : (
         (() => {

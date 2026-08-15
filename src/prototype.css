@@ -2394,6 +2394,57 @@ a.directory-contact-item:hover {
   color: var(--amber);
 }
 
+.checkin-nudge {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  background: var(--amber-pale);
+  border: 1px solid #e2c889;
+}
+
+.checkin-nudge strong {
+  font-size: 14px;
+  color: var(--amber);
+}
+
+.checkin-nudge span {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.checkin-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  background: var(--teal-pale);
+  border: 1px solid rgba(17, 139, 140, 0.2);
+}
+
+.checkin-info strong {
+  font-size: 13px;
+  color: var(--teal);
+}
+
+.checkin-info span {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.drive-editable-note {
+  font-size: 10px;
+  color: var(--teal);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
 .drive-segments {
   display: flex;
   gap: 4px;
