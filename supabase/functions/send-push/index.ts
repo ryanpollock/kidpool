@@ -682,7 +682,13 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const deadlineDate = new Date(week.confirmation_deadline);
       const deadlineParts = pacificParts(deadlineDate, true);
       const deadlineStr = `${parseInt(deadlineParts.month, 10)}/${parseInt(deadlineParts.day, 10)}`;
-      const deadlineTimeStr = `${parseInt(deadlineParts.hour, 10)}:${deadlineParts.minute} ${deadlineParts.hour === "00" || (parseInt(deadlineParts.hour, 10) >= 12 && parseInt(deadlineParts.hour, 10) < 24) ? "PM" : "AM"}`;
+      const deadlineHour = parseInt(deadlineParts.hour, 10);
+      const deadlineMinute = parseInt(deadlineParts.minute, 10);
+      const deadlineAmpm = deadlineHour >= 12 ? "PM" : "AM";
+      const deadlineHour12 = deadlineHour % 12 === 0 ? 12 : deadlineHour % 12;
+      const deadlineTimeStr = deadlineMinute === 0
+        ? `${deadlineHour12} ${deadlineAmpm}`
+        : `${deadlineHour12}:${String(deadlineMinute).padStart(2, "0")} ${deadlineAmpm}`;
 
       // Build roster HTML and text — per day, morning + afternoon
       const rosterHtmlLines: string[] = [];
