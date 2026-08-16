@@ -70,6 +70,10 @@ const backpackSheetMigrationUrl = new URL(
   "../supabase/migrations/202608160003_backpack_sheet_cron.sql",
   import.meta.url,
 );
+const surgicalSundayCronMigrationUrl = new URL(
+  "../supabase/migrations/202608160004_surgical_sunday_evening_cron.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -1034,4 +1038,45 @@ test("backpack_sheet: cron migration creates wrapper function + 7 AM Pacific Mon
   // 7 AM Pacific Mon–Fri, DST-proofed dual UTC (14:00 and 15:00 UTC)
   assert.match(sql, /0 14,15 \* \* 1-5/);
   assert.match(sql, /backpack-sheet/);
+});
+
+// ─── Surgical Sunday evening cron ──────────────────────────────
+
+test("surgical_sunday: Edge Function has mode param + surgical branch", async () => {
+  const ts = await readFile(generateScheduleUrl, "utf8");
+
+  // Parses mode from body
+  assert.match(ts, /mode/);
+
+  // Has the surgical branch
+  assert.match(ts, /mode === "surgical"/);
+
+  // Surgical mode preserves confirmed assignments (doesn't run generateSchedule)
+  assert.match(ts, /SchedulingOutputs/);
+  assert.match(ts, /surgical/);
+
+  // Falls back to full generation when not surgical
+  assert.match(ts, /generateSchedule\(inputs\)/);
+});
+
+test("surgical_sunday: cron migration creates publish_and_update_schedule wrapper", async () => {
+  const sql = await readFile(surgicalSundayCronMigrationUrl, "utf8");
+
+  // Creates the new wrapper function
+  assert.match(sql, /create or replace function public\.publish_and_update_schedule/);
+  assert.match(sql, /security definer/);
+
+  // POSTs to /generate-schedule with mode: "surgical"
+  assert.match(sql, /'\/generate-schedule'/);
+  assert.match(sql, /'mode', 'surgical'/);
+
+  // Revokes public access
+  assert.match(sql, /revoke all on function public\.publish_and_update_schedule/);
+
+  // Unschedules old generate-schedule-sunday
+  assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
+
+  // Reschedules with the new wrapper at same time (8:30 PM Pacific)
+  assert.match(sql, /30 3,4 \* \* 1/);
+  assert.match(sql, /publish_and_update_schedule/);
 });
