@@ -28,6 +28,7 @@ import type {
   SchedulingAvailability,
   SchedulingChild,
   SchedulingInputs,
+  SchedulingOutputs,
   SchedulingProfile,
   SchedulingRideRequest,
   SchedulingTrip,
@@ -43,10 +44,12 @@ Deno.serve(async (req: Request) => {
     // ── Parse and validate request body ──────────────────────────
     let weekId: unknown;
     let source: string | undefined;
+    let mode: string | undefined;
     try {
       const body = await req.json();
       weekId = body?.weekId;
       source = body?.source;
+      mode = body?.mode;
     } catch {
       return jsonError("Missing or invalid request body.", 400);
     }
@@ -304,7 +307,7 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // ── Run the algorithm ────────────────────────────────────────
+    // ── Run the algorithm (full or surgical) ────────────────────
     const inputs: SchedulingInputs = {
       trips,
       children,
@@ -318,7 +321,126 @@ Deno.serve(async (req: Request) => {
       expiredTripsByDriver,
     };
 
-    const outputs = generateSchedule(inputs);
+    let outputs: SchedulingOutputs;
+
+    if (mode === "surgical" && latestVersion && latestVersion.id) {
+      // Surgical mode: preserve confirmed assignments, fit new riders into
+      // spare capacity. Does NOT run the greedy scheduler — the morning draft
+      // already did the optimization. This only handles the delta: late
+      // check-ins and driver confirmations since the draft was generated.
+      const priorVersionId = latestVersion.id;
+
+      // Load rider_assignments for the prior version (to know which kids
+      // are in which confirmed cars)
+      const { data: priorRiderAssignments, error: riderError } = await supabase
+        .from("rider_assignments")
+        .select("child_id, driver_assignment_id")
+        .eq("schedule_version_id", priorVersionId)
+        .eq("group_id", groupId);
+      if (riderError) return jsonError("Failed to load prior rider assignments.", 500);
+
+      // Map: driver_assignment_id → child_ids (from prior version, confirmed only)
+      const confirmedDAIds = new Set(
+        priorDriverAssignments.filter((a) => a.status === "confirmed").map((a) => a.id),
+      );
+      const ridersByDA = new Map<string, string[]>();
+      for (const ra of priorRiderAssignments ?? []) {
+        if (!confirmedDAIds.has(ra.driver_assignment_id)) continue;
+        const arr = ridersByDA.get(ra.driver_assignment_id) ?? [];
+        arr.push(ra.child_id);
+        ridersByDA.set(ra.driver_assignment_id, arr);
+      }
+
+      // Build per-trip ride request sets (from submitted check-ins, matching the scheduler)
+      const rideRequestChildIdsByTrip = new Map<string, Set<string>>();
+      for (const rr of rideRequests) {
+        if (!rr.needs_ride) continue;
+        const set = rideRequestChildIdsByTrip.get(rr.trip_id) ?? new Set<string>();
+        set.add(rr.child_id);
+        rideRequestChildIdsByTrip.set(rr.trip_id, set);
+      }
+
+      // Map: child_id → vehicle capacity for the confirmed car they're in
+      // (for checking spare capacity when fitting new riders)
+      const childByIdMap = new Map(children.map((c) => [c.id, c]));
+      const vehicleByIdMap = new Map(vehicles.map((v) => [v.id, v]));
+
+      // Build surgical outputs: copy confirmed assignments, add new riders
+      // to cars with spare capacity
+      const tripResults = trips.map((trip) => {
+        const tripConfirmedDAs = priorDriverAssignments.filter(
+          (a) => a.trip_id === trip.id && a.status === "confirmed",
+        );
+
+        // All children who need a ride on this trip (from submitted check-ins)
+        const neededChildIds = rideRequestChildIdsByTrip.get(trip.id) ?? new Set<string>();
+
+        // Children already covered by confirmed assignments
+        const coveredChildIds = new Set<string>();
+        for (const da of tripConfirmedDAs) {
+          const kids = ridersByDA.get(da.id) ?? [];
+          for (const kidId of kids) coveredChildIds.add(kidId);
+        }
+
+        // Uncovered: need a ride but not in any confirmed car
+        const uncoveredChildIds = [...neededChildIds].filter((id) => !coveredChildIds.has(id));
+
+        // Try to fit uncovered riders into confirmed cars with spare capacity
+        const remainingUncovered = new Set(uncoveredChildIds);
+        const assignments = tripConfirmedDAs.map((da) => {
+          const vehicle = vehicleByIdMap.get(da.vehicle_id);
+          const capacity = vehicle?.child_passenger_capacity ?? da.child_passenger_capacity;
+          const existingKids = ridersByDA.get(da.id) ?? [];
+          const assignedChildIds = [...existingKids];
+
+          // Fill spare capacity with uncovered riders
+          for (const childId of [...remainingUncovered]) {
+            if (assignedChildIds.length >= capacity) break;
+            // Don't assign a child to their own household's car if they're
+            // already in a different car (edge case — normally they wouldn't
+            // be uncovered if their household has a confirmed car)
+            const child = childByIdMap.get(childId);
+            if (child && profileHouseholdMap.get(da.driver_profile_id) === child.household_id) {
+              // Own child — should already be in the car. Skip if somehow uncovered.
+            }
+            assignedChildIds.push(childId);
+            remainingUncovered.delete(childId);
+            coveredChildIds.add(childId);
+          }
+
+          return {
+            trip_id: trip.id,
+            driver_profile_id: da.driver_profile_id,
+            vehicle_id: da.vehicle_id,
+            child_passenger_capacity: capacity,
+            assigned_child_ids: assignedChildIds,
+            confirmed: true,
+          };
+        });
+
+        const assignedRiderCount = [...neededChildIds].filter((id) => !remainingUncovered.has(id)).length;
+        const uncoveredCount = remainingUncovered.size;
+
+        return {
+          trip_id: trip.id,
+          rider_count: neededChildIds.size,
+          assigned_rider_count: assignedRiderCount,
+          uncovered_rider_count: uncoveredCount,
+          driver_count: assignments.length,
+          seat_count: assignments.reduce((sum, a) => sum + a.child_passenger_capacity, 0),
+          assignments,
+          uncovered: uncoveredCount > 0,
+        };
+      });
+
+      outputs = {
+        trips: tripResults,
+        algorithm_version: `${ALGORITHM_VERSION}-surgical`,
+      };
+    } else {
+      // Full mode: run the greedy scheduler from scratch
+      outputs = generateSchedule(inputs);
+    }
 
     // ── Write schedule version ───────────────────────────────────
     // Always insert as draft first. Only auto-publish after assignments
