@@ -62,6 +62,10 @@ const moveNightBeforeMigrationUrl = new URL(
   "../supabase/migrations/202608140004_move_night_before_to_745pm.sql",
   import.meta.url,
 );
+const coordinatorTentativeSummaryMigrationUrl = new URL(
+  "../supabase/migrations/202608160002_coordinator_tentative_summary_cron.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -918,4 +922,56 @@ test("night-before 7:45pm: replaces hourly cron with fixed 7:45 PM schedule", as
   assert.match(sql, /45 2,3 \* \* 0-4/);
   assert.match(sql, /night-before-summary/);
   assert.match(sql, /send_night_before_summary/);
+});
+
+// ─── Sunday morning coordinator tentative summary email ───────────
+
+test("coordinator_tentative_summary: send-push has the type with coordinator targeting + draft roster", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // The type branch exists
+  assert.match(ts, /type === "coordinator_tentative_summary"/);
+
+  // Targets coordinators only (role=eq.coordinator)
+  assert.match(ts, /role: "eq\.coordinator"/);
+
+  // Loads the draft schedule version (not published)
+  assert.match(ts, /status: "eq\.draft"/);
+
+  // Loads tentative + confirmed driver assignments
+  assert.match(ts, /driver_assignments/);
+
+  // Per-week + per-date idempotency key (DST-proof dedup)
+  assert.match(ts, /coordinator-tentative-\$\{weekId\}-\$\{todayStr\}/);
+
+  // Email-only — mentions the confirmation deadline
+  assert.match(ts, /Parents must confirm their drives by Sunday/);
+
+  // Tags for Resend analytics
+  assert.match(ts, /coordinator_tentative_summary/);
+});
+
+test("coordinator_tentative_summary: cron migration creates wrapper function + Sunday 7 AM Pacific schedule", async () => {
+  const sql = await readFile(coordinatorTentativeSummaryMigrationUrl, "utf8");
+
+  // Creates the wrapper function
+  assert.match(sql, /create or replace function public\.send_coordinator_tentative_summary/);
+  assert.match(sql, /language plpgsql/);
+  assert.match(sql, /security definer/);
+
+  // Reads cron_secret + cron_edge_base_url from vault (environment-aware)
+  assert.match(sql, /vault\.decrypted_secrets/);
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
+
+  // POSTs to /send-push with type coordinator_tentative_summary
+  assert.match(sql, /'\/send-push'/);
+  assert.match(sql, /'coordinator_tentative_summary'/);
+
+  // Revokes public access
+  assert.match(sql, /revoke all on function public\.send_coordinator_tentative_summary/);
+
+  // Sunday 7 AM Pacific, DST-proofed dual UTC (14:00 and 15:00 UTC)
+  assert.match(sql, /0 14,15 \* \* 0/);
+  assert.match(sql, /coordinator-tentative-summary/);
 });
