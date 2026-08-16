@@ -926,14 +926,14 @@ test("night-before 7:45pm: replaces hourly cron with fixed 7:45 PM schedule", as
 
 // ─── Sunday morning coordinator tentative summary email ───────────
 
-test("coordinator_tentative_summary: send-push has the type with coordinator targeting + draft roster", async () => {
+test("coordinator_tentative_summary: send-push has the type with all-member targeting + draft roster", async () => {
   const ts = await readFile(sendPushUrl, "utf8");
 
   // The type branch exists
   assert.match(ts, /type === "coordinator_tentative_summary"/);
 
-  // Targets coordinators only (role=eq.coordinator)
-  assert.match(ts, /role: "eq\.coordinator"/);
+  // Targets all active members (status=eq.active, no role filter)
+  assert.match(ts, /status: "eq\.active"/);
 
   // Loads the draft schedule version (not published)
   assert.match(ts, /status: "eq\.draft"/);

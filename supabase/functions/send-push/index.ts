@@ -750,18 +750,17 @@ Questions? Reply to this email or check the FAQ in the app.`;
         pendingCheckinText = `\n\n${pendingNames.length} household(s) still checking in: ${pendingNames.join(", ")}`;
       }
 
-      // Recipients: coordinators only
+      // Recipients: all active members
       const memberships = await supaFetch("memberships", "profile_id", {
         group_id: `eq.${groupId}`,
         status: "eq.active",
-        role: "eq.coordinator",
       });
-      const coordinatorProfileIds = memberships.map((m: any) => m.profile_id);
-      if (coordinatorProfileIds.length === 0) {
-        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_coordinators" });
+      const recipientProfileIds = memberships.map((m: any) => m.profile_id);
+      if (recipientProfileIds.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_recipients" });
       }
-      const coordinatorProfiles = await supaFetch("profiles", "id,full_name,email", {
-        id: `in.(${coordinatorProfileIds.join(",")})`,
+      const recipientProfiles = await supaFetch("profiles", "id,full_name,email", {
+        id: `in.(${recipientProfileIds.join(",")})`,
       });
 
       const cta = APP_URL
@@ -773,7 +772,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const rosterHtml = rosterHtmlLines.join("");
       const rosterText = rosterTextLines.join("\n");
 
-      for (const profile of coordinatorProfiles) {
+      for (const profile of recipientProfiles) {
         if (!profile.email || isTestEmail(profile.email)) continue;
         const firstName = (profile.full_name ?? "coordinator").split(" ")[0];
 
