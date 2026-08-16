@@ -34,6 +34,34 @@ const driveReminderMigrationUrl = new URL(
   "../supabase/migrations/202608070007_drive_reminder_cron.sql",
   import.meta.url,
 );
+const publishSundayEveningMigrationUrl = new URL(
+  "../supabase/migrations/202608130001_publish_sunday_evening.sql",
+  import.meta.url,
+);
+const pgnetTimeoutMigrationUrl = new URL(
+  "../supabase/migrations/202608130002_increase_pgnet_timeout.sql",
+  import.meta.url,
+);
+const pgnetTimeoutRemainingMigrationUrl = new URL(
+  "../supabase/migrations/202608130003_increase_pgnet_timeout_remaining.sql",
+  import.meta.url,
+);
+const fixVolunteerReacceptMigrationUrl = new URL(
+  "../supabase/migrations/202608140001_fix_volunteer_reaccept.sql",
+  import.meta.url,
+);
+const allowReleasedReacceptMigrationUrl = new URL(
+  "../supabase/migrations/202608140002_allow_released_reaccept.sql",
+  import.meta.url,
+);
+const fixNotificationScheduleMigrationUrl = new URL(
+  "../supabase/migrations/202608140003_fix_notification_schedule.sql",
+  import.meta.url,
+);
+const moveNightBeforeMigrationUrl = new URL(
+  "../supabase/migrations/202608140004_move_night_before_to_745pm.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -64,7 +92,9 @@ test("schedule automation: creates cron wrapper function and two schedules", asy
   assert.match(sql, /generate-schedule-saturday/);
   assert.match(sql, /0 23 \* \* 6/);
 
-  // Sunday cron (after 8 PM Pacific in both DST and standard time)
+  // Sunday cron — originally '0 5 * * 1' here; rescheduled to 8:30 PM Pacific
+  // by 202608130001_publish_sunday_evening.sql (tested below). This assertion
+  // documents the original schedule; the reschedule test covers the new one.
   assert.match(sql, /generate-schedule-sunday/);
   assert.match(sql, /0 5 \* \* 1/);
 
@@ -78,6 +108,76 @@ test("schedule automation: creates cron wrapper function and two schedules", asy
   assert.match(sql, /distinct on \(w\.group_id\)/);
   assert.match(sql, /starts_on > \(now\(\) at time zone 'America\/Los_Angeles'\)::date/);
   assert.match(sql, /exists \(select 1 from public\.trips t where t\.week_id = w\.id\)/);
+});
+
+// ─── Sunday publish rescheduled to 8:30 PM Pacific ────────────
+
+test("schedule automation: Sunday publish rescheduled to 8:30 PM Pacific", async () => {
+  const sql = await readFile(publishSundayEveningMigrationUrl, "utf8");
+
+  // Unschedules the original Sunday cron before re-scheduling it
+  assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
+
+  // New schedule: '30 3,4 * * 1' = Mon 03:30 and 04:30 UTC
+  //   Mon 03:30 UTC = Sun 8:30 PM PDT  (first fire after 8 PM PDT deadline)
+  //   Mon 04:30 UTC = Sun 8:30 PM PST  (first fire after 8 PM PST deadline)
+  // The off-DST fire is an idempotent no-op (generate_schedule_cron self-gates
+  // on deadlinePassed && !wasPublished).
+  assert.match(sql, /30 3,4 \* \* 1/);
+  assert.match(sql, /generate_schedule_cron/);
+
+  // Saturday draft cron is NOT touched by this reschedule
+  assert.doesNotMatch(sql, /generate-schedule-saturday/);
+});
+
+// ─── pg_net timeout fix (root cause of night-before silence) ──
+
+test("pg_net timeout: all wrapper functions use 120s timeout", async () => {
+  const sql = await readFile(pgnetTimeoutMigrationUrl, "utf8");
+
+  // All three wrapper functions are rewritten with CREATE OR REPLACE
+  assert.match(sql, /create or replace function public\.send_night_before_summary\(\)/);
+  assert.match(sql, /create or replace function public\.send_drive_reminders\(\)/);
+  assert.match(sql, /create or replace function public\.generate_schedule_cron\(\)/);
+
+  // All three include timeout_milliseconds := 120000 (the fix)
+  assert.match(sql, /timeout_milliseconds := 120000/);
+
+  // All three use security definer + revoke
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_night_before_summary\(\) from public, authenticated/);
+  assert.match(sql, /revoke all on function public\.send_drive_reminders\(\) from public, authenticated/);
+  assert.match(sql, /revoke all on function public\.generate_schedule_cron\(\) from public, authenticated/);
+
+  // All three use vault secrets (environment-aware)
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
+});
+
+test("pg_net timeout: remaining wrapper functions use 120s timeout", async () => {
+  const sql = await readFile(pgnetTimeoutRemainingMigrationUrl, "utf8");
+
+  // Both wrapper functions are rewritten with CREATE OR REPLACE
+  assert.match(sql, /create or replace function public\.send_deadline_reminders\(\)/);
+  assert.match(sql, /create or replace function public\.send_welcome_email\(\)/);
+
+  // Both include timeout_milliseconds := 120000 (the fix)
+  assert.match(sql, /timeout_milliseconds := 120000/);
+
+  // Both use security definer + revoke
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_deadline_reminders\(\) from public, authenticated/);
+  assert.match(sql, /revoke all on function public\.send_welcome_email\(\) from public, authenticated/);
+
+  // Both use vault secrets (environment-aware)
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
+
+  // Welcome email is a trigger function (RETURNS trigger)
+  assert.match(sql, /returns trigger/);
+
+  // Deadline reminder is a void function
+  assert.match(sql, /returns void/);
 });
 
 // ─── publish_schedule_internal RPC ──────────────────────────
@@ -229,10 +329,9 @@ test("send-push: sends transactional email via Resend alongside push", async () 
   assert.match(ts, /email_sent: emailSent/);
   assert.match(ts, /email_failed: emailFailed/);
 
-  // Skips fake seed/test/e2e emails to avoid bounces polluting Resend
-  assert.match(ts, /@seed\.kidpool/);
-  assert.match(ts, /@test\.kidpool/);
-  assert.match(ts, /@e2e\.kidpool/);
+  // Skips all test/seed/demo emails — any address ending in "kidpool"
+  assert.match(ts, /isTestEmail/);
+  assert.match(ts, /endsWith\("kidpool"\)/);
 });
 
 test("send-push: PostgREST filters use proper operator syntax (eq., in.)", async () => {
@@ -279,7 +378,7 @@ test("send-push: deadline_reminder tag includes date for idempotency", async () 
   // so the email idempotency key changes daily (at most one reminder email
   // per family per day, even if cron fires hourly). Using SF time instead of
   // UTC prevents duplicate reminders when cron fires around midnight UTC.
-  assert.match(ts, /deadline-reminder-\$\{new Intl\.DateTimeFormat\("en-CA", \{ timeZone: "America\/Los_Angeles"/);
+  assert.match(ts, /checkin-reminder-\$\{todayStr\}-\$\{m\.profile_id\}/);
 });
 
 // ─── Welcome email ─────────────────────────────────────────
@@ -320,15 +419,15 @@ test("send-push: welcome type sends email-only onboarding welcome", async () => 
   // Idempotency key uses user_id to prevent duplicate sends
   assert.match(ts, /welcome-\$\{userId\}/);
 
-  // Skips fake seed/test/e2e emails (same as all other types)
-  assert.match(ts, /@seed\.kidpool/);
+  // Skips all test/seed/demo emails (any address ending in "kidpool")
+  assert.match(ts, /isTestEmail/);
 
   // Subject is the welcome subject
   assert.match(ts, /subject: "Welcome to Carpool Crew"/);
 
   // HTML covers the 4 key topics (household section removed — app teaches it inline)
   assert.match(ts, /The three tabs/);
-  assert.match(ts, /Check in by Saturday 3 PM/);
+  assert.match(ts, /Check in by Saturday midnight/);
   assert.match(ts, /Set your standard week/);
   assert.match(ts, /Install the app on your phone/);
 
@@ -386,7 +485,7 @@ test("prototype: tab renamed to Admin, triage board layout", async () => {
   assert.match(tsx, /Needs your attention/);
   assert.match(tsx, /On track/);
   assert.match(tsx, /admin-override/);
-  assert.match(tsx, /Automated at Sat 3 PM/);
+  assert.match(tsx, /Automated Sun 7 AM/);
 
   // Status line with auto-publish info
   assert.match(tsx, /admin-status-line/);
@@ -459,27 +558,31 @@ test("night-before summary: cron wrapper uses environment-aware vault pattern", 
   assert.match(sql, /0 \* \* \* \*/);
 });
 
-test("send-push: night_before_summary branch sends personalized emails", async () => {
+test("send-push: night_before_summary branch sends personalized email + push", async () => {
   const ts = await readFile(sendPushUrl, "utf8");
 
   // Branch handled with its own early-return (per-recipient custom content)
   assert.match(ts, /type === "night_before_summary"/);
-  assert.match(ts, /night_before_summary: "who's driving tomorrow" email/);
+  assert.match(ts, /night_before_summary: "who's driving tomorrow" email \+ push/);
 
-  // Gates to 8 PM Pacific
-  assert.match(ts, /pacificHour !== 20/);
+  // No time gate — the cron fires at the right time (7:45 PM Pacific)
+  assert.doesNotMatch(ts, /pacificHour < 21/);
 
   // Idempotency key is date-stamped per recipient
   assert.match(ts, /night-before-\$\{tomorrow\}-\$\{profile\.id\}/);
 
-  // Skips fake seed/test/e2e emails
-  assert.match(ts, /@seed\.kidpool/);
+  // Skips all test/seed/demo emails (any address ending in "kidpool")
+  assert.match(ts, /isTestEmail/);
 
   // Personalized driving status section + full roster
   assert.match(ts, /Tomorrow's carpool/);
   assert.match(ts, /You're driving tomorrow/);
   assert.match(ts, /You're not driving tomorrow/);
   assert.match(ts, /Tomorrow's drivers/);
+
+  // Sends push notification (personal section only) alongside email
+  assert.match(ts, /pushSent/);
+  assert.match(ts, /webpush\.sendNotification/);
 
   // Resend tags include the type
   assert.match(ts, /value: "night_before_summary"/);
@@ -532,11 +635,77 @@ test("send-push: drive_reminder branch sends push + email to confirmed drivers",
   // Lists kids in the car
   assert.match(ts, /Kids in your car/);
 
-  // Skips fake seed/test/e2e emails
-  assert.match(ts, /@seed\.kidpool/);
+  // Skips all test/seed/demo emails (any address ending in "kidpool")
+  assert.match(ts, /isTestEmail/);
 
   // Resend tags include the type
   assert.match(ts, /value: "drive_reminder"/);
+});
+
+// ─── Drive confirmed email (calendar invite) ────────────────
+
+test("send-push: drive_confirmed branch sends calendar invite email", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Branch handled with its own early-return
+  assert.match(ts, /type === "drive_confirmed"/);
+  assert.match(ts, /drive_confirmed: email calendar invite to the confirmed driver/);
+
+  // Sends to the confirmed driver only (not all members)
+  assert.match(ts, /Assignment not found/);
+
+  // Guard: only sends for confirmed/tentative assignments (not released/declined)
+  assert.match(ts, /assignment_\$\{da\.status\}/);
+
+  // Idempotency key includes updated_at so re-accept after cancel gets a fresh key
+  assert.match(ts, /drive-confirmed-\$\{assignment_id\}-\$\{da\.updated_at\}/);
+
+  // Email has .ics attachment
+  assert.match(ts, /attachments/);
+  assert.match(ts, /carpool-crew-drive\.ics/);
+
+  // ICS uses 15 min before meeting + 45 min after departure (1-hour event)
+  assert.match(ts, /addMinutes\(trip\.meeting_time, -15\)/);
+  assert.match(ts, /addMinutes\(trip\.departure_time, 45\)/);
+
+  // ICS content includes VCALENDAR + VEVENT
+  assert.match(ts, /BEGIN:VCALENDAR/);
+  assert.match(ts, /BEGIN:VEVENT/);
+  assert.match(ts, /DTSTART;TZID=/);
+  assert.match(ts, /DTEND;TZID=/);
+
+  // Skips test emails
+  assert.match(ts, /isTestEmail/);
+
+  // Resend tags include the type
+  assert.match(ts, /value: "drive_confirmed"/);
+});
+
+test("send-push: drive_cancelled branch sends calendar cancellation email", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Branch handled with its own early-return
+  assert.match(ts, /type === "drive_cancelled"/);
+  assert.match(ts, /drive_cancelled: calendar cancellation email to the driver/);
+
+  // ICS uses METHOD:CANCEL so calendar apps remove the event
+  assert.match(ts, /METHOD:CANCEL/);
+  assert.match(ts, /STATUS:CANCELLED/);
+
+  // Email has .ics attachment
+  assert.match(ts, /carpool-crew-cancel\.ics/);
+
+  // Same UID as the confirm email (so calendar app updates the same event)
+  assert.match(ts, /UID:drive-confirmed-\$\{assignment_id\}@carpoolcrew\.co/);
+
+  // Idempotency key includes updated_at
+  assert.match(ts, /drive-cancelled-\$\{assignment_id\}-\$\{da\.updated_at\}/);
+
+  // Skips test emails
+  assert.match(ts, /isTestEmail/);
+
+  // Resend tags include the type
+  assert.match(ts, /value: "drive_cancelled"/);
 });
 
 // ─── Broadcast type ──────────────────────────────────────────
@@ -556,12 +725,197 @@ test("send-push: broadcast type sends arbitrary email to all active members", as
   // Idempotency key uses broadcast_id + profile_id
   assert.match(ts, /broadcast-\$\{broadcastId\}-\$\{profile\.id\}/);
 
-  // Skips fake seed/test/e2e emails
-  assert.match(ts, /@seed\.kidpool/);
+  // Skips all test/seed/demo emails (any address ending in "kidpool")
+  assert.match(ts, /isTestEmail/);
 
   // Resend tags include the type
   assert.match(ts, /value: "broadcast"/);
 
   // Supports filtering to a single email (for test sends)
   assert.match(ts, /filter_email/);
+});
+
+// ─── Fix volunteer re-accept (undo PR #93 restore logic) ─────
+
+test("fix volunteer re-accept: RPC does NOT restore released assignments", async () => {
+  const sql = await readFile(fixVolunteerReacceptMigrationUrl, "utf8");
+
+  // Rewrites the RPC with CREATE OR REPLACE (reverts to pre-#93 logic)
+  assert.match(sql, /create or replace function public\.respond_to_driver_assignment\(/);
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.respond_to_driver_assignment\(uuid, public\.confirmation_response, text\) from public/);
+
+  // Does NOT contain the restore logic in the function body
+  // (the comments mention PR #93's bug, but the function body should not
+  // have the restore variables or rider move-back logic)
+  assert.doesNotMatch(sql, /v_released_assignment public\.driver_assignments/);
+  assert.doesNotMatch(sql, /v_other_active_count integer/);
+  assert.doesNotMatch(sql, /set driver_assignment_id = v_released_assignment\.id/);
+
+  // 'released' stays blocked from re-accept (the volunteer can re-accept, not the original driver)
+  assert.match(sql, /assignment\.status not in \('tentative', 'confirmed', 'declined', 'expired'\)/);
+});
+
+test("fix volunteer re-accept: data fix moves riders back to volunteer", async () => {
+  const sql = await readFile(fixVolunteerReacceptMigrationUrl, "utf8");
+
+  // Data fix: moves riders from the restored (wrong) assignment to the 0-rider assignment
+  assert.match(sql, /update public\.rider_assignments/);
+  assert.match(sql, /set driver_assignment_id = r\.no_riders_id/);
+  assert.match(sql, /where driver_assignment_id = r\.with_riders_id/);
+
+  // Sets the restored assignment back to 'released'
+  assert.match(sql, /set status = 'released'/);
+
+  // Only matches pairs where the with_riders assignment was restored by PR #93
+  assert.match(sql, /released_assignment_restored/);
+
+  // Audit event for the revert
+  assert.match(sql, /released_assignment_reverted/);
+});
+
+// ─── Allow released re-accept with rider transfer ────────────
+
+test("released re-accept: RPC allows released status and transfers riders", async () => {
+  const sql = await readFile(allowReleasedReacceptMigrationUrl, "utf8");
+
+  // Rewrites the RPC with CREATE OR REPLACE
+  assert.match(sql, /create or replace function public\.respond_to_driver_assignment\(/);
+  assert.match(sql, /security definer/);
+
+  // 'released' is now in the allowed statuses
+  assert.match(sql, /'tentative', 'confirmed', 'declined', 'expired', 'released'/);
+
+  // 0-rider guard covers both 'expired' AND 'declined' (not just expired)
+  assert.match(sql, /if assignment\.status in \('expired', 'declined'\)/);
+
+  // released guard: blocks if another confirmed/tentative driver exists
+  assert.match(sql, /if assignment\.status = 'released'/);
+  assert.match(sql, /v_other_active_count > 0/);
+
+  // Rider transfer on released re-accept
+  assert.match(sql, /if driver_response = 'confirmed' and assignment\.status = 'confirmed'/);
+  assert.match(sql, /status in \('declined', 'expired'\)/);
+  assert.match(sql, /update public\.rider_assignments/);
+  assert.match(sql, /set driver_assignment_id = assignment\.id/);
+
+  // Audit for rider transfer
+  assert.match(sql, /riders_transferred/);
+});
+
+test("released re-accept: reacceptDrive sends volunteered notification", async () => {
+  const ts = await readFile(prototypeUrl, "utf8");
+
+  // reacceptDrive sends both drive_confirmed and volunteered
+  assert.match(ts, /drive_confirmed/);
+  assert.match(ts, /volunteered/);
+});
+
+test("released re-accept: Review screen sends volunteered on re-accept (not tentative)", async () => {
+  const ts = await readFile(prototypeUrl, "utf8");
+
+  // Check prior status before sending volunteered on confirm
+  assert.match(ts, /priorStatus/);
+  assert.match(ts, /priorStatus === "declined" || priorStatus === "expired" || priorStatus === "released"/);
+});
+
+test("released re-accept: UI shows released in reacceptableAssignments", async () => {
+  const ts = await readFile(prototypeUrl, "utf8");
+
+  // released is in the reacceptable filter
+  assert.match(ts, /a\.assignment\.status === "released"/);
+});
+
+test("released re-accept: repository suppresses I-can-drive for released trips", async () => {
+  const ts = await readFile(repositoryUrl, "utf8");
+
+  // Fetches the user's released assignments
+  assert.match(ts, /eq\("status", "released"\)/);
+
+  // Builds a set of released trip_ids to suppress
+  assert.match(ts, /myReleasedTripIds/);
+  assert.match(ts, /myReleasedTripIds\.has\(da\.trip_id\)/);
+});
+
+// ─── Fixed-time notification schedule ────────────────────────
+
+test("notification schedule: unschedules hourly crons and creates 5 fixed-time crons", async () => {
+  const sql = await readFile(fixNotificationScheduleMigrationUrl, "utf8");
+
+  // Unschedules the 2 hourly crons
+  assert.match(sql, /cron\.unschedule\('checkin-deadline-reminder'\)/);
+  assert.match(sql, /cron\.unschedule\('confirmation-deadline-reminder'\)/);
+
+  // Re-applies the 8:30 PM Pacific Sunday publish schedule (was overwritten)
+  assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
+  assert.match(sql, /30 3,4 \* \* 1/);
+
+  // 3 check-in reminder crons (Sat 9 AM, 6 PM, 11 PM Pacific)
+  assert.match(sql, /checkin-reminder-9am/);
+  assert.match(sql, /0 16,17 \* \* 6/);
+  assert.match(sql, /checkin-reminder-6pm/);
+  assert.match(sql, /0 1,2 \* \* 0/);
+  assert.match(sql, /checkin-reminder-11pm/);
+  assert.match(sql, /0 6,7 \* \* 0/);
+
+  // 2 confirmation reminder crons (Sun 8 AM, 7 PM Pacific)
+  assert.match(sql, /confirmation-reminder-8am/);
+  assert.match(sql, /0 15,16 \* \* 0/);
+  assert.match(sql, /confirmation-reminder-7pm/);
+  assert.match(sql, /0 2,3 \* \* 1/);
+
+  // All 5 wrapper functions use 120s timeout
+  assert.match(sql, /timeout_milliseconds := 120000/);
+
+  // All 5 use vault secrets (environment-aware)
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
+
+  // All 5 are security definer + revoked
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_checkin_reminder_9am\(\) from public, authenticated/);
+  assert.match(sql, /revoke all on function public\.send_confirmation_reminder_8am\(\) from public, authenticated/);
+});
+
+test("notification schedule: send-push has checkin_reminder + confirmation_reminder branches", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // New branches exist
+  assert.match(ts, /type === "checkin_reminder"/);
+  assert.match(ts, /type === "confirmation_reminder"/);
+
+  // Old branches are gone (deadline_reminder removed; confirmation_reminder
+  // is reused but the old urgency-tier logic and missed-deadline logic are gone)
+  assert.doesNotMatch(ts, /type === "deadline_reminder"/);
+  assert.doesNotMatch(ts, /hoursLeft > 24/);
+  assert.doesNotMatch(ts, /Missed check-in deadline/);
+  assert.doesNotMatch(ts, /Drives expired/);
+
+  // checkin_reminder: finds unsubmitted households and sends
+  assert.match(ts, /checkin_reminder/);
+  assert.match(ts, /eq\.submitted/);
+  assert.match(ts, /sendEmailAndPush/);
+
+  // confirmation_reminder: finds tentative drivers and sends
+  assert.match(ts, /confirmation_reminder/);
+  assert.match(ts, /eq\.tentative/);
+  assert.match(ts, /sendEmailAndPush/);
+
+  // Both use per-date idempotency keys (DST-proof dedup)
+  assert.match(ts, /checkin-reminder-\$\{todayStr\}-\$\{m\.profile_id\}/);
+  assert.match(ts, /confirmation-reminder-\$\{todayStr\}-\$\{driverId\}/);
+});
+
+// ─── Night-before moved to 7:45 PM Pacific ───────────────────
+
+test("night-before 7:45pm: replaces hourly cron with fixed 7:45 PM schedule", async () => {
+  const sql = await readFile(moveNightBeforeMigrationUrl, "utf8");
+
+  // Unschedules the old hourly cron
+  assert.match(sql, /cron\.unschedule\('night-before-summary'\)/);
+
+  // New schedule: 7:45 PM Pacific = 02:45/03:45 UTC, Sun-Thu nights
+  assert.match(sql, /45 2,3 \* \* 0-4/);
+  assert.match(sql, /night-before-summary/);
+  assert.match(sql, /send_night_before_summary/);
 });

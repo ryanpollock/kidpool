@@ -1,0 +1,63 @@
+name: Staging Smoke Test
+
+on:
+  schedule:
+    # 3 AM Pacific (11 AM UTC) daily — catches staging drift before the US school day starts
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+
+jobs:
+  staging-tests:
+    name: Integration + Playwright against staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        working-directory: carpool-app
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: carpool-app
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link to staging project
+        working-directory: carpool-app
+        run: supabase link --project-ref jfyjgmhqnlbdcafoarrg
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      - name: Run integration tests (staging)
+        working-directory: carpool-app
+        run: npm run test:integration
+        env:
+          SUPABASE_TEST_SERVICE_KEY: ${{ secrets.SUPABASE_STAGING_SERVICE_KEY }}
+          SUPABASE_TEST_ANON_KEY: ${{ secrets.SUPABASE_STAGING_ANON_KEY }}
+
+      - name: Run Playwright tests (staging)
+        working-directory: carpool-app
+        run: npm run test:runtime
+        env:
+          SUPABASE_TEST_SERVICE_KEY: ${{ secrets.SUPABASE_STAGING_SERVICE_KEY }}
+          SUPABASE_TEST_ANON_KEY: ${{ secrets.SUPABASE_STAGING_ANON_KEY }}
+
+      - name: Upload test results on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: staging-test-results
+          path: carpool-app/test-results/
+          retention-days: 7

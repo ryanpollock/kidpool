@@ -84,6 +84,70 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Skip test/seed/demo addresses — any email ending in "kidpool" is a non-deliverable test address.
+function isTestEmail(email: string): boolean {
+  return email.endsWith("kidpool");
+}
+
+// Send a push notification + email to a single profile. Used by the inline
+// notification types (deadline_reminder, confirmation_reminder, assignment_request)
+// that handle their own recipient logic and return early before the main loop.
+async function sendEmailAndPush(
+  profileId: string,
+  notifTitle: string,
+  notifBody: string,
+  idempotencyKey: string,
+  pushTag: string,
+): Promise<void> {
+  // Push notification
+  if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+    ensureVapid();
+    const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${profileId}` });
+    for (const sub of subs) {
+      try {
+        await webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+          JSON.stringify({ title: notifTitle, body: notifBody, tag: pushTag, url: "/" }),
+          { TTL: 86400 },
+        );
+      } catch (error: any) {
+        const statusCode = error?.statusCode ?? 0;
+        if (statusCode === 410 || statusCode === 404) {
+          await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+        }
+      }
+    }
+  }
+
+  // Email
+  if (RESEND_API_KEY) {
+    const profiles = await supaFetch("profiles", "email", { id: `eq.${profileId}` });
+    const profile = profiles[0];
+    if (profile?.email && !isTestEmail(profile.email)) {
+      try {
+        await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: profile.email,
+            reply_to: RESEND_REPLY_TO,
+            subject: notifTitle,
+            html: `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;"><h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1><p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(notifBody)}</p><p style="margin-top:24px;"><a href="https://carpoolcrew.co" style="display:inline-block;background:#118b8c;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-size:15px;">Open the app</a></p></body></html>`,
+            text: notifBody,
+          }),
+        });
+      } catch (e) {
+        console.error(`[send-push] Email to ${profile.email} failed:`, e);
+      }
+    }
+  }
+}
+
 // Format a Postgres time string ("08:40:00" or "17:15") as "8:40 AM".
 function formatTime(t: string): string {
   const [h, m] = t.split(":");
@@ -91,6 +155,22 @@ function formatTime(t: string): string {
   const ampm = hour >= 12 ? "PM" : "AM";
   const hour12 = hour % 12 === 0 ? 12 : hour % 12;
   return `${hour12}:${m} ${ampm}`;
+}
+
+// Add minutes to a Postgres time string ("08:40" -> "09:10" for +30).
+// Wraps past midnight. Returns "HH:MM" (zero-padded).
+function addMinutes(time: string, minutes: number): string {
+  const [h, m] = time.split(":").map((n) => parseInt(n, 10));
+  const total = h * 60 + m + minutes;
+  const wrapped = ((total % 1440) + 1440) % 1440;
+  const nh = Math.floor(wrapped / 60);
+  const nm = wrapped % 60;
+  return `${String(nh).padStart(2, "0")}:${String(nm).padStart(2, "0")}`;
+}
+
+// Format a date+time as an ICS local datetime: "20260814T082500".
+function toIcsLocal(dateStr: string, timeStr: string): string {
+  return `${dateStr.replaceAll("-", "")}T${timeStr.replaceAll(":", "")}00`;
 }
 
 // Pacific-time parts for the current instant. `hour12: false` yields 00-23.
@@ -157,7 +237,7 @@ Deno.serve(async (req) => {
       const userId: string | undefined = body.user_id;
       if (!email) return jsonError("Missing email for welcome", 400);
       if (!userId) return jsonError("Missing user_id for welcome", 400);
-      if (email.endsWith("@seed.kidpool") || email.endsWith("@test.kidpool") || email.endsWith("@e2e.kidpool")) {
+      if (isTestEmail(email)) {
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, skipped: true });
       }
       if (!RESEND_API_KEY) {
@@ -178,8 +258,8 @@ Deno.serve(async (req) => {
         `<p style="font-size:15px;line-height:1.6;margin:0 0 8px;"><strong>This Week</strong> — The published schedule, day by day. Tap any drive to see who's in the car.</p>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>Next Week</strong> — Where you check in for next week's rides (see below). Tap <strong>Earlier</strong> or <strong>Later</strong> to browse other weeks.</p>` +
 
-        `<h2 style="font-size:16px;margin:24px 0 8px;">2. Check in by Saturday 3 PM</h2>` +
-        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Every week, open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Submit by <strong>Saturday 3 PM Pacific</strong> — the scheduler builds the week's carpool from your check-in. Missed check-ins mean your child might not get a ride. You can reopen your check-in any time before the schedule is published.</p>` +
+        `<h2 style="font-size:16px;margin:24px 0 8px;">2. Check in by Saturday midnight</h2>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Every week, open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Submit by <strong>Saturday midnight Pacific</strong> — the scheduler builds the week's carpool from your check-in. Missed check-ins mean your child might not get a ride. You can reopen your check-in any time before the schedule is published.</p>` +
 
         `<h2 style="font-size:16px;margin:24px 0 8px;">3. Set your standard week</h2>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">You set this during setup. It pre-fills your weekly check-in with your family's typical ride needs and driving availability, so you only need to adjust for the unusual days. To change it later, tap your avatar, then edit the <strong>Standard week</strong> section. Morning pickup is 8:40 AM from Midtown Terrace; afternoon pickup is 5:15 PM from Presidio.</p>` +
@@ -203,7 +283,7 @@ Deno.serve(async (req) => {
         `This Week: The published schedule, day by day.\n` +
         `Next Week: Where you check in for next week's rides.\n\n` +
         `2. CHECK IN BY SATURDAY 3 PM\n` +
-        `Every week, open the Next Week tab and tell us which days your child needs rides and which days you can drive. Submit by Saturday 3 PM Pacific.\n\n` +
+        `Every week, open the Next Week tab and tell us which days your child needs rides and which days you can drive. Submit by Saturday midnight Pacific.\n\n` +
         `3. SET YOUR STANDARD WEEK\n` +
         `Your standard week defaults pre-fill your weekly check-in — but they don't check you in automatically. You still need to open the Next Week tab and tap Submit each week. Edit your standard week any time from the Account screen (tap your avatar).\n\n` +
         `4. INSTALL THE APP\n` +
@@ -411,12 +491,22 @@ Questions? Reply to this email or check the FAQ in the app.`;
 
       let emailSent = 0;
       let emailFailed = 0;
+      let pushSent = 0;
+      let pushFailed = 0;
+      let lastPushError = "";
       let skipped = 0;
+
+      // Initialize VAPID for push (if keys are configured)
+      if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+        ensureVapid();
+      }
+
       for (const profile of profiles) {
         if (!profile.email) continue;
-        if (profile.email.endsWith("@seed.kidpool") || profile.email.endsWith("@test.kidpool") || profile.email.endsWith("@e2e.kidpool")) continue;
+        if (isTestEmail(profile.email)) continue;
         if (filterEmail && profile.email !== filterEmail) continue;
 
+        // ── Email ──
         const idempotencyKey = `broadcast-${broadcastId}-${profile.id}`;
         try {
           const res = await fetch("https://api.resend.com/emails", {
@@ -450,27 +540,45 @@ Questions? Reply to this email or check the FAQ in the app.`;
           console.error(`[send-push] Broadcast email to ${profile.email} threw:`, e);
           emailFailed++;
         }
+
+        // ── Push notification ──
+        if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+          const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${profile.id}` });
+          for (const sub of subs) {
+            try {
+              await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                JSON.stringify({ title: subject, body: textBodyParam ?? subject, tag: `broadcast-${broadcastId}`, url: "/" }),
+                { TTL: 86400 },
+              );
+              pushSent++;
+            } catch (error: any) {
+              pushFailed++;
+              lastPushError = `${error?.statusCode ?? "?"}: ${error?.message ?? String(error)}`;
+              console.error(`[send-push] Broadcast push to ${profile.id} failed:`, lastPushError);
+              const statusCode = error?.statusCode ?? 0;
+              if (statusCode === 410 || statusCode === 404) {
+                await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+              }
+            }
+          }
+        }
       }
 
-      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed, skipped });
+      return jsonResponse({ sent: pushSent, failed: pushFailed, email_sent: emailSent, email_failed: emailFailed, skipped, push_enabled: !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY), push_error: pushFailed > 0 ? lastPushError : undefined });
     }
 
-    // ── night_before_summary: "who's driving tomorrow" email ─────
-    // Triggered hourly by pg_cron. Self-gates to 8 PM Pacific so it fires
-    // once per evening before a school day. Recipients are families with a
-    // child riding tomorrow (via rider_assignments on the published schedule).
-    // Each email is personalized — the recipient's own driving status is
-    // highlighted, followed by the full driver roster. Email-only, no push.
-    // Idempotency key is date-stamped per recipient so re-fires dedupe.
+    // ── night_before_summary: "who's driving tomorrow" email + push ──
+    // Triggered by a fixed cron at 7:45 PM Pacific (Sun-Thu nights).
+    // No time gate — the cron fires at the right time. DST-proofed via
+    // dual UTC (45 2,3 * * 0-4); off-DST fire deduped by idempotency key.
+    // Recipients are families with a child riding tomorrow (via
+    // rider_assignments on the published schedule). Each notification is
+    // personalized — the recipient's own driving status + full driver roster.
+    // Sends both email (full roster) and push (personal section only).
     if (type === "night_before_summary") {
       const now = new Date();
       const parts = pacificParts(now, false);
-      const pacificHour = parseInt(parts.hour, 10) % 24;
-
-      // Gate to 8 PM Pacific only
-      if (pacificHour !== 20) {
-        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "outside_window" });
-      }
 
       // Tomorrow's Pacific date (YYYY-MM-DD)
       const todayDate = new Date(Date.UTC(+parts.year, +parts.month - 1, +parts.day));
@@ -610,9 +718,16 @@ Questions? Reply to this email or check the FAQ in the app.`;
 
       let emailSent = 0;
       let emailFailed = 0;
+      let pushSent = 0;
+      let pushFailed = 0;
+
+      if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+        ensureVapid();
+      }
+
       for (const profile of recipientProfiles) {
         if (!profile.email) continue;
-        if (profile.email.endsWith("@seed.kidpool") || profile.email.endsWith("@test.kidpool") || profile.email.endsWith("@e2e.kidpool")) continue;
+        if (isTestEmail(profile.email)) continue;
 
         const firstName = (profile.full_name ?? "there").split(" ")[0];
         const myDrives = driverProfileToTrips.get(profile.id) ?? [];
@@ -676,9 +791,37 @@ Questions? Reply to this email or check the FAQ in the app.`;
           console.error(`[send-push] Night-before email to ${profile.email} threw:`, e);
           emailFailed++;
         }
+
+        // Push notification (personal section only — full roster is in the email)
+        if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+          const pushTag = `night-before-${tomorrow}-${profile.id}`;
+          const pushPayload = JSON.stringify({
+            title: "Tomorrow's carpool",
+            body: personalSection,
+            tag: pushTag,
+            url: "/",
+          });
+          const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${profile.id}` });
+          for (const sub of subs) {
+            try {
+              await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                pushPayload,
+                { TTL: 86400 },
+              );
+              pushSent++;
+            } catch (error: any) {
+              pushFailed++;
+              const statusCode = error?.statusCode ?? 0;
+              if (statusCode === 410 || statusCode === 404) {
+                await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+              }
+            }
+          }
+        }
       }
 
-      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed });
+      return jsonResponse({ sent: pushSent, failed: pushFailed, email_sent: emailSent, email_failed: emailFailed });
     }
 
     // ── drive_reminder: 75-min pre-drive email + push to confirmed drivers ─
@@ -811,7 +954,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
 
         // Email to this driver
         if (driver.email && RESEND_API_KEY) {
-          if (driver.email.endsWith("@seed.kidpool") || driver.email.endsWith("@test.kidpool") || driver.email.endsWith("@e2e.kidpool")) continue;
+          if (isTestEmail(driver.email)) continue;
           const cta = APP_URL
             ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
             : "";
@@ -859,8 +1002,6 @@ Questions? Reply to this email or check the FAQ in the app.`;
       return jsonResponse({ sent, failed, removed, email_sent: emailSent, email_failed: emailFailed });
     }
 
-<<<<<<< Updated upstream
-=======
     // ── drive_confirmed: email calendar invite to the confirmed driver ──
     // Triggered by the client immediately after respondToDriverAssignment
     // returns "confirmed". Sends an email with a .ics attachment covering the
@@ -1244,7 +1385,6 @@ Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
       return jsonResponse({ sent, failed, email_sent: emailSent, email_failed: emailFailed });
     }
 
->>>>>>> Stashed changes
     let recipientProfileIds: string[] = [];
     let title = "";
     let bodyText = "";
@@ -1339,29 +1479,88 @@ Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
       title = "Schedule published";
       bodyText = `The schedule for this week has been published. Open the app to see your drives.`;
       tag = `published-${version_id}`;
-    } else if (type === "deadline_reminder") {
-      const now = new Date();
-      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      const nowStr = now.toISOString();
-      const tomorrowStr = tomorrow.toISOString();
+    } else if (type === "checkin_reminder") {
+      // Check-in reminder: sends push + email to unsubmitted households for the
+      // nearest upcoming week. The title/body are passed from the cron wrapper
+      // (3 slots: Sat 9 AM, 6 PM, 11 PM Pacific). No time gate — the cron fires
+      // at the right time. Per-date idempotency key dedupes the off-DST fire.
+      const reminderTitle: string = body.title ?? "Check in for next week";
+      const reminderBody: string = body.body ?? "Check in for next week.";
+      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      const nowStr = new Date().toISOString();
+      const twoDaysStr = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
-      const weeks = await supaFetch("weeks", "*", [
+      const upcomingWeeks = await supaFetch("weeks", "*", [
         ["checkin_deadline", `gte.${nowStr}`],
-        ["checkin_deadline", `lte.${tomorrowStr}`],
+        ["checkin_deadline", `lte.${twoDaysStr}`],
       ]);
 
-      for (const week of weeks) {
+      for (const week of upcomingWeeks) {
         const checkins = await supaFetch("weekly_checkins", "household_id", { week_id: `eq.${week.id}`, status: "eq.submitted" });
         const submittedHouseholds = new Set(checkins.map((c: any) => c.household_id));
-
         const allMemberships = await supaFetch("memberships", "profile_id,household_id", { group_id: `eq.${week.group_id}`, status: "eq.active" });
         const unsubmitted = allMemberships.filter((m: any) => !submittedHouseholds.has(m.household_id));
-        recipientProfileIds.push(...unsubmitted.map((m: any) => m.profile_id));
+
+        for (const m of unsubmitted) {
+          const idempotencyKey = `checkin-reminder-${todayStr}-${m.profile_id}`;
+          await sendEmailAndPush(m.profile_id, reminderTitle, reminderBody, idempotencyKey, `checkin-reminder-${todayStr}-${m.profile_id}`);
+        }
       }
 
-      title = "Check-in deadline";
-      bodyText = `Your check-in deadline is approaching. Submit your ride needs soon.`;
-      tag = `deadline-reminder-${new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())}`;
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    } else if (type === "confirmation_reminder") {
+      // Confirmation reminder: sends push + email to drivers with tentative
+      // assignments. The title/body are passed from the cron wrapper
+      // (2 slots: Sun 8 AM, 7 PM Pacific). No time gate — the cron fires at
+      // the right time. Per-date idempotency key dedupes the off-DST fire.
+      const reminderTitle: string = body.title ?? "Confirm your drives";
+      const reminderBody: string = body.body ?? "Confirm your drives.";
+      const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      const nowStr = new Date().toISOString();
+      const tomorrowStr = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+
+      const upcomingWeeks = await supaFetch("weeks", "*", [
+        ["confirmation_deadline", `gte.${nowStr}`],
+        ["confirmation_deadline", `lte.${tomorrowStr}`],
+      ]);
+
+      for (const week of upcomingWeeks) {
+        const versions = await supaFetch("schedule_versions", "id", { week_id: `eq.${week.id}`, group_id: `eq.${week.group_id}`, status: "in.(draft,published)" });
+        for (const version of versions) {
+          const assignments = await supaFetch("driver_assignments", "driver_profile_id,trip_id,status", { schedule_version_id: `eq.${version.id}`, status: `eq.tentative` });
+          const driverTripCounts = new Map<string, number>();
+          for (const a of assignments) {
+            driverTripCounts.set(a.driver_profile_id, (driverTripCounts.get(a.driver_profile_id) ?? 0) + 1);
+          }
+
+          for (const [driverId, count] of driverTripCounts) {
+            const body = count > 1 ? reminderBody.replace("drives", `${count} drives`) : reminderBody.replace("drives", "a drive");
+            const idempotencyKey = `confirmation-reminder-${todayStr}-${driverId}`;
+            await sendEmailAndPush(driverId, reminderTitle, body, idempotencyKey, `confirmation-reminder-${todayStr}-${driverId}`);
+          }
+        }
+      }
+
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    } else if (type === "assignment_request" && version_id) {
+      // Notify drivers with tentative assignments that they have drives to confirm.
+      // Fired by generate-schedule Edge Function after writing a draft.
+      const assignments = await supaFetch("driver_assignments", "driver_profile_id,trip_id,status", { schedule_version_id: `eq.${version_id}`, status: `eq.tentative` });
+      const driverTripCounts = new Map<string, number>();
+      for (const a of assignments) {
+        driverTripCounts.set(a.driver_profile_id, (driverTripCounts.get(a.driver_profile_id) ?? 0) + 1);
+      }
+
+      for (const [driverId, count] of driverTripCounts) {
+        const title = count > 1 ? `You're requested to drive ${count} trips` : "You're requested to drive";
+        const body = count > 1
+          ? `You're requested to drive ${count} trips next week. Open the app to confirm by 7 PM tonight.`
+          : `You're requested to drive next week. Open the app to confirm by 7 PM tonight.`;
+        const idempotencyKey = `assignment-request-${version_id}-${driverId}`;
+        await sendEmailAndPush(driverId, title, body, idempotencyKey, `assignment-request-${version_id}-${driverId}`);
+      }
+
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
     } else if (type === "volunteered" && assignment_id) {
       const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: `eq.${assignment_id}` });
       const childIds = riderAssignments.map((ra: any) => ra.child_id);
@@ -1483,7 +1682,7 @@ Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
         const profile = await supaFetch("profiles", "email", { id: `eq.${dd.profile_id}` });
         if (profile.length > 0 && profile[0].email && RESEND_API_KEY) {
           const email = profile[0].email;
-          if (!email.endsWith("@seed.kidpool") && !email.endsWith("@test.kidpool") && !email.endsWith("@e2e.kidpool")) {
+          if (!isTestEmail(email)) {
             try {
               const cta = APP_URL
                 ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
@@ -1584,7 +1783,7 @@ Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
 
       for (const profile of profiles) {
         if (!profile.email) continue;
-        if (profile.email.endsWith("@seed.kidpool") || profile.email.endsWith("@test.kidpool") || profile.email.endsWith("@e2e.kidpool")) continue;
+        if (isTestEmail(profile.email)) continue;
         const idempotencyKey = `carpool-${tag}-${profile.id}`;
         try {
           const res = await fetch("https://api.resend.com/emails", {

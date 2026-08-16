@@ -314,6 +314,8 @@ test("Calendar utility exports ICS, Google Calendar, and Outlook builders", asyn
   assert.match(source, /export function buildGoogleCalendarUrl/);
   assert.match(source, /export function buildOutlookUrl/);
   assert.match(source, /export function downloadIcs/);
+  assert.match(source, /api\/calendar-export/);
+  assert.match(source, /createObjectURL/);
   assert.match(source, /BEGIN:VCALENDAR/);
   assert.match(source, /BEGIN:VEVENT/);
   assert.match(source, /END:VEVENT/);
@@ -334,22 +336,16 @@ test("Calendar utility generates Google Calendar and Outlook URLs", async () => 
   assert.match(source, /enddt/);
 });
 
-test("Add to calendar button renders in Prototype with BottomSheet options", async () => {
+test("drive_confirmed email is triggered on confirm in Prototype", async () => {
   const source = await readFile(prototypeUrl, "utf8");
 
-  assert.match(source, /function AddToCalendarButton/);
-  assert.match(source, /data-testid="add-to-calendar"/);
-  assert.match(source, /data-testid="calendar-sheet"/);
-  assert.match(source, /data-testid="calendar-google"/);
-  assert.match(source, /data-testid="calendar-apple"/);
-  assert.match(source, /data-testid="calendar-outlook"/);
-  assert.match(source, /Add all to calendar/);
-  assert.match(source, /Download \.ics/);
-  assert.match(source, /Import &amp; export/);
-  assert.match(source, /buildIcsCalendar/);
-  assert.match(source, /buildGoogleCalendarUrl/);
-  assert.match(source, /buildOutlookUrl/);
-  assert.match(source, /downloadIcs/);
+  // No more manual AddToCalendarButton — calendar invite is emailed automatically
+  assert.doesNotMatch(source, /function AddToCalendarButton/);
+  assert.doesNotMatch(source, /data-testid="add-to-calendar"/);
+  assert.doesNotMatch(source, /Add all to calendar/);
+
+  // Confirm triggers the drive_confirmed email
+  assert.match(source, /drive_confirmed/);
 });
 
 test("Today card renders child ride info on the Home screen", async () => {

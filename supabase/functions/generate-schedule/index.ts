@@ -494,7 +494,18 @@ if (shouldAutoPublish) {
   }
 }
 
-    // ── Audit event (best-effort) ───────────────────────────────
+  // ── Notify drivers with tentative assignments (draft only) ─────
+  if (!autoPublished) {
+    try {
+      await writeClient.functions.invoke("send-push", {
+        body: { type: "assignment_request", version_id: newVersion.id },
+      });
+    } catch (pushError) {
+      console.warn("Assignment request notification failed (non-blocking):", pushError instanceof Error ? pushError.message : "unknown");
+    }
+  }
+
+  // ── Audit event (best-effort) ───────────────────────────────
     try {
       await supabase.from("audit_events").insert({
         group_id: groupId,

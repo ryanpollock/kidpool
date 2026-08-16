@@ -73,7 +73,7 @@ const HTML_BODY = `
 <p style="font-size:13px;line-height:1.5;color:#4f6278;margin:0 0 8px;">Not getting notifications within a day? Reinstall the app: remove the home screen icon, open carpoolcrew.co in Safari, and add it to your home screen again.</p>
 
 <h2 style="font-size:16px;margin:24px 0 8px;">3. Check in for next week (Aug 17–21)</h2>
-<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Tap <strong>Submit</strong> by <strong>Saturday, August 15 at 3 PM Pacific</strong>. Missed check-ins mean your child might not get a ride.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Tap <strong>Submit</strong> by <strong>Saturday, August 15 at midnight Pacific</strong>. Missed check-ins mean your child might not get a ride.</p>
 
 <div style="background:#f0f9f9;border-left:4px solid #118b8c;padding:12px 16px;margin:16px 0;border-radius:4px;">
 <p style="font-size:15px;line-height:1.6;margin:0;"><strong>Tip:</strong> Set your standard week (tap your avatar, then edit <strong>Standard week</strong>) to pre-fill your weekly check-in with your family's typical ride needs and driving availability. You still need to open the Next Week tab and tap Submit each week.</p>
@@ -101,7 +101,7 @@ Not getting notifications within a day? Reinstall the app: remove the home scree
 
 3. CHECK IN FOR NEXT WEEK (AUG 17-21)
 
-Open the Next Week tab and tell us which days your child needs rides and which days you can drive. Tap Submit by Saturday, August 15 at 3 PM Pacific. Missed check-ins mean your child might not get a ride.
+Open the Next Week tab and tell us which days your child needs rides and which days you can drive. Tap Submit by Saturday, August 15 at midnight Pacific. Missed check-ins mean your child might not get a ride.
 
 Tip: Set your standard week (tap your avatar, then edit "Standard week") to pre-fill your weekly check-in with your family's typical ride needs and driving availability. You still need to open the Next Week tab and tap Submit each week.`;
 

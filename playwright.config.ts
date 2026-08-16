@@ -1,6 +1,10 @@
 import { defineConfig } from "@playwright/test";
 
 const testPort = Number(process.env.MOBILE_RUNTIME_TEST_PORT ?? 4174);
+const isLocal = process.env.TEST_DB_TARGET === "local";
+const devCommand = isLocal
+  ? `npm run dev:test -- --port ${testPort}`
+  : `npm run dev:staging -- --port ${testPort}`;
 
 export default defineConfig({
   testDir: "./tests",
@@ -12,7 +16,7 @@ export default defineConfig({
     viewport: { width: 1100, height: 1100 },
   },
   webServer: {
-    command: `npm run dev:staging -- --port ${testPort}`,
+    command: devCommand,
     url: `http://127.0.0.1:${testPort}/tests/runtime-fixture.html`,
     reuseExistingServer: process.env.MOBILE_RUNTIME_TEST_PORT == null,
   },

@@ -876,7 +876,7 @@ test.describe("App E2E", () => {
     cleanupE2EData();
   });
 
-  test("add to calendar sheet appears after confirming a drive", async ({ page }) => {
+  test("confirmed drive appears on home screen after confirming", async ({ page }) => {
     test.skip(skip, "Requires service key");
     const coord = setupHousehold(290, "CalCoord", true);
     if (!coord) { test.skip(); return; }
@@ -959,17 +959,12 @@ test.describe("App E2E", () => {
     );
 
     await signInWithTestAuth(page, driver.email);
+    // The confirmed drive should appear on the home screen
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
     await page.waitForTimeout(3000);
 
-    // The "Add all to calendar" button should appear in the confirmed hero
-    await expect(page.getByTestId("add-to-calendar").first()).toBeVisible({ timeout: 15000 });
-
-    // Tap it — the BottomSheet should open with calendar options
-    await page.getByTestId("add-to-calendar").first().click();
-    await expect(page.getByTestId("calendar-sheet")).toBeVisible({ timeout: 5000 });
-    // Bulk mode: only the Apple Calendar (.ics) option is available
-    await expect(page.getByTestId("calendar-apple")).toBeVisible({ timeout: 5000 });
+    // The "Add all to calendar" button has been replaced by an automatic
+    // email with a .ics calendar invite — no manual button needed.
 
     cleanupE2EData();
   });

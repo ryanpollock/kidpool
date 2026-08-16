@@ -827,7 +827,7 @@ export class CarpoolRepository {
     if (userResult.error) throw new Error(userResult.error.message);
     if (!userResult.data.user) throw new Error("Sign in again to continue.");
 
-    // Deadlines: check-in by Saturday 3 PM Pacific, confirmation by Sunday 8 PM Pacific.
+    // Deadlines: check-in by Saturday midnight Pacific, confirmation by Sunday 7 PM Pacific.
     // Compute in the pilot timezone to avoid UTC drift for SF families.
     const startDate = new Date(startsOn + "T00:00:00");
     const day = startDate.getDay();
@@ -840,8 +840,8 @@ export class CarpoolRepository {
     sundayStr.setDate(startDate.getDate() - 1);
     const sundayDate = dateInTimezone(sundayStr);
 
-    const checkinDeadline = new Date(`${saturdayDate}T15:00:00-07:00`);
-    const confirmationDeadline = new Date(`${sundayDate}T20:00:00-07:00`);
+    const checkinDeadline = new Date(`${saturdayDate}T23:59:00-07:00`);
+    const confirmationDeadline = new Date(`${sundayDate}T19:00:00-07:00`);
 
     const week = unwrapRequired<Tables<"weeks">>(
       await this.client
@@ -1454,6 +1454,23 @@ export class CarpoolRepository {
     }
 
     const alerts: DeclinedDriveAlert[] = [];
+
+    // Build a set of trip_ids where the current user has a 'released' assignment.
+    // If they have a released assignment for a trip, they should re-accept that
+    // from "Cancelled or missed drives" rather than volunteer via "I can drive"
+    // (which would create an unnecessary third assignment).
+    const myReleasedTripIds = new Set<string>();
+    const allDriverAssignments = await unwrapRequired(
+      await this.client
+        .from("driver_assignments")
+        .select("trip_id")
+        .eq("schedule_version_id", scheduleVersionId)
+        .eq("group_id", groupId)
+        .eq("driver_profile_id", profileId)
+        .eq("status", "released"),
+    );
+    for (const da of allDriverAssignments) myReleasedTripIds.add(da.trip_id);
+
     for (const da of driverAssignments) {
       const riders = ridersByAssignment.get(da.id) ?? [];
       const myChildren = riders.filter((r) => householdIds.has(r.household_id));
@@ -1462,6 +1479,10 @@ export class CarpoolRepository {
       // Don't show the declined alert to the driver who declined.
       // They should use the Review screen to re-accept, not volunteer.
       if (da.driver_profile_id === profileId) continue;
+
+      // Suppress "I can drive" if the user has a 'released' assignment for
+      // this trip — they should re-accept their released assignment instead.
+      if (myReleasedTripIds.has(da.trip_id)) continue;
 
       const trip = tripById.get(da.trip_id);
       if (!trip) continue;

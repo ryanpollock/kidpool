@@ -4,8 +4,12 @@
 // deterministic UUIDs (deadbeef prefix) and clean up after each test.
 //
 // Targets the STAGING project by default (jfyjgmhqnlbdcafoarrg).
-// Run: npm run test:integration
-// Requires: npm run link:test (CLI linked to staging)
+// Run: npm run test:integration          → staging (CLI subprocess, ~9 min)
+// Run: npm run test:integration:local    → local Docker stack (~seconds)
+//
+// Set TEST_DB_TARGET=local to use the local Supabase stack. The CLI's
+// `--linked` flag is swapped for `--db-url` pointing at local Postgres;
+// the keychain key lookup is skipped (local keys are deterministic).
 
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
@@ -14,17 +18,30 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { beforeEach } from "node:test";
 
+const TEST_DB_TARGET = process.env.TEST_DB_TARGET || "staging";
+const IS_LOCAL = TEST_DB_TARGET === "local";
+
 const PRODUCTION_REF = "ujcrnrcgbvzyqosykkjy";
 const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "jfyjgmhqnlbdcafoarrg";
-const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`;
+const SUPABASE_URL = IS_LOCAL
+  ? "http://127.0.0.1:54321"
+  : `https://${PROJECT_REF}.supabase.co`;
 const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
 
-if (PROJECT_REF === PRODUCTION_REF) {
+// Local Supabase ships deterministic keys with the CLI.
+const LOCAL_SERVICE_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU";
+const LOCAL_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0";
+const LOCAL_DB_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
+
+if (!IS_LOCAL && PROJECT_REF === PRODUCTION_REF) {
   console.error("Aborting: integration tests must not run against production. Run `npm run link:test` first.");
   process.exit(1);
 }
 
 function verifyLinkedProject() {
+  if (IS_LOCAL) return; // No link needed for local
   try {
     const linkedRef = readFileSync(path.join(import.meta.dirname, "..", "supabase/.temp/project-ref"), "utf8").trim();
     if (linkedRef !== PROJECT_REF) {
@@ -39,9 +56,12 @@ function verifyLinkedProject() {
 verifyLinkedProject();
 
 // Skip all tests if no service key is available
-const hasServiceKey = !!process.env.SUPABASE_TEST_SERVICE_KEY || true; // always try keychain
+const hasServiceKey = !!process.env.SUPABASE_TEST_SERVICE_KEY || !IS_LOCAL; // always try keychain for staging
 
 function getKeys() {
+  if (IS_LOCAL) {
+    return { serviceKey: LOCAL_SERVICE_KEY, anonKey: LOCAL_ANON_KEY };
+  }
   const envServiceKey = process.env.SUPABASE_TEST_SERVICE_KEY || null;
   let envAnonKey = process.env.SUPABASE_TEST_ANON_KEY || null;
   try {
@@ -67,12 +87,52 @@ const { serviceKey: SERVICE_KEY, anonKey: ANON_KEY } = getKeys();
 const UID = (n) => `deadbeef-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 function runSql(sql) {
+  if (IS_LOCAL) {
+    // Local mode: use `docker exec psql` directly. 10-50x faster than
+    // `supabase db query --db-url` (which wraps psql in CLI framework overhead).
+    // Handles multiple statements natively (no prepared-statement limitation).
+    // For SELECT/WITH queries, wrap in json_agg to return JSON rows.
+    // For non-SELECT (INSERT/UPDATE/DELETE/TRUNCATE), run directly and return {rows:[]}.
+    const trimmed = sql.trim();
+    const isSelect = /^(with|select)\s/i.test(trimmed);
+    // Strip trailing semicolons — they break inside the json_agg subquery wrapper
+    const cleanSql = trimmed.replace(/;+\s*$/, "");
+    const wrappedSql = isSelect
+      ? `SELECT coalesce(json_agg(q), '[]'::json) FROM (${cleanSql}) q;`
+      : trimmed;
+    try {
+      const result = execSync(
+        `echo ${JSON.stringify(wrappedSql)} | docker exec -i supabase_db_carpool-app psql -U postgres -t -A -q 2>&1`,
+        { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
+      );
+      if (isSelect) {
+        try {
+          const rows = JSON.parse(result.trim() || "[]");
+          return { rows };
+        } catch {
+          return { rows: [] };
+        }
+      }
+      // For non-SELECT, check if psql reported an error
+      if (/^ERROR:/m.test(result)) {
+        return { error: { message: result.trim() } };
+      }
+      return { rows: [] };
+    } catch (e) {
+      const stdout = e.stdout || e.message || "";
+      if (/^ERROR:/m.test(stdout)) {
+        return { error: { message: stdout.trim() } };
+      }
+      try { return JSON.parse(stdout || '{"rows":[]}'); } catch { return { rows: [] }; }
+    }
+  }
+  // Staging mode: original subprocess approach (handles multi-statement natively)
   const tmpDir = mkdtempSync(path.join(tmpdir(), "kidpool-test-"));
   const file = path.join(tmpDir, "query.sql");
   writeFileSync(file, sql);
   try {
     const result = execSync(`supabase db query --linked -f "${file}" 2>/dev/null`, {
-      encoding: "utf8",
+      encoding: "utf-8",
       maxBuffer: 10 * 1024 * 1024,
     });
     return JSON.parse(result);
@@ -239,9 +299,20 @@ function setupWeekAndTrips(coordUserId, coordHouseholdId) {
 
 // ── RLS enforcement tests ────────────────────────────────────────
 
-// Clean up all test data before each test to ensure isolation
+// Clean up all test data before each test to ensure isolation.
+// Local mode: truncate all test-owned tables (fast, true isolation).
+// Staging mode: surgical delete by email pattern (preserves seed data).
 beforeEach(() => {
-  cleanupAllTestData();
+  if (IS_LOCAL) {
+    // psql handles multiple statements natively — send them all in one call.
+    runSql(`
+      TRUNCATE public.rider_assignments, public.driver_confirmations, public.driver_assignments, public.schedule_versions, public.ride_requests, public.driver_availability, public.weekly_checkins, public.trips, public.weeks, public.audit_events, public.vehicles, public.children, public.household_join_codes, public.memberships, public.households, public.push_subscriptions, public.profiles RESTART IDENTITY;
+      DELETE FROM auth.users WHERE email LIKE '%@test.kidpool' OR email LIKE '%@e2e.kidpool' OR email LIKE '%@lib.test.kidpool';
+      INSERT INTO public.groups (id, name, slug, timezone, meeting_point, school_name) VALUES ('${GROUP_ID}', 'Midtown Terrace–Presidio Carpool', 'midtown-presidio', 'America/Los_Angeles', 'Midtown Terrace Playground', 'Presidio Middle School') ON CONFLICT (id) DO UPDATE SET name = excluded.name, slug = excluded.slug, timezone = excluded.timezone, meeting_point = excluded.meeting_point, school_name = excluded.school_name;
+    `);
+  } else {
+    cleanupAllTestData();
+  }
 });
 
 test("RLS: signed-out user cannot read any protected table", { skip: !SERVICE_KEY }, async () => {
@@ -930,7 +1001,7 @@ test("Backend: auto-publish publishes new version when prior was published and a
   const tripId = tripIds[0];
 
   runSql(`
-    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(365)}', '${GROUP_ID}', '${driver.householdId}', 'AutoPubCar', 4, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(365)}', '${GROUP_ID}', '${driver.householdId}', 'AutoPubCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
     INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(267)}', '${GROUP_ID}', '${driver.householdId}', 'AutoPubKid', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
     INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(567)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
     INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(567)}', '${tripId}', '${UID(267)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;

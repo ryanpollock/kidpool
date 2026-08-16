@@ -28,12 +28,6 @@ import {
 } from "@radix-ui/react-icons";
 import { KeyboardInput, MobileScroll, BottomSheet, useScreenPortal } from "./mobile";
 import {
-  buildGoogleCalendarUrl,
-  buildIcsCalendar,
-  buildOutlookUrl,
-  downloadIcs,
-} from "./lib/calendar";
-import {
   CarpoolRepository,
   getSupabaseClient,
   type CheckinDetails,
@@ -1118,9 +1112,9 @@ function HomeScreen({
   confirmError,
   schedulePublished,
   hasHomeSchedule,
+  homeSchedule,
   homeScheduleVersionId,
   homeScheduleError,
-  homeSchedule,
   familyChildInSchedule,
   onConfirmAll,
   onReview,
@@ -1217,9 +1211,22 @@ function HomeScreen({
   // there are no active drives — without this path the cancelled
   // driver would have no way back (Review screen is hidden when
   // activeAssignments is empty).
-  const reacceptableAssignments = myAssignments.filter(
-    (a) => a.assignment.status === "declined" || a.assignment.status === "expired",
-  );
+  // 'released' assignments (another driver took over) are only shown
+  // when the drive is NOT covered — i.e., no confirmed/tentative driver
+  // exists for the same trip in the published schedule. When another
+  // driver is actively driving, hide the released assignment so the
+  // original driver doesn't see a stale "re-accept" prompt.
+  const reacceptableAssignments = myAssignments.filter((a) => {
+    if (a.assignment.status === "declined" || a.assignment.status === "expired") return true;
+    if (a.assignment.status === "released") {
+      const rosters = homeSchedule?.rostersByTrip.get(a.trip.id) ?? [];
+      const hasActiveDriver = rosters.some(
+        (r: ScheduleRosterEntry) => r.driverAssignment.status === "confirmed" || r.driverAssignment.status === "tentative",
+      );
+      return !hasActiveDriver;
+    }
+    return false;
+  });
   const hasReacceptable = reacceptableAssignments.length > 0;
   const tentative = activeAssignments.filter((a) => a.assignment.status === "tentative");
   const confirmed = activeAssignments.filter((a) => a.assignment.status === "confirmed");
@@ -1229,10 +1236,10 @@ function HomeScreen({
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
     ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
-    : "Sun 8:00 PM";
+    : "Sun 7:00 PM";
   const checkinDeadlineLabel = checkinDeadline
     ? new Date(checkinDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
-    : "Sat 3:00 PM";
+    : "Sat midnight";
   const todaysDrives = activeAssignments.filter((a) => a.trip.service_date === todayDate);
   const hasTodaysDrive = todaysDrives.length > 0;
   const todayWeekdayFull = todaysDrives.length > 0 ? formatTripDate(todaysDrives[0].trip.service_date).weekdayFull : "";
@@ -1395,7 +1402,7 @@ function HomeScreen({
                   : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
           </p>
           {allConfirmed && schedulePublished && !hasAlerts && !hasReacceptable ? (
-            <AddToCalendarButton assignments={confirmed} timezone={timezone} label="Add all to calendar" />
+            <p style={{ fontSize: "14px", color: "#4f6278", marginTop: "16px" }}>Calendar invites have been emailed to you.</p>
           ) : null}
         </section>
       )}
@@ -1748,8 +1755,8 @@ function HomeScreen({
                     status={status}
                   />
                   <div className="declined-notice"><Cross2Icon /><span>
-                    <strong>{status === "expired" ? "Confirmation deadline passed" : "You cancelled this drive"}</strong>
-                    <small>{status === "expired" ? "Re-accept to confirm you can drive." : "Re-accept if you can still drive."}</small>
+                    <strong>{status === "expired" ? "Confirmation deadline passed" : status === "released" ? "Another driver took this drive" : "You cancelled this drive"}</strong>
+                    <small>{status === "expired" ? "Re-accept to confirm you can drive." : status === "released" ? "Re-accept to take it back." : "Re-accept if you can still drive."}</small>
                   </span></div>
                   <button
                     className="primary-button"
@@ -1815,12 +1822,22 @@ function ReviewScreen({
     setWorking(assignmentId);
     setError(null);
     try {
+      const priorStatus = myAssignments.find((a) => a.assignment.id === assignmentId)?.assignment.status;
       await repository.respondToDriverAssignment(assignmentId, response, reason);
       onAssignmentStatusChange(assignmentId, response === "confirmed" ? "confirmed" : "declined");
       setDecliningId(null);
       setDeclineReason("");
       await onResponded();
-      if (response === "declined") onDeclined(assignmentId);
+      if (response === "confirmed") {
+        void repository.sendPushNotification(assignmentId, null, "drive_confirmed");
+        if (priorStatus === "declined" || priorStatus === "expired" || priorStatus === "released") {
+          void repository.sendPushNotification(assignmentId, null, "volunteered");
+        }
+      }
+      if (response === "declined") {
+        void repository.sendPushNotification(assignmentId, null, "drive_cancelled");
+        onDeclined(assignmentId);
+      }
     } catch (nextError) {
       setError(readableError(nextError));
     } finally {
@@ -1893,7 +1910,6 @@ function ReviewScreen({
             ) : status === "confirmed" ? (
               <>
                 <div className="success-notice"><CheckCircledIcon /><span><strong>Confirmed</strong><small>{dateInfo.full} · {period}</small></span></div>
-                <AddToCalendarButton assignments={[entry]} timezone={timezone} />
                 {isDeclining ? (
                   <div className="decline-form" data-testid="decline-form">
                     <label className="auth-field">
@@ -3104,7 +3120,7 @@ function CoordinatorScreen({
 
       {isCoordinator && week ? (
         <section className="coordinator-section admin-override">
-          <div className="section-heading-row"><h2>Overrides</h2><span className="helper-copy">Automated at Sat 3 PM &amp; Sun 8 PM</span></div>
+          <div className="section-heading-row"><h2>Overrides</h2><span className="helper-copy">Automated Sun 7 AM &amp; 8 PM</span></div>
           <div className="coordinator-generate">
             {generateError ? <div className="auth-error" role="alert">{generateError}</div> : null}
             {scheduleStatus === "draft" ? (
@@ -4293,7 +4309,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     items: [
       {
         q: "What does tentative mean?",
-        a: "A tentative assignment means the scheduler has proposed you as the driver for that trip, but you haven't confirmed yet. You need to confirm or decline by the deadline (typically 3:00 PM Sunday).",
+        a: "A tentative assignment means the scheduler has proposed you as the driver for that trip, but you haven't confirmed yet. You need to confirm or decline by the deadline (typically 7 PM Sunday).",
       },
       {
         q: "How do I confirm my drives?",
@@ -4305,7 +4321,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
       },
       {
         q: "What is the confirmation deadline?",
-        a: "The deadline is shown on the Home screen (typically 3:00 PM Sunday). Please confirm or decline by the deadline so the coordinator knows the final roster. If you don't confirm, your assignment stays tentative.",
+        a: "The deadline is shown on the Home screen (typically 7 PM Sunday). Please confirm or decline by the deadline so the coordinator knows the final roster. If you don't confirm, your assignment stays tentative.",
       },
     ],
   },
@@ -4413,79 +4429,6 @@ function FaqScreen({ onBack }: { onBack: () => void }) {
         ))}
       </div>
     </div>
-  );
-}
-
-function AddToCalendarButton({
-  assignments,
-  timezone,
-  label = "Add to calendar",
-}: {
-  assignments: MyDriverAssignment[];
-  timezone: string;
-  label?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const isBulk = assignments.length > 1;
-
-  const handleGoogle = () => {
-    if (assignments.length === 0) return;
-    window.open(buildGoogleCalendarUrl(assignments[0], timezone), "_blank", "noopener");
-    setOpen(false);
-  };
-
-  const handleOutlook = () => {
-    if (assignments.length === 0) return;
-    window.open(buildOutlookUrl(assignments[0], timezone), "_blank", "noopener");
-    setOpen(false);
-  };
-
-  const handleApple = () => {
-    const ics = buildIcsCalendar(assignments, timezone);
-    const filename = isBulk ? "carpool-crew-drives.ics" : "carpool-crew-drive.ics";
-    downloadIcs(filename, ics);
-    setOpen(false);
-  };
-
-  return (
-    <>
-      <button
-        className="secondary-button calendar-button"
-        data-testid="add-to-calendar"
-        onClick={() => setOpen(true)}
-      >
-        <CalendarIcon width="16" height="16" /> {label}
-      </button>
-      <BottomSheet open={open} onOpenChange={setOpen} title="Add to calendar">
-        <div className="calendar-sheet" data-testid="calendar-sheet">
-          {!isBulk ? (
-            <>
-              <button className="calendar-sheet-option" data-testid="calendar-google" onClick={handleGoogle}>
-                <span className="calendar-sheet-icon">G</span>
-                <span className="calendar-sheet-label">Google Calendar</span>
-                <ChevronRightIcon />
-              </button>
-              <button className="calendar-sheet-option" data-testid="calendar-outlook" onClick={handleOutlook}>
-                <span className="calendar-sheet-icon">O</span>
-                <span className="calendar-sheet-label">Outlook</span>
-                <ChevronRightIcon />
-              </button>
-            </>
-          ) : (
-            <p className="calendar-sheet-note">
-              Adding {assignments.length} drives at once. Download a single .ics file and import it into any calendar app — Google Calendar, Apple Calendar, Outlook, and others. In Google Calendar (web): Settings → Import &amp; export → Select the .ics file → Import.
-            </p>
-          )}
-          <button className="calendar-sheet-option" data-testid="calendar-apple" onClick={handleApple}>
-            <span className="calendar-sheet-icon"><CalendarIcon width="18" height="18" /></span>
-            <span className="calendar-sheet-label">
-              {isBulk ? "Download .ics — all drives" : "Download .ics"}
-            </span>
-            <ChevronRightIcon />
-          </button>
-        </div>
-      </BottomSheet>
-    </>
   );
 }
 
@@ -4959,6 +4902,7 @@ export default function Prototype() {
       );
       if (newAssignment) {
         void repository.sendPushNotification(newAssignment.id, null, "manually_assigned");
+        void repository.sendPushNotification(newAssignment.id, null, "drive_confirmed");
       }
       setAdminAssignTarget(null);
       await loadSchedule();
@@ -5181,6 +5125,7 @@ export default function Prototype() {
       await repository.respondToDriverAssignment(assignmentId, "declined");
       updateAssignmentStatus(assignmentId, "declined");
       void repository.sendPushNotification(assignmentId, null, "declined");
+      void repository.sendPushNotification(assignmentId, null, "drive_cancelled");
       await loadMyAssignments();
       await loadHomeSchedule();
       await loadPublishedSchedule();
@@ -5196,6 +5141,7 @@ export default function Prototype() {
     try {
       await repository.respondToDriverAssignment(assignmentId, "confirmed");
       updateAssignmentStatus(assignmentId, "confirmed");
+      void repository.sendPushNotification(assignmentId, null, "drive_confirmed");
       void repository.sendPushNotification(assignmentId, null, "volunteered");
       await loadMyAssignments();
       await loadHomeSchedule();
@@ -5221,6 +5167,7 @@ export default function Prototype() {
     try {
       for (const entry of tentative) {
         await repository.respondToDriverAssignment(entry.assignment.id, "confirmed");
+        void repository.sendPushNotification(entry.assignment.id, null, "drive_confirmed");
       }
       await loadMyAssignments();
     } catch (error) {
@@ -5235,8 +5182,11 @@ export default function Prototype() {
     setVolunteerWorking(true);
     setVolunteerError(null);
     try {
-      await repository.volunteerForDrive(assignmentId);
-      void repository.sendPushNotification(assignmentId, null, "volunteered");
+      const newAssignment = await repository.volunteerForDrive(assignmentId);
+      if (newAssignment) {
+        void repository.sendPushNotification(newAssignment.id, null, "volunteered");
+        void repository.sendPushNotification(newAssignment.id, null, "drive_confirmed");
+      }
       await loadMyAssignments();
       await loadHomeSchedule();
       await loadSchedule();
@@ -5256,6 +5206,7 @@ export default function Prototype() {
       const newAssignment = await repository.volunteerForUncoveredTrip(tripId, versionId);
       if (newAssignment) {
         void repository.sendPushNotification(newAssignment.id, null, "volunteered");
+        void repository.sendPushNotification(newAssignment.id, null, "drive_confirmed");
       }
       await loadMyAssignments();
       await loadHomeSchedule();
