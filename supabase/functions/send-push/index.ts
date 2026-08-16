@@ -222,7 +222,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { type, assignment_id, version_id, displaced_drivers } = body;
+    const { type, assignment_id, version_id, displaced_drivers, nonce } = body;
 
     if (!SERVICE_ROLE_KEY) return jsonError("Service role key not configured", 500);
     if (!type) return jsonError("Missing notification type", 400);
@@ -791,7 +791,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
           rosterText +
           pendingCheckinText + "\n";
 
-        const idempotencyKey = `coordinator-tentative-${weekId}-${todayStr}-${profile.id}`;
+        const idempotencySuffix = nonce ? `-${nonce}` : "";
+        const idempotencyKey = `coordinator-tentative-${weekId}-${todayStr}-${profile.id}${idempotencySuffix}`;
         try {
           const res = await fetch("https://api.resend.com/emails", {
             method: "POST",
