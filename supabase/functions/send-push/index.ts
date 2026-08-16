@@ -1132,7 +1132,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
       let allDriverAssignments: any[] = [];
       let allRiderAssignments: any[] = [];
       for (const weekId of weekIds) {
-        const versions = await supaFetch("scheduleversions", "id", { week_id: `eq.${weekId}`, group_id: `eq.${groupId}`, status: `eq.${versionStatus}` });
+        const versions = await supaFetch("schedule_versions", "id", { week_id: `eq.${weekId}`, group_id: `eq.${groupId}`, status: `eq.${versionStatus}` });
         if (versions.length === 0) continue;
         const versionId = versions[0].id;
         const tripIds = trips.filter((t: any) => t.week_id === weekId).map((t: any) => t.id);
