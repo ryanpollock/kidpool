@@ -1302,15 +1302,19 @@ Questions? Reply to this email or check the FAQ in the app.`;
         if (childSheetsHtml.length === 0) continue;
 
         const firstName = (profile.full_name ?? "there").split(" ")[0];
+        const kidFirstNames = myChildren.map((c: any) => c.first_name.trim());
+        const kidsNameStr = kidFirstNames.length === 1
+          ? `${kidFirstNames[0]}'s`
+          : `${kidFirstNames.slice(0, -1).join(", ")} & ${kidFirstNames[kidFirstNames.length - 1]}'s`;
         const htmlBody =
           `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
-          `<h1 style="font-size:20px;margin:0 0 8px;">Backpack sheet for ${escapeHtml(todayLabel)}</h1>` +
+          `<h1 style="font-size:20px;margin:0 0 8px;">${escapeHtml(kidsNameStr)} backpack sheet for ${escapeHtml(todayLabel)}</h1>` +
           `<p style="font-size:14px;margin:0 0 16px;color:#64748b;">Print this and put it in your kid's backpack. ${escapeHtml(firstName)}, here are your child(ren)'s rides today.</p>` +
           childSheetsHtml.join("") +
           `</body></html>`;
 
         const textBody =
-          `Backpack sheet for ${todayLabel}\n\n` +
+          `${kidsNameStr} backpack sheet for ${todayLabel}\n\n` +
           `Print this and put it in your kid's backpack. ${firstName}, here are your child(ren)'s rides today.\n\n` +
           childSheetsText.join("\n");
 
@@ -1328,7 +1332,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
               from: RESEND_FROM_EMAIL,
               to: profile.email,
               reply_to: RESEND_REPLY_TO,
-              subject: `Backpack sheet for ${todayLabel}`,
+              subject: `${kidsNameStr} backpack sheet for ${todayLabel}`,
               html: htmlBody,
               text: textBody,
               tags: [
