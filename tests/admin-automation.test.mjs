@@ -66,6 +66,10 @@ const coordinatorTentativeSummaryMigrationUrl = new URL(
   "../supabase/migrations/202608160002_coordinator_tentative_summary_cron.sql",
   import.meta.url,
 );
+const backpackSheetMigrationUrl = new URL(
+  "../supabase/migrations/202608160003_backpack_sheet_cron.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -974,4 +978,54 @@ test("coordinator_tentative_summary: cron migration creates wrapper function + S
   // Sunday 7 AM Pacific, DST-proofed dual UTC (14:00 and 15:00 UTC)
   assert.match(sql, /0 14,15 \* \* 0/);
   assert.match(sql, /coordinator-tentative-summary/);
+});
+
+// ─── Backpack sheet (morning-of per-child email) ───────────
+
+test("backpack_sheet: send-push has the type with phone numbers + per-child sections", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // The type branch exists
+  assert.match(ts, /type === "backpack_sheet"/);
+
+  // Loads published schedule version + confirmed assignments
+  assert.match(ts, /status: "eq\.published"/);
+  assert.match(ts, /status: "eq\.confirmed"/);
+
+  // Fetches phone from profiles (drive-scoped, always shown)
+  assert.match(ts, /profiles.*phone/);
+
+  // Has formatPhone helper
+  assert.match(ts, /function formatPhone/);
+
+  // Per-child sections (kid name + trip info)
+  assert.match(ts, /backpack-sheet-\$\{today\}-\$\{profile\.id\}/);
+
+  // Tags for Resend analytics
+  assert.match(ts, /backpack_sheet/);
+});
+
+test("backpack_sheet: cron migration creates wrapper function + 7 AM Pacific Mon–Fri schedule", async () => {
+  const sql = await readFile(backpackSheetMigrationUrl, "utf8");
+
+  // Creates the wrapper function
+  assert.match(sql, /create or replace function public\.send_backpack_sheet/);
+  assert.match(sql, /language plpgsql/);
+  assert.match(sql, /security definer/);
+
+  // Reads cron_secret + cron_edge_base_url from vault (environment-aware)
+  assert.match(sql, /vault\.decrypted_secrets/);
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
+
+  // POSTs to /send-push with type backpack_sheet
+  assert.match(sql, /'\/send-push'/);
+  assert.match(sql, /'backpack_sheet'/);
+
+  // Revokes public access
+  assert.match(sql, /revoke all on function public\.send_backpack_sheet/);
+
+  // 7 AM Pacific Mon–Fri, DST-proofed dual UTC (14:00 and 15:00 UTC)
+  assert.match(sql, /0 14,15 \* \* 1-5/);
+  assert.match(sql, /backpack-sheet/);
 });
