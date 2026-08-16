@@ -231,7 +231,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { type, assignment_id, version_id, displaced_drivers, nonce } = body;
+    const { type, assignment_id, version_id, displaced_drivers, nonce, test_date, test_status } = body;
 
     if (!SERVICE_ROLE_KEY) return jsonError("Service role key not configured", 500);
     if (!type) return jsonError("Missing notification type", 400);
@@ -1115,7 +1115,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
 
       const now = new Date();
       const parts = pacificParts(now, false);
-      const today = `${parts.year}-${parts.month}-${parts.day}`;
+      const today = test_date || `${parts.year}-${parts.month}-${parts.day}`;
 
       // Find today's trips (morning + afternoon)
       const trips = await supaFetch("trips", "id,service_date,direction,meeting_time,origin,destination,week_id,group_id", { service_date: `eq.${today}` });
@@ -1124,12 +1124,15 @@ Questions? Reply to this email or check the FAQ in the app.`;
       }
       const groupId = trips[0].group_id;
 
-      // Find the published schedule version, load confirmed driver assignments
+      // Find the published schedule version, load confirmed driver assignments.
+      // test_status (manual trigger only) lets us test against a draft version.
+      const versionStatus = test_status || "published";
+      const driverStatus = test_status === "draft" ? "in.(tentative,confirmed)" : "eq.confirmed";
       const weekIds = [...new Set(trips.map((t: any) => t.week_id))];
       let allDriverAssignments: any[] = [];
       let allRiderAssignments: any[] = [];
       for (const weekId of weekIds) {
-        const versions = await supaFetch("scheduleversions", "id", { week_id: `eq.${weekId}`, group_id: `eq.${groupId}`, status: "eq.published" });
+        const versions = await supaFetch("scheduleversions", "id", { week_id: `eq.${weekId}`, group_id: `eq.${groupId}`, status: `eq.${versionStatus}` });
         if (versions.length === 0) continue;
         const versionId = versions[0].id;
         const tripIds = trips.filter((t: any) => t.week_id === weekId).map((t: any) => t.id);
@@ -1137,7 +1140,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
           schedule_version_id: `eq.${versionId}`,
           trip_id: `in.(${tripIds.join(",")})`,
           group_id: `eq.${groupId}`,
-          status: "eq.confirmed",
+          status: driverStatus,
         });
         allDriverAssignments.push(...das);
         if (das.length > 0) {
