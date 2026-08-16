@@ -774,8 +774,10 @@ Questions? Reply to this email or check the FAQ in the app.`;
         const htmlBody =
           `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
           `<h1 style="font-size:22px;margin:0 0 8px;">Tentative schedule for the week of ${escapeHtml(new Date(weekStartDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric" }))}</h1>` +
-          `<p style="font-size:15px;margin:0 0 16px;">Hi ${escapeHtml(firstName)}, here's the tentative carpool schedule. Parents must confirm their drives by Sunday ${escapeHtml(deadlineStr)} at ${escapeHtml(deadlineTimeStr)} Pacific.</p>` +
-          `<div style="background:#f0f9f9;padding:12px;border-radius:8px;margin:0 0 16px;"><p style="font-size:13px;margin:0;color:#0c2b52;"><strong>⏳ = tentative</strong> (parent hasn't confirmed yet) &nbsp;&nbsp; <strong>✅ = confirmed</strong></p></div>` +
+`<p style="font-size:15px;margin:0 0 16px;">Hi ${escapeHtml(firstName)}, here's the tentative carpool schedule.</p>` +
+          `<div style="background:#fef9c3;padding:12px 16px;border-radius:8px;margin:0 0 16px;border-left:4px solid #eab308;"><p style="font-size:15px;margin:0;color:#0c2b52;"><strong>&#9888; Parents must confirm their drives by Sunday ${escapeHtml(deadlineStr)} at ${escapeHtml(deadlineTimeStr)} Pacific.</strong></p></div>` +
+          `<p style="margin:0 0 20px;">${cta}</p>` +
+          `<div style="background:#f0f9f9;padding:12px;border-radius:8px;margin:0 0 16px;"><p style="font-size:13px;margin:0;color:#0c2b52;"><strong>&#9201; = tentative</strong> (parent hasn't confirmed yet) &nbsp;&nbsp; <strong>&#9989; = confirmed</strong></p></div>` +
           rosterHtml +
           pendingCheckinHtml +
           `<p style="margin-top:24px;">${cta}</p>` +
@@ -783,7 +785,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
 
         const textBody =
           `Tentative schedule for the week of ${new Date(weekStartDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric" })}\n\n` +
-          `Hi ${firstName}, here's the tentative carpool schedule. Parents must confirm their drives by Sunday ${deadlineStr} at ${deadlineTimeStr} Pacific.\n\n` +
+`Hi ${firstName}, here's the tentative carpool schedule.\n\n` +
+          `\u26A0 Parents must confirm their drives by Sunday ${deadlineStr} at ${deadlineTimeStr} Pacific.\n\n` +
           `⏳ = tentative (parent hasn't confirmed yet)  ✅ = confirmed\n` +
           rosterText +
           pendingCheckinText + "\n";
