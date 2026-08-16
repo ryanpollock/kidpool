@@ -568,6 +568,264 @@ Questions? Reply to this email or check the FAQ in the app.`;
       return jsonResponse({ sent: pushSent, failed: pushFailed, email_sent: emailSent, email_failed: emailFailed, skipped, push_enabled: !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY), push_error: pushFailed > 0 ? lastPushError : undefined });
     }
 
+    // ── coordinator_tentative_summary: Sunday morning email to coordinators ──
+    // Triggered by a fixed cron at Sunday 7 AM Pacific (DST-proofed dual UTC:
+    // 0 14,15 * * 0). Sends the coordinator the tentative weekly schedule
+    // with a clear call-to-action: parents must confirm their drives by
+    // Sunday 7 PM Pacific (the confirmation_deadline). Email-only (no push).
+    // Recipients: active coordinators for the group. Idempotency key includes
+    // the week ID and today's Pacific date so a DST off-fire dedupes via Resend.
+    if (type === "coordinator_tentative_summary") {
+      if (!RESEND_API_KEY) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_resend_key" });
+      }
+
+      const now = new Date();
+      const parts = pacificParts(now, false);
+      // Today's Pacific date (YYYY-MM-DD) — used for idempotency
+      const todayStr = `${parts.year}-${parts.month}-${parts.day}`;
+      // Find the upcoming week: starts_on > today (Pacific), has trips.
+      // The draft is generated Saturday 3 PM Pacific (or Sunday 7 AM on the
+      // cadence-overhaul branch); by Sunday 7 AM the draft always exists.
+      const pilotGroupId = "c1000000-0000-4000-8000-000000000001";
+      const upcomingWeeks = await supaFetch(
+        "weeks",
+        "id,group_id,starts_on,confirmation_deadline",
+        { group_id: `eq.${pilotGroupId}`, starts_on: `gt.${todayStr}` },
+      );
+      if (upcomingWeeks.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_upcoming_week" });
+      }
+      // Take the earliest upcoming week
+      const week = upcomingWeeks.sort((a: any, b: any) => a.starts_on.localeCompare(b.starts_on))[0];
+      const weekId = week.id;
+      const groupId = week.group_id;
+      const weekStartDate = week.starts_on;
+
+      // Load the draft schedule version (not published — it's tentative)
+      const versions = await supaFetch("schedule_versions", "id", {
+        week_id: `eq.${weekId}`,
+        group_id: `eq.${groupId}`,
+        status: "eq.draft",
+      });
+      if (versions.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_draft_version" });
+      }
+      const versionId = versions[0].id;
+
+      // Load trips for this week
+      const trips = await supaFetch(
+        "trips",
+        "id,service_date,direction,meeting_time,origin,destination",
+        { week_id: `eq.${weekId}`, group_id: `eq.${groupId}` },
+      );
+      const tripIds = trips.map((t: any) => t.id);
+      if (tripIds.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_trips" });
+      }
+
+      // Load driver assignments (tentative + confirmed) and rider assignments
+      const driverAssignments = await supaFetch(
+        "driver_assignments",
+        "id,trip_id,driver_profile_id,vehicle_id,status,child_passenger_capacity",
+        { schedule_version_id: `eq.${versionId}`, trip_id: `in.(${tripIds.join(",")})` },
+      );
+      const daIds = driverAssignments.map((da: any) => da.id);
+      let riderAssignments: any[] = [];
+      if (daIds.length > 0) {
+        riderAssignments = await supaFetch("rider_assignments", "child_id,driver_assignment_id", {
+          driver_assignment_id: `in.(${daIds.join(",")})`,
+        });
+      }
+
+      // Fetch children, driver profiles, vehicles
+      const childIds = [...new Set(riderAssignments.map((ra: any) => ra.child_id))];
+      const children = childIds.length > 0
+        ? await supaFetch("children", "id,first_name,last_name,household_id", { id: `in.(${childIds.join(",")})` })
+        : [];
+      const childMap = new Map(children.map((c: any) => [c.id, c]));
+
+      const driverProfileIds = [...new Set(driverAssignments.map((da: any) => da.driver_profile_id))];
+      const driverProfiles = driverProfileIds.length > 0
+        ? await supaFetch("profiles", "id,full_name", { id: `in.(${driverProfileIds.join(",")})` })
+        : [];
+      const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
+
+      const vehicleIds = [...new Set(driverAssignments.map((da: any) => da.vehicle_id).filter(Boolean))];
+      const vehicles = vehicleIds.length > 0
+        ? await supaFetch("vehicles", "id,label", { id: `in.(${vehicleIds.join(",")})` })
+        : [];
+      const vehicleMap = new Map(vehicles.map((v: any) => [v.id, v]));
+
+      // Build per-driver-assignment kid lists
+      const tripRidersByDriver = new Map<string, string[]>();
+      for (const ra of riderAssignments) {
+        const child = childMap.get(ra.child_id);
+        if (!child) continue;
+        const kidName = `${child.first_name} ${child.last_name}`.trim();
+        const arr = tripRidersByDriver.get(ra.driver_assignment_id) ?? [];
+        arr.push(kidName);
+        tripRidersByDriver.set(ra.driver_assignment_id, arr);
+      }
+
+      // Group trips by date, then morning/afternoon
+      const tripsById = new Map(trips.map((t: any) => [t.id, t]));
+      const tripsByDate = new Map<string, any[]>();
+      for (const trip of trips) {
+        const arr = tripsByDate.get(trip.service_date) ?? [];
+        arr.push(trip);
+        tripsByDate.set(trip.service_date, arr);
+      }
+      const sortedDates = [...tripsByDate.keys()].sort();
+
+      // Format the confirmation deadline for the email copy
+      const deadlineDate = new Date(week.confirmation_deadline);
+      const deadlineParts = pacificParts(deadlineDate, true);
+      const deadlineStr = `${parseInt(deadlineParts.month, 10)}/${parseInt(deadlineParts.day, 10)}`;
+      const deadlineTimeStr = `${parseInt(deadlineParts.hour, 10)}:${deadlineParts.minute} ${deadlineParts.hour === "00" || (parseInt(deadlineParts.hour, 10) >= 12 && parseInt(deadlineParts.hour, 10) < 24) ? "PM" : "AM"}`;
+
+      // Build roster HTML and text — per day, morning + afternoon
+      const rosterHtmlLines: string[] = [];
+      const rosterTextLines: string[] = [];
+      const allAssignedTrips = new Set(driverAssignments.map((da: any) => da.trip_id));
+
+      for (const date of sortedDates) {
+        const dayTrips = tripsByDate.get(date) ?? [];
+        const dayLabel = new Date(date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+        rosterHtmlLines.push(`<h2 style="font-size:16px;margin:20px 0 8px;color:#0c2b52;">${escapeHtml(dayLabel)}</h2>`);
+        rosterTextLines.push(`\n${dayLabel}`);
+
+        for (const direction of ["morning", "afternoon"] as const) {
+          const trip = dayTrips.find((t: any) => t.direction === direction);
+          if (!trip) continue;
+          const time = formatTime(trip.meeting_time);
+          const dirLabel = direction === "morning" ? "Morning" : "Afternoon";
+          const tripDrivers = driverAssignments.filter((da: any) => da.trip_id === trip.id);
+
+          rosterHtmlLines.push(`<p style="font-size:14px;margin:4px 0 2px;font-weight:600;color:#118b8c;">${dirLabel} (${time})</p>`);
+          rosterTextLines.push(`  ${dirLabel} (${time})`);
+
+          if (tripDrivers.length === 0) {
+            // No driver — flag as uncovered
+            rosterHtmlLines.push(`<p style="font-size:14px;margin:0 0 8px;padding:8px 12px;background:#fef2f2;border-radius:6px;color:#b91c1c;">⚠️ No driver — trip is uncovered</p>`);
+            rosterTextLines.push(`    ⚠️ No driver — trip is uncovered`);
+          } else {
+            for (const da of tripDrivers) {
+              const driver = driverProfileMap.get(da.driver_profile_id);
+              const vehicle = vehicleMap.get(da.vehicle_id);
+              const kids = tripRidersByDriver.get(da.id) ?? [];
+              const statusIcon = da.status === "confirmed" ? "✅" : "⏳";
+              const statusLabel = da.status === "confirmed" ? "confirmed" : "tentative";
+              const driverName = driver?.full_name ?? "A driver";
+              const vehicleStr = vehicle?.label ? ` (${vehicle.label})` : "";
+              const kidsStr = kids.length > 0 ? ` — ${kids.join(", ")}` : "";
+              rosterHtmlLines.push(`<p style="font-size:14px;margin:0 0 4px;">${statusIcon} <strong>${escapeHtml(driverName)}</strong>${escapeHtml(vehicleStr)} <span style="color:#64748b;font-size:12px;">(${statusLabel})</span><br><span style="color:#475569;">${escapeHtml(kidsStr)}</span></p>`);
+              rosterTextLines.push(`    ${statusIcon} ${driverName}${vehicleStr} (${statusLabel})${kidsStr}`);
+            }
+            rosterTextLines.push("");
+          }
+        }
+      }
+
+      // Check for households that haven't submitted check-ins
+      const checkins = await supaFetch("weekly_checkins", "household_id,status", {
+        week_id: `eq.${weekId}`,
+        group_id: `eq.${groupId}`,
+      });
+      const draftHouseholds = checkins.filter((c: any) => c.status === "draft").map((c: any) => c.household_id);
+      let pendingCheckinHtml = "";
+      let pendingCheckinText = "";
+      if (draftHouseholds.length > 0) {
+        const householdIdsStr = `(${draftHouseholds.join(",")})`;
+        const households = await supaFetch("households", "id,name", { id: `in.${householdIdsStr}` });
+        const householdMap = new Map(households.map((h: any) => [h.id, h.name]));
+        const pendingNames = draftHouseholds.map((hid: string) => householdMap.get(hid) ?? "Unknown").filter(Boolean);
+        pendingCheckinHtml = `<div style="margin-top:20px;padding:12px;background:#fffbeb;border-radius:6px;"><p style="font-size:14px;margin:0;color:#92400e;"><strong>${pendingNames.length} household${pendingNames.length !== 1 ? "s" : ""} still checking in:</strong> ${pendingNames.map(escapeHtml).join(", ")}</p></div>`;
+        pendingCheckinText = `\n\n${pendingNames.length} household(s) still checking in: ${pendingNames.join(", ")}`;
+      }
+
+      // Recipients: coordinators only
+      const memberships = await supaFetch("memberships", "profile_id", {
+        group_id: `eq.${groupId}`,
+        status: "eq.active",
+        role: "eq.coordinator",
+      });
+      const coordinatorProfileIds = memberships.map((m: any) => m.profile_id);
+      if (coordinatorProfileIds.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_coordinators" });
+      }
+      const coordinatorProfiles = await supaFetch("profiles", "id,full_name,email", {
+        id: `in.(${coordinatorProfileIds.join(",")})`,
+      });
+
+      const cta = APP_URL
+        ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
+        : "";
+
+      let emailSent = 0;
+      let emailFailed = 0;
+      const rosterHtml = rosterHtmlLines.join("");
+      const rosterText = rosterTextLines.join("\n");
+
+      for (const profile of coordinatorProfiles) {
+        if (!profile.email || isTestEmail(profile.email)) continue;
+        const firstName = (profile.full_name ?? "coordinator").split(" ")[0];
+
+        const htmlBody =
+          `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+          `<h1 style="font-size:22px;margin:0 0 8px;">Tentative schedule for the week of ${escapeHtml(new Date(weekStartDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric" }))}</h1>` +
+          `<p style="font-size:15px;margin:0 0 16px;">Hi ${escapeHtml(firstName)}, here's the tentative carpool schedule. Parents must confirm their drives by Sunday ${escapeHtml(deadlineStr)} at ${escapeHtml(deadlineTimeStr)} Pacific.</p>` +
+          `<div style="background:#f0f9f9;padding:12px;border-radius:8px;margin:0 0 16px;"><p style="font-size:13px;margin:0;color:#0c2b52;"><strong>⏳ = tentative</strong> (parent hasn't confirmed yet) &nbsp;&nbsp; <strong>✅ = confirmed</strong></p></div>` +
+          rosterHtml +
+          pendingCheckinHtml +
+          `<p style="margin-top:24px;">${cta}</p>` +
+          `</body></html>`;
+
+        const textBody =
+          `Tentative schedule for the week of ${new Date(weekStartDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric" })}\n\n` +
+          `Hi ${firstName}, here's the tentative carpool schedule. Parents must confirm their drives by Sunday ${deadlineStr} at ${deadlineTimeStr} Pacific.\n\n` +
+          `⏳ = tentative (parent hasn't confirmed yet)  ✅ = confirmed\n` +
+          rosterText +
+          pendingCheckinText + "\n";
+
+        const idempotencyKey = `coordinator-tentative-${weekId}-${todayStr}-${profile.id}`;
+        try {
+          const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKey,
+            },
+            body: JSON.stringify({
+              from: RESEND_FROM_EMAIL,
+              to: profile.email,
+              reply_to: RESEND_REPLY_TO,
+              subject: `Tentative schedule for the week of ${new Date(weekStartDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric" })}`,
+              html: htmlBody,
+              text: textBody,
+              tags: [
+                { name: "type", value: "coordinator_tentative_summary" },
+                { name: "group", value: groupId ?? "unknown" },
+              ],
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.text();
+            console.error(`[send-push] Coordinator tentative summary email to ${profile.email} failed:`, err);
+            emailFailed++;
+          } else {
+            emailSent++;
+          }
+        } catch (e) {
+          console.error(`[send-push] Coordinator tentative summary email to ${profile.email} threw:`, e);
+          emailFailed++;
+        }
+      }
+
+      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed, reason: "coordinator_tentative_summary" });
+    }
+
     // ── night_before_summary: "who's driving tomorrow" email + push ──
     // Triggered by a fixed cron at 7:45 PM Pacific (Sun-Thu nights).
     // No time gate — the cron fires at the right time. DST-proofed via
