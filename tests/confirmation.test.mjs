@@ -85,7 +85,7 @@ test("Exchange 6 CoordinatorScreen has publish control", async () => {
 test("Exchange 6 WeekScreen distinguishes draft from published", async () => {
   const source = await readFile(prototypeUrl, "utf8");
 
-  assert.match(source, /schedule-badge--draft/);
+  assert.match(source, /draft-banner/);
   assert.match(source, /schedule-badge--published/);
   assert.match(source, /isPublished/);
   assert.match(source, /status === "published"/);

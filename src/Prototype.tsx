@@ -2667,12 +2667,15 @@ function WeekScreen({
       <header className="page-title">
         <span className="eyebrow">This Week</span>
         <h1>{weekLabel(week.week.starts_on)}</h1>
-        <p>
-          <span className={`schedule-badge ${isPublished ? "schedule-badge--published" : "schedule-badge--draft"}`}>
-            {isPublished ? "Published" : `Draft v${schedule.version.version_number}`}
-          </span>
-          {isPublished ? null : <span className="schedule-algo">{schedule.version.algorithm_version}</span>}
-        </p>
+        {isPublished ? (
+          <p>
+            <span className="schedule-badge schedule-badge--published">Published</span>
+          </p>
+        ) : (
+          <div className="draft-banner" data-testid="draft-banner">
+            <strong>Draft schedule</strong> — subject to change. Will be updated Sunday evening.
+          </div>
+        )}
       </header>
 
       <div className="week-status-strip">
