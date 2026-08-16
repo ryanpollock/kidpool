@@ -255,6 +255,18 @@ test("ScheduleVersionWithRosters type includes uncoveredRidersByTrip", async () 
   assert.match(repoSource, /uncoveredRidersByTrip\.get/);
 });
 
+test("uncovered riders only count ride_requests from submitted check-ins", async () => {
+  const repoSource = await readFile(
+    new URL("../src/lib/supabase/carpool-repository.ts", import.meta.url),
+    "utf8",
+  );
+  // Both getLatestScheduleVersion and getLatestPublishedVersion must filter
+  // ride_requests by submitted check-in IDs, matching the scheduler's behavior.
+  // Without this, draft/unsubmitted check-ins create phantom uncovered riders.
+  assert.match(repoSource, /from\("weekly_checkins"\)[\s\S]*?eq\("status", "submitted"\)/);
+  assert.match(repoSource, /\.in\("checkin_id", submittedCheckinIds\)/);
+});
+
 test("WeekScreen renders uncovered riders section per trip", async () => {
   const source = await readFile(prototypeUrl, "utf8");
   assert.match(source, /uncovered-riders-\$\{trip\.id\}/);

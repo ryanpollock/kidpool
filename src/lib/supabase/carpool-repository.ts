@@ -1800,6 +1800,18 @@ async getLatestScheduleVersion(
     if (!version) return null;
 
     const tripIds = trips.map((t) => t.id);
+    // Only count ride_requests from submitted check-ins, matching the scheduler's
+    // behavior (generate-schedule/index.ts:150-152). Without this filter, ride_requests
+    // from draft/unsubmitted check-ins would create phantom uncovered riders.
+    const submittedCheckins = unwrap(
+      await this.client
+        .from("weekly_checkins")
+        .select("id")
+        .eq("week_id", weekId)
+        .eq("group_id", groupId)
+        .eq("status", "submitted"),
+    );
+    const submittedCheckinIds = (submittedCheckins ?? []).map((c) => c.id);
     const [driverAssignments, riderAssignments, rideRequestsData] = await Promise.all([
       unwrapRequired(
         await this.client
@@ -1816,13 +1828,14 @@ async getLatestScheduleVersion(
           .eq("schedule_version_id", version.id)
           .eq("group_id", groupId),
       ),
-      tripIds.length
+      tripIds.length && submittedCheckinIds.length
         ? unwrapRequired(
             await this.client
               .from("ride_requests")
               .select("*")
               .eq("group_id", groupId)
-              .in("trip_id", tripIds),
+              .in("trip_id", tripIds)
+              .in("checkin_id", submittedCheckinIds),
           )
         : [],
     ]);
@@ -1999,6 +2012,18 @@ async getLatestScheduleVersion(
     if (!version) return null;
 
     const tripIds = trips.map((t) => t.id);
+    // Only count ride_requests from submitted check-ins, matching the scheduler's
+    // behavior (generate-schedule/index.ts:150-152). Without this filter, ride_requests
+    // from draft/unsubmitted check-ins would create phantom uncovered riders.
+    const submittedCheckins = unwrap(
+      await this.client
+        .from("weekly_checkins")
+        .select("id")
+        .eq("week_id", weekId)
+        .eq("group_id", groupId)
+        .eq("status", "submitted"),
+    );
+    const submittedCheckinIds = (submittedCheckins ?? []).map((c) => c.id);
     const [driverAssignments, riderAssignments, rideRequestsData] = await Promise.all([
       unwrapRequired(
         await this.client
@@ -2015,13 +2040,14 @@ async getLatestScheduleVersion(
           .eq("schedule_version_id", version.id)
           .eq("group_id", groupId),
       ),
-      tripIds.length
+      tripIds.length && submittedCheckinIds.length
         ? unwrapRequired(
             await this.client
               .from("ride_requests")
               .select("*")
               .eq("group_id", groupId)
-              .in("trip_id", tripIds),
+              .in("trip_id", tripIds)
+              .in("checkin_id", submittedCheckinIds),
           )
         : [],
     ]);
