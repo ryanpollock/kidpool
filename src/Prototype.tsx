@@ -2785,6 +2785,7 @@ function CoordinatorScreen({
   onGenerate,
   generating,
   generateError,
+  schedule,
   scheduleStatus,
   scheduleGeneratedAt,
   schedulePublishedAt,
@@ -2822,6 +2823,7 @@ function CoordinatorScreen({
   onGenerate: () => void;
   generating: boolean;
   generateError: string | null;
+  schedule: ScheduleVersionWithRosters | null;
   scheduleStatus: "draft" | "published" | null;
   scheduleGeneratedAt: string | null;
   schedulePublishedAt: string | null;
@@ -3053,6 +3055,94 @@ function CoordinatorScreen({
         <div className="auth-error" role="alert" data-testid="generate-warning">
           {generateWarning}
         </div>
+      ) : null}
+
+      {schedule && week?.trips?.length ? (
+        <section className="coordinator-section" data-testid="week-status-section">
+          <div className="section-heading-row">
+            <h2>Week status</h2>
+            <span className="week-status-strip" data-testid="week-status-strip">
+              <span><CheckCircledIcon width="14" height="14" /> {declinedCount + uncoveredCount > 0 ? tentativeCount + (schedule ? Array.from(schedule.rostersByTrip.values()).flat().filter(r => r.driverAssignment.status === "confirmed").length : 0) : 0} drives</span>
+            </span>
+          </div>
+          <div className="week-status-detail">
+            {(() => {
+              const sortedTrips = week.trips.slice().sort((a, b) =>
+                a.service_date.localeCompare(b.service_date) || (a.direction === "morning" ? -1 : 1),
+              );
+              let lastDate = "";
+              return sortedTrips.flatMap((trip) => {
+                const dateInfo = formatTripDate(trip.service_date);
+                const rosters = schedule.rostersByTrip.get(trip.id) ?? [];
+                const uncovered = uncoveredRidersByTrip.get(trip.id) ?? [];
+                const activeRosters = rosters.filter(r =>
+                  r.driverAssignment.status !== "declined" &&
+                  r.driverAssignment.status !== "released" &&
+                  r.driverAssignment.status !== "expired",
+                );
+                const elements: React.ReactNode[] = [];
+                if (trip.service_date !== lastDate) {
+                  lastDate = trip.service_date;
+                  elements.push(
+                    <div key={`date-${trip.id}`} className="week-status-date">
+                      {dateInfo.weekdayFull}, {dateInfo.short}
+                    </div>,
+                  );
+                }
+                const dirLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
+                const time = (() => {
+                  const [h, m] = trip.meeting_time.split(":");
+                  const hour = parseInt(h, 10);
+                  const ampm = hour >= 12 ? "PM" : "AM";
+                  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+                  return `${hour12}:${m} ${ampm}`;
+                })();
+                elements.push(
+                  <div key={trip.id} className="week-status-trip">
+                    <div className="week-status-trip-label">{dirLabel} ({time})</div>
+                    {activeRosters.length === 0 ? (
+                      <div className="week-status-uncovered">
+                        ⚠️ No driver{uncovered.length > 0 ? ` — ${uncovered.length} rider${uncovered.length !== 1 ? "s" : ""} uncovered: ${uncovered.map(c => c.first_name).join(", ")}` : ""}
+                      </div>
+                    ) : (
+                      activeRosters.map((entry) => (
+                        <div key={entry.driverAssignment.id} className="week-status-driver">
+                          <span className={`roster-status roster-status--${entry.driverAssignment.status === "confirmed" ? "confirmed" : "tentative"}`}>
+                            {entry.driverAssignment.status === "confirmed" ? "✅" : "⏳"}
+                          </span>
+                          <strong>{entry.driverProfile.full_name}</strong>
+                          {entry.vehicle?.label ? <span className="week-status-vehicle"> ({entry.vehicle.label})</span> : null}
+                          <span className="week-status-kids">
+                            {entry.children.length > 0 ? entry.children.map(c => c.first_name).join(", ") : "No kids"}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                    {uncovered.length > 0 && activeRosters.length > 0 ? (
+                      <div className="week-status-uncovered">
+                        ⚠️ Uncovered: {uncovered.map(c => c.first_name).join(", ")}
+                      </div>
+                    ) : null}
+                  </div>,
+                );
+                return elements;
+              });
+            })()}
+          </div>
+          {overview?.households ? (
+            <div className="week-status-checkins">
+              <strong>Check-ins:</strong>{" "}
+              {overview.households.filter(h => h.status === "submitted").length} submitted{" · "}
+              {overview.households.filter(h => h.status !== "submitted").length} not submitted
+              {(() => {
+                const pending = overview.households.filter(h => h.status !== "submitted");
+                return pending.length > 0
+                  ? ` (${pending.map(h => h.household.name).join(", ")})`
+                  : "";
+              })()}
+            </div>
+          ) : null}
+        </section>
       ) : null}
 
       {overviewError ? (
@@ -5531,6 +5621,7 @@ const navItems = useMemo(() => {
           onGenerate={() => void generateSchedule()}
           generating={generating}
           generateError={generateError}
+          schedule={schedule}
           scheduleStatus={schedule?.version.status === "published" ? "published" : schedule?.version.status === "draft" ? "draft" : null}
           scheduleGeneratedAt={schedule?.version.generated_at ?? null}
           schedulePublishedAt={schedule?.version.published_at ?? null}

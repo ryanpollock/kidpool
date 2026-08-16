@@ -514,6 +514,12 @@ test("prototype: tab renamed to Admin, triage board layout", async () => {
   assert.match(tsx, /data-testid="confirm-regenerate"/);
   assert.match(tsx, /data-testid="regenerate-schedule-coord"/);
   assert.match(tsx, /data-testid="generate-warning"/);
+
+  // Week status section (driver confirmation state per trip)
+  assert.match(tsx, /data-testid="week-status-section"/);
+  assert.match(tsx, /data-testid="week-status-strip"/);
+  assert.match(tsx, /week-status-detail/);
+  assert.match(tsx, /week-status-checkins/);
 });
 
 // ─── volunteer_for_uncovered_trip: already-driving fix ─────
