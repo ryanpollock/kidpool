@@ -617,13 +617,6 @@ export class CarpoolRepository {
   }
 
   async deactivateChild(childId: string) {
-    // NOTE: This does not delete the child's ride_requests or driver_availability
-    // rows. Stale requests from deactivated children are safely ignored by the
-    // scheduler (children are loaded with active=true; childById.get returns
-    // undefined for inactive IDs, and the .filter(c !== undefined) drops them).
-    // Dead rows accumulate in the DB but don't affect scheduling or the UI.
-    // If this becomes a concern, add cleanup here — but verify the scheduler
-    // and roster views don't depend on the row count.
     const updated = unwrapRequired<Tables<"children">>(
       await this.client
         .from("children")
@@ -632,6 +625,16 @@ export class CarpoolRepository {
         .select("*")
         .single(),
     );
+    // Delete the child's ride_requests so stale rows don't accumulate.
+    // Best-effort: a failure here does not undo the deactivation — the
+    // scheduler already filters inactive children (loaded with active=true;
+    // childById.get returns undefined for inactive IDs and .filter drops
+    // them), so leftover rows are harmless. RLS allows household members
+    // to delete their own household's ride_requests.
+    await this.client
+      .from("ride_requests")
+      .delete()
+      .eq("child_id", childId);
     await this.recordAudit(
       updated.group_id,
       "child_removed",

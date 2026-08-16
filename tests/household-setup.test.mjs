@@ -24,6 +24,24 @@ test("Exchange 3 repository exposes household write methods for children and veh
   assert.match(source, /child_passenger_capacity/);
 });
 
+test("deactivateChild deletes the child's ride_requests so stale rows don't accumulate", async () => {
+  const source = await readFile(repositoryUrl, "utf8");
+  // The deactivateChild method must delete ride_requests for the child.
+  // Stale ride_requests from deactivated children are ignored by the
+  // scheduler (children loaded with active=true), but leaving them in
+  // the DB confuses reporting queries. RLS allows household members
+  // to delete their own household's ride_requests.
+  const deactivateBlock = source.match(
+    /async deactivateChild\(childId: string\) \{[\s\S]*?\n  \}/,
+  );
+  assert.ok(deactivateBlock, "deactivateChild method should exist");
+  assert.match(
+    deactivateBlock[0],
+    /from\("ride_requests"\)\s*\n\s*\.delete\(\)\s*\n\s*\.eq\("child_id", childId\)/,
+    "deactivateChild should delete ride_requests by child_id",
+  );
+});
+
 test("Exchange 3 account screen renders editable name, children, and vehicle sections", async () => {
   const source = await readFile(prototypeUrl, "utf8");
 
