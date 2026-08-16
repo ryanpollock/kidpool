@@ -2433,6 +2433,7 @@ function WeekScreen({
   avatarUrl,
   onAccount,
   onOpenDrive,
+  onCheckIn,
   todayDate,
 }: {
   week: WeekWithTrips | null;
@@ -2448,6 +2449,7 @@ function WeekScreen({
   avatarUrl: string | null;
   onAccount: () => void;
   onOpenDrive: (assignmentId: string) => void;
+  onCheckIn: () => void;
   todayDate: string;
 }) {
   const weekHeading = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
@@ -2493,6 +2495,29 @@ function WeekScreen({
           ) : (
             <p className="helper-copy">An admin needs to create the week first. Check back soon.</p>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  // Saturday gate: show "check in for next week" instead of last week's roster.
+  // The upcoming week's draft isn't available yet (generated Sat ~3 PM Pacific)
+  // and even after generation it's not useful to show on the "This Week" tab —
+  // parents should check in first, then see the schedule on Sunday.
+  const todayDow = new Date(todayDate + "T00:00:00").getDay();
+  const isSaturday = todayDow === 6;
+  if (isSaturday) {
+    return (
+      <div className="screen-content week-screen" data-testid="week-screen">
+        <AppHeader avatarUrl={avatarUrl} onAccount={onAccount} />
+        <header className="page-title">
+          <span className="eyebrow">This Week</span>
+          <h1>{weekHeading}</h1>
+        </header>
+        <div className="empty-state" data-testid="saturday-checkin-notice">
+          <p><strong>It's Saturday — check in for next week.</strong></p>
+          <p className="helper-copy">Next week's schedule will be available Sunday. Tap below to submit your check-in for the upcoming week.</p>
+          <button className="primary-button" onClick={onCheckIn}>Go to Next Week</button>
         </div>
       </div>
     );
@@ -5585,21 +5610,30 @@ const navItems = useMemo(() => {
     }
 
     if (activeTab === "week") {
+      // On weekends (Saturday/Sunday), show the upcoming week's draft/tentative
+      // schedule instead of the previous week's published roster. On Saturday
+      // the WeekScreen shows a "check in for next week" note; on Sunday it
+      // shows the draft schedule with tentative/confirmed drivers.
+      const isWeekend = new Date(todayDate + "T00:00:00").getDay() === 6 || new Date(todayDate + "T00:00:00").getDay() === 0;
+      const weekScreenWeek = isWeekend ? weekData : publishedWeek;
+      const weekScreenSchedule = isWeekend ? homeSchedule : publishedSchedule;
+      const weekScreenLoading = isWeekend ? weekLoading : publishedLoading;
       return (
         <WeekScreen
-          week={publishedWeek}
-          weekLoading={publishedLoading}
+          week={weekScreenWeek}
+          weekLoading={weekScreenLoading}
           weekError={null}
-          schedule={publishedSchedule}
-          scheduleLoading={publishedLoading}
+          schedule={weekScreenSchedule}
+          scheduleLoading={weekScreenLoading}
           scheduleError={null}
           isCoordinator={identity.membership?.role === "coordinator"}
           onReloadWeek={() => void loadWeek()}
           onReloadSchedule={() => void loadPublishedSchedule()}
-          weekStartsOn={publishedWeek?.week.starts_on ?? null}
+          weekStartsOn={weekScreenWeek?.week.starts_on ?? null}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
           onOpenDrive={(id) => setDriveDetailId(id)}
+          onCheckIn={() => navigate("plan")}
           todayDate={todayDate}
         />
       );
