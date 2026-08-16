@@ -70,6 +70,10 @@ const backpackSheetMigrationUrl = new URL(
   "../supabase/migrations/202608160003_backpack_sheet_cron.sql",
   import.meta.url,
 );
+const backpackSheetTimeoutMigrationUrl = new URL(
+  "../supabase/migrations/202608140005_fix_backpack_sheet_timeout.sql",
+  import.meta.url,
+);
 const surgicalSundayCronMigrationUrl = new URL(
   "../supabase/migrations/202608160004_surgical_sunday_evening_cron.sql",
   import.meta.url,
@@ -1038,6 +1042,36 @@ test("backpack_sheet: cron migration creates wrapper function + 7 AM Pacific Mon
   // 7 AM Pacific Mon–Fri, DST-proofed dual UTC (14:00 and 15:00 UTC)
   assert.match(sql, /0 14,15 \* \* 1-5/);
   assert.match(sql, /backpack-sheet/);
+});
+
+test("backpack_sheet: timeout fix adds 120s pg_net timeout", async () => {
+  const sql = await readFile(backpackSheetTimeoutMigrationUrl, "utf8");
+
+  // Rewrites the wrapper function with CREATE OR REPLACE
+  assert.match(sql, /create or replace function public\.send_backpack_sheet/);
+
+  // Adds the 120s timeout
+  assert.match(sql, /timeout_milliseconds := 120000/);
+
+  // Still uses vault secrets (environment-aware)
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_backpack_sheet/);
+});
+
+test("backpack_sheet: kid phone numbers included in carmate list", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Children query includes the phone column
+  assert.match(ts, /children.*phone/);
+
+  // Kids with phones structure (name + phone per kid)
+  assert.match(ts, /kidsWithPhones/);
+
+  // Carmate phones rendered with formatPhone
+  assert.match(ts, /formatPhone\(k\.phone\)/);
+  assert.match(ts, /no phone/);
 });
 
 // ─── Surgical Sunday evening cron ──────────────────────────────
