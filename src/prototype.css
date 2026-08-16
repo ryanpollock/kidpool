@@ -2770,6 +2770,79 @@ a.directory-contact-item:hover {
   color: var(--red, #c0392b);
 }
 
+.week-status-detail {
+  display: grid;
+  gap: 4px;
+}
+
+.week-status-date {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink, #0c2b52);
+  margin-top: 12px;
+  padding-bottom: 4px;
+}
+
+.week-status-date:first-child {
+  margin-top: 0;
+}
+
+.week-status-trip {
+  padding: 8px 12px;
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 10px;
+  background: white;
+  margin-bottom: 6px;
+}
+
+.week-status-trip-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--teal, #118b8c);
+  margin-bottom: 6px;
+}
+
+.week-status-driver {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  flex-wrap: wrap;
+}
+
+.week-status-driver .roster-status {
+  margin-top: 0;
+  font-size: 11px;
+  padding: 1px 6px;
+}
+
+.week-status-vehicle {
+  color: var(--slate, #64748b);
+  font-size: 12px;
+}
+
+.week-status-kids {
+  color: var(--slate, #64748b);
+  font-size: 12px;
+  width: 100%;
+}
+
+.week-status-uncovered {
+  font-size: 12px;
+  color: var(--red, #c0392b);
+  padding: 6px 0;
+  font-weight: 500;
+}
+
+.week-status-checkins {
+  font-size: 13px;
+  color: var(--slate, #64748b);
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line, #e2e8f0);
+}
+
 .uncovered-riders {
   grid-column: 1 / -1;
   margin-top: 6px;

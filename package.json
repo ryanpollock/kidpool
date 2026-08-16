@@ -33,7 +33,8 @@
     "predev": "npm run check:runtime",
     "dev": "vite",
     "prebuild": "npm run check:runtime",
-    "build": "tsc && vite build && node scripts/prepare-sites-build.mjs"
+    "build": "tsc && vite build && node scripts/prepare-sites-build.mjs",
+    "week-status": "node scripts/week-status.mjs"
   },
   "dependencies": {
     "@fontsource/roboto": "5.2.10",
