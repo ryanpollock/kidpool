@@ -52,58 +52,37 @@ const shouldSend = args.includes("--send");
 const onlyIndex = args.indexOf("--only");
 const filterEmail = onlyIndex >= 0 ? args[onlyIndex + 1] : null;
 
-const BROADCAST_ID = "pwa-setup-2026-08-12";
-const SUBJECT = "Set up notifications + check in for next week";
+const BROADCAST_ID = "photos-2026-08-16";
+const SUBJECT = "A quick request: add your photos to Carpool Crew";
 
 const HTML_BODY = `
-<h1 style="font-size:22px;margin:0 0 16px;">Welcome to Carpool Crew</h1>
-<p style="font-size:15px;line-height:1.6;margin:0 0 24px;">Three quick steps before school starts:</p>
+<h1 style="font-size:22px;margin:0 0 16px;">A quick request: add your photos</h1>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Photos help keep everyone safe at pickup. When a driver opens the app to see who they're picking up, a photo makes it easy to recognize the right kid out of a crowd. And when a nervous child is getting into a car, a photo of the driver helps them feel comfortable knowing it's the right parent.</p>
 
-<h2 style="font-size:16px;margin:24px 0 8px;">1. Install the app on your phone</h2>
-<p style="font-size:15px;line-height:1.6;margin:0 0 8px;"><strong>iPhone:</strong> Open <a href="https://carpoolcrew.co">carpoolcrew.co</a> in Safari, tap the Share button, then <strong>Add to Home Screen</strong>. Launch the app from the home screen icon (not Safari) to get push notifications.</p>
-<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>Android:</strong> Open carpoolcrew.co in Chrome, tap the menu (three dots), then <strong>Add to Home Screen</strong> or <strong>Install app</strong>. Allow notifications when prompted.</p>
+<h2 style="font-size:16px;margin:24px 0 8px;">Two quick uploads:</h2>
 
-<h2 style="font-size:16px;margin:24px 0 8px;">2. Enable notifications</h2>
-<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">If you installed the app previously, just open it — notifications will reconnect automatically. If you haven't installed yet, open the app from your home screen icon and tap <strong>Allow</strong> on the "Get notified" banner. You'll get alerts when:</p>
-<ul style="font-size:15px;line-height:1.6;margin:0 0 16px;padding-left:20px;">
-  <li>Your child's drive changes</li>
-  <li>It's 75 minutes before you drive</li>
-  <li>The night before each school day (who's driving tomorrow)</li>
-</ul>
-<p style="font-size:13px;line-height:1.5;color:#4f6278;margin:0 0 8px;">Not getting notifications within a day? Reinstall the app: remove the home screen icon, open carpoolcrew.co in Safari, and add it to your home screen again.</p>
+<h2 style="font-size:15px;margin:16px 0 4px;">1. Your photo</h2>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Tap your avatar (top-right) &rarr; <strong>Account</strong> &rarr; tap your name &rarr; upload a photo. If you're using a Google default (just a letter), please add a real photo so other parents and kids can recognize you at pickup.</p>
 
-<h2 style="font-size:16px;margin:24px 0 8px;">3. Check in for next week (Aug 17–21)</h2>
-<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Open the <strong>Next Week</strong> tab and tell us which days your child needs rides and which days you can drive. Tap <strong>Submit</strong> by <strong>Saturday, August 15 at midnight Pacific</strong>. Missed check-ins mean your child might not get a ride.</p>
+<h2 style="font-size:15px;margin:16px 0 4px;">2. Your child's photo</h2>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>Account</strong> &rarr; <strong>Children</strong> section &rarr; tap your child's name &rarr; upload a photo. This is the photo drivers see when they open a drive to see who they're picking up.</p>
 
-<div style="background:#f0f9f9;border-left:4px solid #118b8c;padding:12px 16px;margin:16px 0;border-radius:4px;">
-<p style="font-size:15px;line-height:1.6;margin:0;"><strong>Tip:</strong> Set your standard week (tap your avatar, then edit <strong>Standard week</strong>) to pre-fill your weekly check-in with your family's typical ride needs and driving availability. You still need to open the Next Week tab and tap Submit each week.</p>
-</div>
+<p style="font-size:13px;color:#4f6278;margin:0 0 16px;">Takes 30 seconds and makes a real difference for every driver and kid in the carpool.</p>
 `;
 
-const TEXT_BODY = `Welcome to Carpool Crew
+const TEXT_BODY = `A quick request: add your photos
 
-Three quick steps before school starts:
+Photos help keep everyone safe at pickup. When a driver opens the app to see who they're picking up, a photo makes it easy to recognize the right kid out of a crowd. And when a nervous child is getting into a car, a photo of the driver helps them feel comfortable knowing it's the right parent.
 
-1. INSTALL THE APP ON YOUR PHONE
+Two quick uploads:
 
-iPhone: Open carpoolcrew.co in Safari, tap the Share button, then "Add to Home Screen". Launch the app from the home screen icon (not Safari) to get push notifications.
+1. YOUR PHOTO
+Tap your avatar (top-right) -> Account -> tap your name -> upload a photo. If you're using a Google default (just a letter), please add a real photo so other parents and kids can recognize you at pickup.
 
-Android: Open carpoolcrew.co in Chrome, tap the menu (three dots), then "Add to Home Screen" or "Install app". Allow notifications when prompted.
+2. YOUR CHILD'S PHOTO
+Account -> Children section -> tap your child's name -> upload a photo. This is the photo drivers see when they open a drive to see who they're picking up.
 
-2. ENABLE NOTIFICATIONS
-
-If you installed the app previously, just open it — notifications will reconnect automatically. If you haven't installed yet, open the app from your home screen icon and tap "Allow" on the "Get notified" banner. You'll get alerts when:
-  - Your child's drive changes
-  - It's 75 minutes before you drive
-  - The night before each school day (who's driving tomorrow)
-
-Not getting notifications within a day? Reinstall the app: remove the home screen icon, open carpoolcrew.co in Safari, and add it to your home screen again.
-
-3. CHECK IN FOR NEXT WEEK (AUG 17-21)
-
-Open the Next Week tab and tell us which days your child needs rides and which days you can drive. Tap Submit by Saturday, August 15 at midnight Pacific. Missed check-ins mean your child might not get a ride.
-
-Tip: Set your standard week (tap your avatar, then edit "Standard week") to pre-fill your weekly check-in with your family's typical ride needs and driving availability. You still need to open the Next Week tab and tap Submit each week.`;
+Takes 30 seconds and makes a real difference for every driver and kid in the carpool.`;
 
 async function main() {
   console.log("\n  send-broadcast\n");
