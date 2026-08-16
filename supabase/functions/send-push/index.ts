@@ -157,6 +157,15 @@ function formatTime(t: string): string {
   return `${hour12}:${m} ${ampm}`;
 }
 
+// Normalize a phone string to (XXX) XXX-XXXX. Handles leading +1 country
+// code, common punctuation, and short/invalid inputs (returns the raw
+// string if it can't be parsed to 10 digits).
+function formatPhone(raw: string): string {
+  const digits = raw.replace(/[^\d]/g, "").replace(/^1(\d{10})$/, "$1");
+  if (digits.length !== 10) return raw;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
 // Add minutes to a Postgres time string ("08:40" -> "09:10" for +30).
 // Wraps past midnight. Returns "HH:MM" (zero-padded).
 function addMinutes(time: string, minutes: number): string {
@@ -1089,6 +1098,256 @@ Questions? Reply to this email or check the FAQ in the app.`;
       }
 
       return jsonResponse({ sent: pushSent, failed: pushFailed, email_sent: emailSent, email_failed: emailFailed });
+    }
+
+    // ── backpack_sheet: morning-of per-child "backpack sheet" email ──
+    // Triggered by a fixed cron at 7 AM Pacific on school days (Mon–Fri).
+    // DST-proofed dual UTC (0 14,15 * * 1-5); off-DST fire deduped by
+    // idempotency key. Sends each family with a child riding today a
+    // per-child reference sheet: driver name + phone (always shown —
+    // drive-scoped, overrides the directory share_phone opt-out), vehicle,
+    // other kids in the car, and pickup time/origin for morning + afternoon.
+    // Designed to be printed and put in the kid's backpack. Email-only.
+    if (type === "backpack_sheet") {
+      if (!RESEND_API_KEY) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_resend_key" });
+      }
+
+      const now = new Date();
+      const parts = pacificParts(now, false);
+      const today = `${parts.year}-${parts.month}-${parts.day}`;
+
+      // Find today's trips (morning + afternoon)
+      const trips = await supaFetch("trips", "id,service_date,direction,meeting_time,origin,destination,week_id,group_id", { service_date: `eq.${today}` });
+      if (trips.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_school_today" });
+      }
+      const groupId = trips[0].group_id;
+
+      // Find the published schedule version, load confirmed driver assignments
+      const weekIds = [...new Set(trips.map((t: any) => t.week_id))];
+      let allDriverAssignments: any[] = [];
+      let allRiderAssignments: any[] = [];
+      for (const weekId of weekIds) {
+        const versions = await supaFetch("scheduleversions", "id", { week_id: `eq.${weekId}`, group_id: `eq.${groupId}`, status: "eq.published" });
+        if (versions.length === 0) continue;
+        const versionId = versions[0].id;
+        const tripIds = trips.filter((t: any) => t.week_id === weekId).map((t: any) => t.id);
+        const das = await supaFetch("driver_assignments", "id,trip_id,driver_profile_id,vehicle_id", {
+          schedule_version_id: `eq.${versionId}`,
+          trip_id: `in.(${tripIds.join(",")})`,
+          group_id: `eq.${groupId}`,
+          status: "eq.confirmed",
+        });
+        allDriverAssignments.push(...das);
+        if (das.length > 0) {
+          const daIds = das.map((da: any) => da.id);
+          const ras = await supaFetch("rider_assignments", "child_id,driver_assignment_id", {
+            driver_assignment_id: `in.(${daIds.join(",")})`,
+          });
+          allRiderAssignments.push(...ras);
+        }
+      }
+
+      if (allDriverAssignments.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_confirmed_drivers" });
+      }
+
+      // Fetch children, driver profiles (with phone), vehicles
+      const childIds = [...new Set(allRiderAssignments.map((ra: any) => ra.child_id))];
+      const children = childIds.length > 0 ? await supaFetch("children", "id,first_name,last_name,household_id", { id: `in.(${childIds.join(",")})` }) : [];
+      const childMap = new Map(children.map((c: any) => [c.id, c]));
+
+      const driverProfileIds = [...new Set(allDriverAssignments.map((da: any) => da.driver_profile_id))];
+      const driverProfiles = driverProfileIds.length > 0
+        ? await supaFetch("profiles", "id,full_name,phone", { id: `in.(${driverProfileIds.join(",")})` })
+        : [];
+      const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
+
+      const vehicleIds = [...new Set(allDriverAssignments.map((da: any) => da.vehicle_id).filter(Boolean))];
+      const vehicles = vehicleIds.length > 0 ? await supaFetch("vehicles", "id,label", { id: `in.(${vehicleIds.join(",")})` }) : [];
+      const vehicleMap = new Map(vehicles.map((v: any) => [v.id, v]));
+
+      // Build per-driver-assignment kid lists
+      const tripsById = new Map(trips.map((t: any) => [t.id, t]));
+      const tripRidersByDriver = new Map<string, string[]>();
+      for (const ra of allRiderAssignments) {
+        const child = childMap.get(ra.child_id);
+        if (!child) continue;
+        const kidName = child.first_name.trim();
+        const arr = tripRidersByDriver.get(ra.driver_assignment_id) ?? [];
+        arr.push(kidName);
+        tripRidersByDriver.set(ra.driver_assignment_id, arr);
+      }
+
+      // Map: childId -> { morning, afternoon } trip info
+      const childTripInfo = new Map<string, { morning: any; afternoon: any }>();
+      for (const child of children) {
+        childTripInfo.set(child.id, { morning: null, afternoon: null });
+      }
+      for (const da of allDriverAssignments) {
+        const trip = tripsById.get(da.trip_id);
+        if (!trip) continue;
+        const driver = driverProfileMap.get(da.driver_profile_id);
+        const vehicle = vehicleMap.get(da.vehicle_id);
+        const kids = tripRidersByDriver.get(da.id) ?? [];
+        const entry = {
+          driverName: driver?.full_name ?? "A driver",
+          driverPhone: driver?.phone ?? null,
+          vehicleLabel: vehicle?.label ?? "",
+          kids,
+          meetingTime: trip.meeting_time,
+          origin: trip.origin,
+        };
+        const riders = allRiderAssignments.filter((ra: any) => ra.driver_assignment_id === da.id);
+        for (const ra of riders) {
+          const info = childTripInfo.get(ra.child_id);
+          if (!info) continue;
+          if (trip.direction === "morning") info.morning = entry;
+          else info.afternoon = entry;
+        }
+      }
+
+      // Recipients: families with a child riding today
+      const ridingHouseholdIds = new Set<string>();
+      for (const ra of allRiderAssignments) {
+        const child = childMap.get(ra.child_id);
+        if (child) ridingHouseholdIds.add(child.household_id);
+      }
+      const recipientProfileIds: string[] = [];
+      for (const hid of ridingHouseholdIds) {
+        const memberships = await supaFetch("memberships", "profile_id", { household_id: `eq.${hid}`, status: "eq.active" });
+        recipientProfileIds.push(...memberships.map((m: any) => m.profile_id));
+      }
+      if (recipientProfileIds.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_recipients" });
+      }
+
+      // Fetch recipient profiles (need household_id to find their kids)
+      const recipientProfiles = await supaFetch("profiles", "id,full_name,email", { id: `in.(${[...new Set(recipientProfileIds)].join(",")})` });
+      // Map profile -> household_id via memberships
+      const recipientMemberships = await supaFetch("memberships", "profile_id,household_id", {
+        profile_id: `in.(${[...new Set(recipientProfileIds)].join(",")})`,
+        status: "eq.active",
+      });
+      const profileToHousehold = new Map(recipientMemberships.map((m: any) => [m.profile_id, m.household_id]));
+      // Map household_id -> children riding today
+      const householdToRidingChildren = new Map<string, any[]>();
+      for (const child of children) {
+        const arr = householdToRidingChildren.get(child.household_id) ?? [];
+        arr.push(child);
+        householdToRidingChildren.set(child.household_id, arr);
+      }
+
+      const todayLabel = new Date(today + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+
+      let emailSent = 0;
+      let emailFailed = 0;
+
+      for (const profile of recipientProfiles) {
+        if (!profile.email || isTestEmail(profile.email)) continue;
+
+        const householdId = profileToHousehold.get(profile.id);
+        if (!householdId) continue;
+        const myChildren = (householdToRidingChildren.get(householdId) ?? []);
+        if (myChildren.length === 0) continue;
+
+        // Build a per-child sheet for each kid
+        const childSheetsHtml: string[] = [];
+        const childSheetsText: string[] = [];
+        for (const child of myChildren) {
+          const info = childTripInfo.get(child.id);
+          if (!info) continue;
+          const kidName = `${child.first_name} ${child.last_name}`.trim();
+
+          const sheetLinesHtml: string[] = [];
+          const sheetLinesText: string[] = [];
+          for (const dir of ["morning", "afternoon"] as const) {
+            const tripInfo = dir === "morning" ? info.morning : info.afternoon;
+            const dirLabel = dir === "morning" ? "MORNING" : "AFTERNOON";
+            if (!tripInfo) {
+              sheetLinesHtml.push(`<p style="font-size:14px;margin:0 0 12px;padding:8px 12px;background:#fef2f2;border-radius:6px;color:#b91c1c;"><strong>${dirLabel}</strong> — ⚠️ No driver assigned — check with coordinator</p>`);
+              sheetLinesText.push(`${dirLabel}: ⚠️ No driver assigned — check with coordinator`);
+              continue;
+            }
+            const time = formatTime(tripInfo.meetingTime);
+            const phoneStr = tripInfo.driverPhone
+              ? formatPhone(tripInfo.driverPhone)
+              : "phone not on file";
+            const carmates = tripInfo.kids.filter((k: string) => k !== child.first_name.trim());
+            const carmatesStr = carmates.length > 0 ? carmates.join(", ") : "Riding alone";
+            sheetLinesHtml.push(
+              `<div style="margin:0 0 12px;padding:12px;background:#f8fafc;border-radius:8px;">` +
+              `<p style="font-size:14px;margin:0 0 4px;font-weight:600;color:#118b8c;">${dirLabel} (${time} from ${escapeHtml(tripInfo.origin)})</p>` +
+              `<p style="font-size:14px;margin:0 0 2px;">Driver: <strong>${escapeHtml(tripInfo.driverName)}</strong> — ${escapeHtml(phoneStr)}</p>` +
+              `<p style="font-size:14px;margin:0 0 2px;color:#475569;">Car: ${escapeHtml(tripInfo.vehicleLabel) || "—"}</p>` +
+              `<p style="font-size:14px;margin:0;color:#475569;">Riding with: ${escapeHtml(carmatesStr)}</p>` +
+              `</div>`,
+            );
+            sheetLinesText.push(`${dirLabel} (${time} from ${tripInfo.origin})\n  Driver: ${tripInfo.driverName} — ${phoneStr}\n  Car: ${tripInfo.vehicleLabel || "—"}\n  Riding with: ${carmatesStr}`);
+          }
+
+          childSheetsHtml.push(
+            `<div style="margin:0 0 20px;padding:16px;border:2px solid #e2e8f0;border-radius:12px;">` +
+            `<p style="font-size:18px;font-weight:700;margin:0 0 12px;color:#0c2b52;text-transform:uppercase;letter-spacing:0.5px;">${escapeHtml(kidName)} — ${escapeHtml(todayLabel)}</p>` +
+            sheetLinesHtml.join("") +
+            `</div>`,
+          );
+          childSheetsText.push(`═══════════════════════════════════\n${kidName} — ${todayLabel}\n═══════════════════════════════════\n${sheetLinesText.join("\n")}\n`);
+        }
+
+        if (childSheetsHtml.length === 0) continue;
+
+        const firstName = (profile.full_name ?? "there").split(" ")[0];
+        const htmlBody =
+          `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+          `<h1 style="font-size:20px;margin:0 0 8px;">Backpack sheet for ${escapeHtml(todayLabel)}</h1>` +
+          `<p style="font-size:14px;margin:0 0 16px;color:#64748b;">Print this and put it in your kid's backpack. ${escapeHtml(firstName)}, here are your child(ren)'s rides today.</p>` +
+          childSheetsHtml.join("") +
+          `</body></html>`;
+
+        const textBody =
+          `Backpack sheet for ${todayLabel}\n\n` +
+          `Print this and put it in your kid's backpack. ${firstName}, here are your child(ren)'s rides today.\n\n` +
+          childSheetsText.join("\n");
+
+        const idempotencySuffix = nonce ? `-${nonce}` : "";
+        const idempotencyKey = `backpack-sheet-${today}-${profile.id}${idempotencySuffix}`;
+        try {
+          const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKey,
+            },
+            body: JSON.stringify({
+              from: RESEND_FROM_EMAIL,
+              to: profile.email,
+              reply_to: RESEND_REPLY_TO,
+              subject: `Backpack sheet for ${todayLabel}`,
+              html: htmlBody,
+              text: textBody,
+              tags: [
+                { name: "type", value: "backpack_sheet" },
+                { name: "group", value: groupId ?? "unknown" },
+              ],
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.text();
+            console.error(`[send-push] Backpack sheet email to ${profile.email} failed:`, err);
+            emailFailed++;
+          } else {
+            emailSent++;
+          }
+        } catch (e) {
+          console.error(`[send-push] Backpack sheet email to ${profile.email} threw:`, e);
+          emailFailed++;
+        }
+      }
+
+      return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed, reason: "backpack_sheet" });
     }
 
     // ── drive_reminder: 75-min pre-drive email + push to confirmed drivers ─
