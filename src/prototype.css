@@ -1718,6 +1718,7 @@ a.directory-contact-item:hover {
   background: var(--paper);
   border-radius: 12px;
   text-align: center;
+  position: relative;
 }
 .child-photo-card .child-photo-thumb {
   width: 72px;
@@ -1747,6 +1748,65 @@ a.directory-contact-item:hover {
 
 .call-kid-link:active {
   opacity: 0.6;
+}
+
+.child-remove-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.06);
+  color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 1;
+  transition: background 0.15s, color 0.15s;
+}
+.child-remove-x:active {
+  background: rgba(185, 28, 28, 0.15);
+  color: #b91c1c;
+}
+
+.child-remove-confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.child-remove-warning {
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.4;
+  margin: 4px 0;
+}
+.child-remove-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.drive-detail-driver-row {
+  align-items: flex-start;
+}
+.drive-detail-driver {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.drive-detail-driver .child-photo-thumb {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+.drive-detail-driver .child-photo-thumb svg {
+  width: 18px;
+  height: 18px;
 }
 
 .detail-intro,
