@@ -78,6 +78,14 @@ const moveSundayPublishMigrationUrl = new URL(
   "../supabase/migrations/202608160005_move_sunday_publish_to_701pm.sql",
   import.meta.url,
 );
+const moveSundayPublish845MigrationUrl = new URL(
+  "../supabase/migrations/202608160006_move_sunday_publish_to_845pm.sql",
+  import.meta.url,
+);
+const suppressSundayNightBeforeMigrationUrl = new URL(
+  "../supabase/migrations/202608160007_suppress_sunday_night_before.sql",
+  import.meta.url,
+);
 const surgicalSundayCronMigrationUrl = new URL(
   "../supabase/migrations/202608160004_surgical_sunday_evening_cron.sql",
   import.meta.url,
@@ -167,6 +175,41 @@ test("schedule automation: Sunday publish moved to 7:01 PM Pacific (surgical)", 
 
   // Saturday draft cron is NOT touched by this move
   assert.doesNotMatch(sql, /generate-schedule-saturday/);
+});
+
+// ─── Sunday publish moved to 8:45 PM Pacific (final schedule) ──
+
+test("schedule automation: Sunday publish moved to 8:45 PM Pacific", async () => {
+  const sql = await readFile(moveSundayPublish845MigrationUrl, "utf8");
+
+  // Unschedules the 7:01 PM Sunday cron before re-scheduling it
+  assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
+
+  // New schedule: '45 3,4 * * 1' = Mon 03:45 and 04:45 UTC (8:45 PM Pacific,
+  // DST-proofed — the off-DST fire is an idempotent no-op once published).
+  assert.match(sql, /45 3,4 \* \* 1/);
+
+  // Calls the surgical wrapper (preserves confirmed drives, fits late riders
+  // into spare capacity). Does NOT call generate_schedule_cron (full regen),
+  // which would reshuffle confirmed drives and regress PR #126.
+  assert.match(sql, /publish_and_update_schedule/);
+  assert.doesNotMatch(sql, /generate_schedule_cron/);
+
+  // Saturday draft cron is NOT touched by this move
+  assert.doesNotMatch(sql, /generate-schedule-saturday/);
+});
+
+// ─── Sunday night-before suppressed (Mon–Thu only) ────────────
+
+test("night-before: Sunday suppressed, Mon–Thu only", async () => {
+  const sql = await readFile(suppressSundayNightBeforeMigrationUrl, "utf8");
+
+  // Unschedules the Sun–Thu night-before cron
+  assert.match(sql, /cron\.unschedule\('night-before-summary'\)/);
+
+  // New schedule: '45 2,3 * * 1-4' = Mon–Thu only (no Sunday)
+  assert.match(sql, /45 2,3 \* \* 1-4/);
+  assert.match(sql, /send_night_before_summary/);
 });
 
 // ─── pg_net timeout fix (root cause of night-before silence) ──

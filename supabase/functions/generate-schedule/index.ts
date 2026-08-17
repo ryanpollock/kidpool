@@ -35,6 +35,25 @@ import type {
   SchedulingVehicle,
 } from "../_shared/scheduling/types.ts";
 
+// Invoke the send-push Edge Function via direct HTTP (same pattern as the
+// DB cron wrappers). The Supabase SDK's functions.invoke has silently failed
+// in the Deno runtime; direct fetch with CRON_SECRET is the proven path used
+// by all other notification triggers in the system.
+async function invokeSendPush(
+  supabaseUrl: string,
+  cronSecret: string,
+  body: Record<string, unknown>,
+): Promise<void> {
+  await fetch(`${supabaseUrl}/functions/v1/send-push`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${cronSecret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -556,16 +575,10 @@ if (shouldAutoPublish) {
     // 'published' goes to all members; 'uncovered' goes to affected families;
     // 'admin_escalation' goes to coordinators if there are uncovered trips.
     try {
-      await writeClient.functions.invoke("send-push", {
-        body: { type: "published", version_id: newVersion.id },
-      });
+      await invokeSendPush(supabaseUrl, cronSecret, { type: "published", version_id: newVersion.id });
       if (hasUncovered) {
-        await writeClient.functions.invoke("send-push", {
-          body: { type: "uncovered", version_id: newVersion.id },
-        });
-        await writeClient.functions.invoke("send-push", {
-          body: { type: "admin_escalation", version_id: newVersion.id },
-        });
+        await invokeSendPush(supabaseUrl, cronSecret, { type: "uncovered", version_id: newVersion.id });
+        await invokeSendPush(supabaseUrl, cronSecret, { type: "admin_escalation", version_id: newVersion.id });
       }
     } catch (pushError) {
       console.warn("Push notification failed (non-blocking):", pushError instanceof Error ? pushError.message : "unknown");
@@ -588,15 +601,13 @@ if (shouldAutoPublish) {
       );
       if (displaced.length > 0) {
         try {
-          await writeClient.functions.invoke("send-push", {
-            body: {
-              type: "displaced",
-              version_id: newVersion.id,
-              displaced_drivers: displaced.map((a) => ({
-                profile_id: a.driver_profile_id,
-                trip_id: a.trip_id,
-              })),
-            },
+          await invokeSendPush(supabaseUrl, cronSecret, {
+            type: "displaced",
+            version_id: newVersion.id,
+            displaced_drivers: displaced.map((a) => ({
+              profile_id: a.driver_profile_id,
+              trip_id: a.trip_id,
+            })),
           });
         } catch (displacedPushError) {
           console.warn("Displaced-driver notification failed (non-blocking):", displacedPushError instanceof Error ? displacedPushError.message : "unknown");
@@ -619,9 +630,7 @@ if (shouldAutoPublish) {
   // ── Notify drivers with tentative assignments (draft only) ─────
   if (!autoPublished) {
     try {
-      await writeClient.functions.invoke("send-push", {
-        body: { type: "assignment_request", version_id: newVersion.id },
-      });
+      await invokeSendPush(supabaseUrl, cronSecret, { type: "assignment_request", version_id: newVersion.id });
     } catch (pushError) {
       console.warn("Assignment request notification failed (non-blocking):", pushError instanceof Error ? pushError.message : "unknown");
     }
