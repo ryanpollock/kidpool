@@ -1224,6 +1224,15 @@ export class CarpoolRepository {
     );
   }
 
+  async cancelRideForChildByCoordinator(childId: string, driverAssignmentId: string): Promise<void> {
+    await unwrap(
+      await this.client.rpc("cancel_ride_for_child_by_coordinator", {
+        p_child_id: childId,
+        p_driver_assignment_id: driverAssignmentId,
+      }),
+    );
+  }
+
   async addRideBackForChild(
     childId: string,
     driverAssignmentId: string,
@@ -1637,7 +1646,7 @@ export class CarpoolRepository {
   async sendPushNotification(
     assignmentId: string | null,
     versionId: string | null,
-    type: "declined" | "uncovered" | "published" | "volunteered" | "admin_escalation" | "manually_assigned" | "drive_confirmed" | "drive_cancelled" | "rider_cancelled",
+    type: "declined" | "uncovered" | "published" | "volunteered" | "admin_escalation" | "manually_assigned" | "drive_confirmed" | "drive_cancelled" | "rider_cancelled" | "rider_cancelled_by_coordinator",
     childId?: string,
   ): Promise<void> {
     try {

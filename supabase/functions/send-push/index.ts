@@ -1921,6 +1921,152 @@ Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
       return jsonResponse({ sent, failed, email_sent: emailSent, email_failed: emailFailed });
     }
 
+    if (type === "rider_cancelled_by_coordinator" && assignment_id) {
+      const childId: string | undefined = body.child_id;
+      if (!childId) return jsonError("Missing child_id for rider_cancelled_by_coordinator", 400);
+
+      // Load the driver assignment → trip + driver profile
+      const daRows = await supaFetch("driver_assignments", "id,trip_id,driver_profile_id,group_id,schedule_version_id", { id: `eq.${assignment_id}` });
+      if (daRows.length === 0) return jsonError("Driver assignment not found", 404);
+      const da = daRows[0];
+
+      // Load the trip
+      const tripRows = await supaFetch("trips", "service_date,direction,meeting_time,origin,destination", { id: `eq.${da.trip_id}` });
+      if (tripRows.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripRows[0];
+
+      // Load the child + household
+      const childRows = await supaFetch("children", "first_name,last_name,household_id", { id: `eq.${childId}` });
+      if (childRows.length === 0) return jsonError("Child not found", 404);
+      const child = childRows[0];
+      const childName = `${child.first_name} ${child.last_name}`;
+
+      const dirLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
+      const tripDate = new Date(trip.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+      const cta = APP_URL
+        ? `<p style="margin:24px 0 0;"><a href="${APP_URL}" style="display:inline-block;padding:10px 24px;background:#118b8c;color:#fff;text-decoration:none;border-radius:8px;font-size:15px;font-weight:700;">Open the app</a></p>`
+        : "";
+
+      let emailSent = 0;
+      let emailFailed = 0;
+      let sent = 0;
+      let failed = 0;
+
+      // ── 1. Notify the driver ──
+      const driverRows = await supaFetch("profiles", "id,full_name,email", { id: `eq.${da.driver_profile_id}` });
+      if (driverRows.length > 0) {
+        const driver = driverRows[0];
+        if (!isTestEmail(driver.email)) {
+          const driverHtml = `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">
+<h1 style="font-size:22px;margin:0 0 16px;">Ride update</h1>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><strong>${escapeHtml(childName)}</strong> was removed from your ${escapeHtml(dirLabel.toLowerCase())} drive on ${escapeHtml(tripDate)} by a coordinator.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">You're still scheduled to drive — other children may still need a ride.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Trip: ${escapeHtml(trip.meeting_time)} · ${escapeHtml(trip.origin)} → ${escapeHtml(trip.destination)}</p>
+${cta}
+</body></html>`;
+          const driverText = `Ride update\n\n${childName} was removed from your ${dirLabel.toLowerCase()} drive on ${tripDate} by a coordinator.\n\nYou're still scheduled to drive — other children may still need a ride.\n\nTrip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
+
+          if (RESEND_API_KEY) {
+            try {
+              const resp = await fetch("https://api.resend.com/emails", {
+                method: "POST",
+                headers: {
+                  "Authorization": `Bearer ${RESEND_API_KEY}`,
+                  "Content-Type": "application/json",
+                  "Idempotency-Key": `rider-cancelled-coord-driver-${assignment_id}-${childId}`,
+                },
+                body: JSON.stringify({
+                  from: RESEND_FROM_EMAIL,
+                  to: driver.email,
+                  reply_to: RESEND_REPLY_TO || undefined,
+                  subject: `${childName} removed from your ${dirLabel} drive — ${tripDate}`,
+                  html: driverHtml,
+                  text: driverText,
+                  tags: [
+                    { name: "type", value: "rider_cancelled_by_coordinator" },
+                    { name: "recipient", value: "driver" },
+                    { name: "group", value: da.group_id },
+                  ],
+                }),
+              });
+              if (!resp.ok) {
+                console.error("[send-push] rider_cancelled_by_coordinator driver email failed:", await resp.text());
+                emailFailed++;
+              } else {
+                emailSent++;
+              }
+            } catch (e) {
+              console.error(`[send-push] rider_cancelled_by_coordinator driver email to ${driver.email} threw:`, e);
+              emailFailed++;
+            }
+          }
+
+          try {
+            await sendEmailAndPush(da.driver_profile_id, `${childName} removed from your ${dirLabel.toLowerCase()} drive`, `A coordinator removed ${childName} from your ${tripDate} drive.`, `rider-cancelled-coord-driver-push-${assignment_id}-${childId}`, `rider-cancelled-coord-${assignment_id}-${childId}`, da.group_id);
+            sent++;
+          } catch (e) {
+            console.error("[send-push] rider_cancelled_by_coordinator driver push failed:", e);
+            failed++;
+          }
+        }
+      }
+
+      // ── 2. Notify the child's household members ──
+      const familyMemberships = await supaFetch("memberships", "profile_id", { household_id: `eq.${child.household_id}`, status: `eq.active` });
+      const familyProfileIds = familyMemberships.map((m: any) => m.profile_id);
+      const familyProfiles = familyProfileIds.length > 0
+        ? await supaFetch("profiles", "id,full_name,email", { id: `in.(${familyProfileIds.join(",")})` })
+        : [];
+
+      for (const famProfile of familyProfiles) {
+        if (!famProfile.email || isTestEmail(famProfile.email)) continue;
+        const familyHtml = `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">
+<h1 style="font-size:22px;margin:0 0 16px;">Schedule update</h1>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">A coordinator removed <strong>${escapeHtml(childName)}</strong> from the ${escapeHtml(dirLabel.toLowerCase())} carpool drive on ${escapeHtml(tripDate)}.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">If you believe this was a mistake, please contact the coordinator.</p>
+${cta}
+</body></html>`;
+        const familyText = `Schedule update\n\nA coordinator removed ${childName} from the ${dirLabel.toLowerCase()} carpool drive on ${tripDate}.\n\nIf you believe this was a mistake, please contact the coordinator.`;
+
+        if (RESEND_API_KEY) {
+          try {
+            const resp = await fetch("https://api.resend.com/emails", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${RESEND_API_KEY}`,
+                "Content-Type": "application/json",
+                "Idempotency-Key": `rider-cancelled-coord-family-${assignment_id}-${childId}-${famProfile.id}`,
+              },
+              body: JSON.stringify({
+                from: RESEND_FROM_EMAIL,
+                to: famProfile.email,
+                reply_to: RESEND_REPLY_TO || undefined,
+                subject: `${childName} removed from ${dirLabel} drive — ${tripDate}`,
+                html: familyHtml,
+                text: familyText,
+                tags: [
+                  { name: "type", value: "rider_cancelled_by_coordinator" },
+                  { name: "recipient", value: "family" },
+                  { name: "group", value: da.group_id },
+                ],
+              }),
+            });
+            if (!resp.ok) {
+              console.error("[send-push] rider_cancelled_by_coordinator family email failed:", await resp.text());
+              emailFailed++;
+            } else {
+              emailSent++;
+            }
+          } catch (e) {
+            console.error(`[send-push] rider_cancelled_by_coordinator family email to ${famProfile.email} threw:`, e);
+            emailFailed++;
+          }
+        }
+      }
+
+      return jsonResponse({ sent, failed, email_sent: emailSent, email_failed: emailFailed });
+    }
+
     let recipientProfileIds: string[] = [];
     let title = "";
     let bodyText = "";

@@ -94,6 +94,10 @@ const moveSundayPublish715MigrationUrl = new URL(
   "../supabase/migrations/202608160009_move_sunday_publish_to_715pm.sql",
   import.meta.url,
 );
+const cancelRideByCoordinatorMigrationUrl = new URL(
+  "../supabase/migrations/202608160010_cancel_ride_by_coordinator.sql",
+  import.meta.url,
+);
 const surgicalSundayCronMigrationUrl = new URL(
   "../supabase/migrations/202608160004_surgical_sunday_evening_cron.sql",
   import.meta.url,
@@ -262,6 +266,36 @@ test("night-before: Sunday suppressed, Mon–Thu only", async () => {
   // New schedule: '45 2,3 * * 1-4' = Mon–Thu only (no Sunday)
   assert.match(sql, /45 2,3 \* \* 1-4/);
   assert.match(sql, /send_night_before_summary/);
+});
+
+// ─── Coordinator removes child from drive RPC ─────────────────
+
+test("cancel_ride_by_coordinator: RPC gates on is_group_coordinator, not is_household_member", async () => {
+  const sql = await readFile(cancelRideByCoordinatorMigrationUrl, "utf8");
+
+  // Creates the RPC with security definer
+  assert.match(sql, /create or replace function public\.cancel_ride_for_child_by_coordinator/);
+  assert.match(sql, /security definer/);
+
+  // Gates on is_group_coordinator (NOT is_household_member)
+  assert.match(sql, /is_group_coordinator/);
+  assert.doesNotMatch(sql, /is_household_member/);
+
+  // Requires auth
+  assert.match(sql, /auth\.uid\(\) is null/);
+
+  // Published-schedule guard
+  assert.match(sql, /status <> 'published'/);
+
+  // Deletes the rider_assignment
+  assert.match(sql, /delete from public\.rider_assignments/);
+
+  // Audits as ride_cancelled_by_coordinator
+  assert.match(sql, /ride_cancelled_by_coordinator/);
+
+  // Revokes public access, grants to authenticated
+  assert.match(sql, /revoke all on function public\.cancel_ride_for_child_by_coordinator/);
+  assert.match(sql, /grant execute on function public\.cancel_ride_for_child_by_coordinator/);
 });
 
 // ─── pg_net timeout fix (root cause of night-before silence) ──
