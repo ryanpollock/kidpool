@@ -86,6 +86,10 @@ const suppressSundayNightBeforeMigrationUrl = new URL(
   "../supabase/migrations/202608160007_suppress_sunday_night_before.sql",
   import.meta.url,
 );
+const moveSundayPublish930MigrationUrl = new URL(
+  "../supabase/migrations/202608160008_move_sunday_publish_to_930pm.sql",
+  import.meta.url,
+);
 const surgicalSundayCronMigrationUrl = new URL(
   "../supabase/migrations/202608160004_surgical_sunday_evening_cron.sql",
   import.meta.url,
@@ -188,6 +192,28 @@ test("schedule automation: Sunday publish moved to 8:45 PM Pacific", async () =>
   // New schedule: '45 3,4 * * 1' = Mon 03:45 and 04:45 UTC (8:45 PM Pacific,
   // DST-proofed — the off-DST fire is an idempotent no-op once published).
   assert.match(sql, /45 3,4 \* \* 1/);
+
+  // Calls the surgical wrapper (preserves confirmed drives, fits late riders
+  // into spare capacity). Does NOT call generate_schedule_cron (full regen),
+  // which would reshuffle confirmed drives and regress PR #126.
+  assert.match(sql, /publish_and_update_schedule/);
+  assert.doesNotMatch(sql, /generate_schedule_cron/);
+
+  // Saturday draft cron is NOT touched by this move
+  assert.doesNotMatch(sql, /generate-schedule-saturday/);
+});
+
+// ─── Sunday publish moved to 9:30 PM Pacific ──────────────────
+
+test("schedule automation: Sunday publish moved to 9:30 PM Pacific", async () => {
+  const sql = await readFile(moveSundayPublish930MigrationUrl, "utf8");
+
+  // Unschedules the 8:45 PM Sunday cron before re-scheduling it
+  assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
+
+  // New schedule: '30 4,5 * * 1' = Mon 04:30 and 05:30 UTC (9:30 PM Pacific,
+  // DST-proofed — the off-DST fire is an idempotent no-op once published).
+  assert.match(sql, /30 4,5 \* \* 1/);
 
   // Calls the surgical wrapper (preserves confirmed drives, fits late riders
   // into spare capacity). Does NOT call generate_schedule_cron (full regen),
