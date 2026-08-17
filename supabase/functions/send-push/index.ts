@@ -1926,6 +1926,7 @@ Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
     let bodyText = "";
     let tag = "carpool";
     let groupId: string | null = null;
+    let emailBodyHtml: string | null = null;
 
     if (type === "declined" && assignment_id) {
       const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: `eq.${assignment_id}` });
@@ -2004,15 +2005,115 @@ Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
       bodyText = `Your child doesn't have a ride assigned for this week. Check the schedule or contact the admin.`;
       tag = `uncovered-${version_id}`;
     } else if (type === "published" && version_id) {
-      const versionData = await supaFetch("schedule_versions", "group_id", { id: `eq.${version_id}` });
+      const versionData = await supaFetch("schedule_versions", "group_id,week_id", { id: `eq.${version_id}` });
       if (versionData.length === 0) return jsonError("Version not found", 404);
-      const { group_id } = versionData[0];
+      const { group_id, week_id } = versionData[0];
       groupId = group_id;
 
       const memberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${group_id}`, status: "eq.active" });
       recipientProfileIds = memberships.map((m: any) => m.profile_id);
 
-      title = "Schedule published";
+      // ── Build the full week's roster for the email body ──
+      // Mirrors the coordinator_tentative_summary roster pattern but for a
+      // published schedule (all assignments confirmed). Matches the This Week
+      // tab: only parents/kids who completed check-in appear in the roster.
+      const weekData = await supaFetch("weeks", "starts_on", { id: `eq.${week_id}` });
+      const weekStartDate = weekData.length > 0 ? weekData[0].starts_on : "";
+
+      const trips = await supaFetch("trips", "id,service_date,direction,meeting_time,origin,destination", {
+        week_id: `eq.${week_id}`,
+        group_id: `eq.${group_id}`,
+      });
+      const tripIds = trips.map((t: any) => t.id);
+
+      const driverAssignments = tripIds.length > 0
+        ? await supaFetch("driver_assignments", "id,trip_id,driver_profile_id,vehicle_id,status,child_passenger_capacity", {
+            schedule_version_id: `eq.${version_id}`,
+            trip_id: `in.(${tripIds.join(",")})`,
+            status: "eq.confirmed",
+          })
+        : [];
+      const daIds = driverAssignments.map((da: any) => da.id);
+      const riderAssignments = daIds.length > 0
+        ? await supaFetch("rider_assignments", "child_id,driver_assignment_id", { driver_assignment_id: `in.(${daIds.join(",")})` })
+        : [];
+
+      const childIds = [...new Set(riderAssignments.map((ra: any) => ra.child_id))];
+      const children = childIds.length > 0
+        ? await supaFetch("children", "id,first_name,last_name", { id: `in.(${childIds.join(",")})` })
+        : [];
+      const childMap = new Map(children.map((c: any) => [c.id, c]));
+
+      const driverProfileIds = [...new Set(driverAssignments.map((da: any) => da.driver_profile_id))];
+      const driverProfiles = driverProfileIds.length > 0
+        ? await supaFetch("profiles", "id,full_name", { id: `in.(${driverProfileIds.join(",")})` })
+        : [];
+      const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
+
+      const vehicleIds = [...new Set(driverAssignments.map((da: any) => da.vehicle_id).filter(Boolean))];
+      const vehicles = vehicleIds.length > 0
+        ? await supaFetch("vehicles", "id,label", { id: `in.(${vehicleIds.join(",")})` })
+        : [];
+      const vehicleMap = new Map(vehicles.map((v: any) => [v.id, v]));
+
+      const tripRidersByDriver = new Map<string, string[]>();
+      for (const ra of riderAssignments) {
+        const child = childMap.get(ra.child_id);
+        if (!child) continue;
+        const kidName = `${child.first_name} ${child.last_name}`.trim();
+        const arr = tripRidersByDriver.get(ra.driver_assignment_id) ?? [];
+        arr.push(kidName);
+        tripRidersByDriver.set(ra.driver_assignment_id, arr);
+      }
+
+      const tripsByDate = new Map<string, any[]>();
+      for (const trip of trips) {
+        const arr = tripsByDate.get(trip.service_date) ?? [];
+        arr.push(trip);
+        tripsByDate.set(trip.service_date, arr);
+      }
+      const sortedDates = [...tripsByDate.keys()].sort();
+
+      const rosterHtmlLines: string[] = [];
+      for (const date of sortedDates) {
+        const dayTrips = tripsByDate.get(date) ?? [];
+        const dayLabel = new Date(date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+        rosterHtmlLines.push(`<h2 style="font-size:16px;margin:20px 0 8px;color:#0c2b52;">${escapeHtml(dayLabel)}</h2>`);
+
+        for (const direction of ["morning", "afternoon"] as const) {
+          const trip = dayTrips.find((t: any) => t.direction === direction);
+          if (!trip) continue;
+          const time = formatTime(trip.meeting_time);
+          const dirLabel = direction === "morning" ? "Morning" : "Afternoon";
+          const tripDrivers = driverAssignments.filter((da: any) => da.trip_id === trip.id);
+
+          rosterHtmlLines.push(`<p style="font-size:14px;margin:4px 0 2px;font-weight:600;color:#118b8c;">${dirLabel} (${time})</p>`);
+
+          if (tripDrivers.length === 0) {
+            rosterHtmlLines.push(`<p style="font-size:14px;margin:0 0 8px;padding:8px 12px;background:#fef2f2;border-radius:6px;color:#b91c1c;">⚠️ No driver — trip is uncovered</p>`);
+          } else {
+            for (const da of tripDrivers) {
+              const driver = driverProfileMap.get(da.driver_profile_id);
+              const vehicle = vehicleMap.get(da.vehicle_id);
+              const kids = tripRidersByDriver.get(da.id) ?? [];
+              const driverName = driver?.full_name ?? "A driver";
+              const vehicleStr = vehicle?.label ? ` (${vehicle.label})` : "";
+              const kidsStr = kids.length > 0 ? ` — ${kids.join(", ")}` : "";
+              rosterHtmlLines.push(`<p style="font-size:14px;margin:0 0 4px;">✅ <strong>${escapeHtml(driverName)}</strong>${escapeHtml(vehicleStr)}<br><span style="color:#475569;">${escapeHtml(kidsStr)}</span></p>`);
+            }
+          }
+        }
+      }
+
+      const weekLabel = weekStartDate
+        ? new Date(weekStartDate + "T00:00:00").toLocaleDateString("en-US", { month: "long", day: "numeric" })
+        : "this week";
+      emailBodyHtml =
+        `<h1 style="font-size:22px;margin:0 0 8px;color:#0c2b52;">Carpool schedule for the week of ${escapeHtml(weekLabel)}</h1>` +
+        `<p style="font-size:15px;margin:0 0 16px;color:#0c2b52;">Here's the published carpool schedule. Open the app to see your drives and confirm details.</p>` +
+        rosterHtmlLines.join("");
+
+      title = "This week's carpool schedule";
       bodyText = `The schedule for this week has been published. Open the app to see your drives.`;
       tag = `published-${version_id}`;
     } else if (type === "checkin_reminder") {
@@ -2313,7 +2414,7 @@ Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
       const htmlBody =
         `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;">` +
         `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1>` +
-        `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(bodyText)}</p>` +
+        (emailBodyHtml ?? `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(bodyText)}</p>`) +
         `<p style="margin-top:24px;">${cta}</p>` +
         `</body></html>`;
 
