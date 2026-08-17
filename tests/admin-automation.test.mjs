@@ -74,6 +74,10 @@ const backpackSheetTimeoutMigrationUrl = new URL(
   "../supabase/migrations/202608140005_fix_backpack_sheet_timeout.sql",
   import.meta.url,
 );
+const moveSundayPublishMigrationUrl = new URL(
+  "../supabase/migrations/202608160005_move_sunday_publish_to_701pm.sql",
+  import.meta.url,
+);
 const surgicalSundayCronMigrationUrl = new URL(
   "../supabase/migrations/202608160004_surgical_sunday_evening_cron.sql",
   import.meta.url,
@@ -134,15 +138,34 @@ test("schedule automation: Sunday publish rescheduled to 8:30 PM Pacific", async
   // Unschedules the original Sunday cron before re-scheduling it
   assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
 
-  // New schedule: '30 3,4 * * 1' = Mon 03:30 and 04:30 UTC
-  //   Mon 03:30 UTC = Sun 8:30 PM PDT  (first fire after 8 PM PDT deadline)
-  //   Mon 04:30 UTC = Sun 8:30 PM PST  (first fire after 8 PM PST deadline)
-  // The off-DST fire is an idempotent no-op (generate_schedule_cron self-gates
-  // on deadlinePassed && !wasPublished).
+  // New schedule: '30 3,4 * * 1' = Mon 03:30 and 04:30 UTC (original 8:30 PM
+  // Pacific). Later moved to 7:01 PM Pacific by 202608160005 — see the test below.
   assert.match(sql, /30 3,4 \* \* 1/);
   assert.match(sql, /generate_schedule_cron/);
 
   // Saturday draft cron is NOT touched by this reschedule
+  assert.doesNotMatch(sql, /generate-schedule-saturday/);
+});
+
+// ─── Sunday publish moved to 7:01 PM Pacific (surgical) ──────
+
+test("schedule automation: Sunday publish moved to 7:01 PM Pacific (surgical)", async () => {
+  const sql = await readFile(moveSundayPublishMigrationUrl, "utf8");
+
+  // Unschedules the 8:30 PM Sunday cron before re-scheduling it
+  assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
+
+  // New schedule: '1 2,3 * * 1' = Mon 02:01 and 03:01 UTC (7:01 PM Pacific,
+  // DST-proofed — the off-DST fire is an idempotent no-op once published).
+  assert.match(sql, /1 2,3 \* \* 1/);
+
+  // Calls the surgical wrapper (preserves confirmed drives, fits late riders
+  // into spare capacity). Does NOT call generate_schedule_cron (full regen),
+  // which would reshuffle confirmed drives and regress PR #126.
+  assert.match(sql, /publish_and_update_schedule/);
+  assert.doesNotMatch(sql, /generate_schedule_cron/);
+
+  // Saturday draft cron is NOT touched by this move
   assert.doesNotMatch(sql, /generate-schedule-saturday/);
 });
 
