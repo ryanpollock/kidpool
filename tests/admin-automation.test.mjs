@@ -70,6 +70,14 @@ const backpackSheetMigrationUrl = new URL(
   "../supabase/migrations/202608160003_backpack_sheet_cron.sql",
   import.meta.url,
 );
+const backpackSheetTimeoutMigrationUrl = new URL(
+  "../supabase/migrations/202608140005_fix_backpack_sheet_timeout.sql",
+  import.meta.url,
+);
+const moveSundayPublishMigrationUrl = new URL(
+  "../supabase/migrations/202608160005_move_sunday_publish_to_701pm.sql",
+  import.meta.url,
+);
 const surgicalSundayCronMigrationUrl = new URL(
   "../supabase/migrations/202608160004_surgical_sunday_evening_cron.sql",
   import.meta.url,
@@ -130,15 +138,34 @@ test("schedule automation: Sunday publish rescheduled to 8:30 PM Pacific", async
   // Unschedules the original Sunday cron before re-scheduling it
   assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
 
-  // New schedule: '30 3,4 * * 1' = Mon 03:30 and 04:30 UTC
-  //   Mon 03:30 UTC = Sun 8:30 PM PDT  (first fire after 8 PM PDT deadline)
-  //   Mon 04:30 UTC = Sun 8:30 PM PST  (first fire after 8 PM PST deadline)
-  // The off-DST fire is an idempotent no-op (generate_schedule_cron self-gates
-  // on deadlinePassed && !wasPublished).
+  // New schedule: '30 3,4 * * 1' = Mon 03:30 and 04:30 UTC (original 8:30 PM
+  // Pacific). Later moved to 7:01 PM Pacific by 202608160005 — see the test below.
   assert.match(sql, /30 3,4 \* \* 1/);
   assert.match(sql, /generate_schedule_cron/);
 
   // Saturday draft cron is NOT touched by this reschedule
+  assert.doesNotMatch(sql, /generate-schedule-saturday/);
+});
+
+// ─── Sunday publish moved to 7:01 PM Pacific (surgical) ──────
+
+test("schedule automation: Sunday publish moved to 7:01 PM Pacific (surgical)", async () => {
+  const sql = await readFile(moveSundayPublishMigrationUrl, "utf8");
+
+  // Unschedules the 8:30 PM Sunday cron before re-scheduling it
+  assert.match(sql, /cron\.unschedule\('generate-schedule-sunday'\)/);
+
+  // New schedule: '1 2,3 * * 1' = Mon 02:01 and 03:01 UTC (7:01 PM Pacific,
+  // DST-proofed — the off-DST fire is an idempotent no-op once published).
+  assert.match(sql, /1 2,3 \* \* 1/);
+
+  // Calls the surgical wrapper (preserves confirmed drives, fits late riders
+  // into spare capacity). Does NOT call generate_schedule_cron (full regen),
+  // which would reshuffle confirmed drives and regress PR #126.
+  assert.match(sql, /publish_and_update_schedule/);
+  assert.doesNotMatch(sql, /generate_schedule_cron/);
+
+  // Saturday draft cron is NOT touched by this move
   assert.doesNotMatch(sql, /generate-schedule-saturday/);
 });
 
@@ -1038,6 +1065,36 @@ test("backpack_sheet: cron migration creates wrapper function + 7 AM Pacific Mon
   // 7 AM Pacific Mon–Fri, DST-proofed dual UTC (14:00 and 15:00 UTC)
   assert.match(sql, /0 14,15 \* \* 1-5/);
   assert.match(sql, /backpack-sheet/);
+});
+
+test("backpack_sheet: timeout fix adds 120s pg_net timeout", async () => {
+  const sql = await readFile(backpackSheetTimeoutMigrationUrl, "utf8");
+
+  // Rewrites the wrapper function with CREATE OR REPLACE
+  assert.match(sql, /create or replace function public\.send_backpack_sheet/);
+
+  // Adds the 120s timeout
+  assert.match(sql, /timeout_milliseconds := 120000/);
+
+  // Still uses vault secrets (environment-aware)
+  assert.match(sql, /cron_secret/);
+  assert.match(sql, /cron_edge_base_url/);
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.send_backpack_sheet/);
+});
+
+test("backpack_sheet: kid phone numbers included in carmate list", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Children query includes the phone column
+  assert.match(ts, /children.*phone/);
+
+  // Kids with phones structure (name + phone per kid)
+  assert.match(ts, /kidsWithPhones/);
+
+  // Carmate phones rendered with formatPhone
+  assert.match(ts, /formatPhone\(k\.phone\)/);
+  assert.match(ts, /no phone/);
 });
 
 // ─── Surgical Sunday evening cron ──────────────────────────────

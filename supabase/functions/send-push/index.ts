@@ -1156,9 +1156,9 @@ Questions? Reply to this email or check the FAQ in the app.`;
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_confirmed_drivers" });
       }
 
-      // Fetch children, driver profiles (with phone), vehicles
+      // Fetch children (with phone for carmate contact), driver profiles (with phone), vehicles
       const childIds = [...new Set(allRiderAssignments.map((ra: any) => ra.child_id))];
-      const children = childIds.length > 0 ? await supaFetch("children", "id,first_name,last_name,household_id", { id: `in.(${childIds.join(",")})` }) : [];
+      const children = childIds.length > 0 ? await supaFetch("children", "id,first_name,last_name,household_id,phone", { id: `in.(${childIds.join(",")})` }) : [];
       const childMap = new Map(children.map((c: any) => [c.id, c]));
 
       const driverProfileIds = [...new Set(allDriverAssignments.map((da: any) => da.driver_profile_id))];
@@ -1171,15 +1171,16 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const vehicles = vehicleIds.length > 0 ? await supaFetch("vehicles", "id,label", { id: `in.(${vehicleIds.join(",")})` }) : [];
       const vehicleMap = new Map(vehicles.map((v: any) => [v.id, v]));
 
-      // Build per-driver-assignment kid lists
+      // Build per-driver-assignment kid lists with phone numbers
       const tripsById = new Map(trips.map((t: any) => [t.id, t]));
-      const tripRidersByDriver = new Map<string, string[]>();
+      const tripRidersByDriver = new Map<string, { name: string; phone: string | null }[]>();
       for (const ra of allRiderAssignments) {
         const child = childMap.get(ra.child_id);
         if (!child) continue;
         const kidName = child.first_name.trim();
+        const kidPhone = child.phone ?? null;
         const arr = tripRidersByDriver.get(ra.driver_assignment_id) ?? [];
-        arr.push(kidName);
+        arr.push({ name: kidName, phone: kidPhone });
         tripRidersByDriver.set(ra.driver_assignment_id, arr);
       }
 
@@ -1193,12 +1194,12 @@ Questions? Reply to this email or check the FAQ in the app.`;
         if (!trip) continue;
         const driver = driverProfileMap.get(da.driver_profile_id);
         const vehicle = vehicleMap.get(da.vehicle_id);
-        const kids = tripRidersByDriver.get(da.id) ?? [];
+        const kidsWithPhones = tripRidersByDriver.get(da.id) ?? [];
         const entry = {
           driverName: driver?.full_name ?? "A driver",
           driverPhone: driver?.phone ?? null,
           vehicleLabel: vehicle?.label ?? "",
-          kids,
+          kidsWithPhones,
           meetingTime: trip.meeting_time,
           origin: trip.origin,
         };
@@ -1277,8 +1278,10 @@ Questions? Reply to this email or check the FAQ in the app.`;
             const phoneStr = tripInfo.driverPhone
               ? formatPhone(tripInfo.driverPhone)
               : "phone not on file";
-            const carmates = tripInfo.kids.filter((k: string) => k !== child.first_name.trim());
-            const carmatesStr = carmates.length > 0 ? carmates.join(", ") : "Riding alone";
+            const carmates = tripInfo.kidsWithPhones.filter((k: { name: string; phone: string | null }) => k.name !== child.first_name.trim());
+            const carmatesStr = carmates.length > 0
+              ? carmates.map((k: { name: string; phone: string | null }) => k.phone ? `${k.name} (${formatPhone(k.phone)})` : `${k.name} (no phone)`).join(", ")
+              : "Riding alone";
             sheetLinesHtml.push(
               `<div style="margin:0 0 12px;padding:12px;background:#f8fafc;border-radius:8px;">` +
               `<p style="font-size:14px;margin:0 0 4px;font-weight:600;color:#118b8c;">${dirLabel} (${time} from ${escapeHtml(tripInfo.origin)})</p>` +
