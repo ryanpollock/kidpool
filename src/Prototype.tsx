@@ -4555,11 +4555,17 @@ function DriveDetailScreen({
   trip,
   serviceDate,
   onBack,
+  householdId,
+  isCoordinator,
+  onRemoveChild,
 }: {
   entry: ScheduleRosterEntry;
   trip: Tables<"trips">;
   serviceDate: string;
   onBack: () => void;
+  householdId: string | null;
+  isCoordinator: boolean;
+  onRemoveChild: (childId: string, driverAssignmentId: string, childName: string) => Promise<void>;
 }) {
   const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", {
     weekday: "long",
@@ -4568,9 +4574,13 @@ function DriveDetailScreen({
   });
   const directionLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
   const driverName = entry.driverProfile.full_name;
+  const driverAvatarUrl = entry.driverProfile.avatar_url;
   const vehicleLabel = entry.vehicle.label;
   const seats = entry.vehicle.child_passenger_capacity;
   const children = entry.children;
+
+  const [confirmRemoveChildId, setConfirmRemoveChildId] = useState<string | null>(null);
+  const [removeWorking, setRemoveWorking] = useState(false);
 
   return (
     <div className="screen-content drive-detail-screen" data-testid="drive-detail-screen">
@@ -4588,9 +4598,12 @@ function DriveDetailScreen({
           <span className="drive-detail-label">Route</span>
           <strong>{trip.origin} → {trip.destination}</strong>
         </div>
-        <div className="drive-detail-row">
+        <div className="drive-detail-row drive-detail-driver-row">
           <span className="drive-detail-label">Driver</span>
-          <strong>{driverName}</strong>
+          <div className="drive-detail-driver">
+            <PhotoButton url={driverAvatarUrl} name={driverName} className="child-photo-thumb" />
+            <strong>{driverName}</strong>
+          </div>
         </div>
         <div className="drive-detail-row">
           <span className="drive-detail-label">Vehicle</span>
@@ -4614,21 +4627,75 @@ function DriveDetailScreen({
           <p className="helper-copy">No children assigned to this drive.</p>
         ) : (
           <div className="child-photo-grid">
-            {children.map((child) => (
-              <div key={child.id} className="child-photo-card" data-testid="child-photo-card">
-                <PhotoButton url={child.photo_url} name={`${child.first_name} ${child.last_name}`} className="child-photo-thumb" />
-                <strong>{child.first_name} {child.last_name}</strong>
-                {child.phone ? (
-                  <a
-                    href={`tel:${child.phone.replace(/\s/g, "")}`}
-                    className="call-kid-link"
-                    data-testid={`call-kid-${child.id}`}
-                  >
-                    <MobileIcon width="13" height="13" /> Call {child.first_name}
-                  </a>
-                ) : null}
-              </div>
-            ))}
+            {children.map((child) => {
+              const canRemove = isCoordinator || child.household_id === householdId;
+              const isConfirming = confirmRemoveChildId === child.id;
+              return (
+                <div key={child.id} className="child-photo-card" data-testid="child-photo-card">
+                  {canRemove && !isConfirming && (
+                    <button
+                      className="child-remove-x"
+                      data-testid={`remove-child-x-${child.id}`}
+                      onClick={() => setConfirmRemoveChildId(child.id)}
+                      aria-label={`Remove ${child.first_name} from this drive`}
+                    >
+                      <Cross2Icon width="12" height="12" />
+                    </button>
+                  )}
+                  {isConfirming ? (
+                    <div className="child-remove-confirm" data-testid={`remove-child-confirm-${child.id}`}>
+                      <PhotoButton url={child.photo_url} name={`${child.first_name} ${child.last_name}`} className="child-photo-thumb" />
+                      <strong>{child.first_name} {child.last_name}</strong>
+                      <p className="child-remove-warning">
+                        Remove {child.first_name} from this drive?
+                        {" "}{driverName}{isCoordinator ? " and the family" : ""} will be notified.
+                      </p>
+                      <div className="child-remove-actions">
+                        <button
+                          className="decline-button"
+                          data-testid={`confirm-remove-child-${child.id}`}
+                          disabled={removeWorking}
+                          onClick={async () => {
+                            setRemoveWorking(true);
+                            try {
+                              await onRemoveChild(child.id, entry.driverAssignment.id, `${child.first_name} ${child.last_name}`);
+                              setConfirmRemoveChildId(null);
+                            } catch (e) {
+                              console.error("[carpool] remove child from drive failed:", e);
+                            } finally {
+                              setRemoveWorking(false);
+                            }
+                          }}
+                        >
+                          {removeWorking ? "Removing…" : "Yes, remove"}
+                        </button>
+                        <button
+                          className="text-button"
+                          disabled={removeWorking}
+                          onClick={() => setConfirmRemoveChildId(null)}
+                        >
+                          Keep {child.first_name}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <PhotoButton url={child.photo_url} name={`${child.first_name} ${child.last_name}`} className="child-photo-thumb" />
+                      <strong>{child.first_name} {child.last_name}</strong>
+                      {child.phone ? (
+                        <a
+                          href={`tel:${child.phone.replace(/\s/g, "")}`}
+                          className="call-kid-link"
+                          data-testid={`call-kid-${child.id}`}
+                        >
+                          <MobileIcon width="13" height="13" /> Call {child.first_name}
+                        </a>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
@@ -5560,12 +5627,31 @@ const navItems = useMemo(() => {
       if (searchSchedule) {
         const found = findDriveDetail(searchSchedule, driveDetailId);
         if (found) {
+          const isCoordinator = identity.membership?.role === "coordinator";
+          const householdId = identity.membership?.household_id ?? null;
           return (
             <DriveDetailScreen
               entry={found.entry}
               trip={found.trip}
               serviceDate={found.serviceDate}
               onBack={() => setDriveDetailId(null)}
+              householdId={householdId}
+              isCoordinator={isCoordinator}
+              onRemoveChild={async (childId, driverAssignmentId, childName) => {
+                try {
+                  if (isCoordinator) {
+                    await repository.cancelRideForChildByCoordinator(childId, driverAssignmentId);
+                    void repository.sendPushNotification(driverAssignmentId, null, "rider_cancelled_by_coordinator", childId);
+                  } else {
+                    await repository.cancelRideForChild(childId, driverAssignmentId);
+                    void repository.sendPushNotification(driverAssignmentId, null, "rider_cancelled", childId);
+                  }
+                  await loadHomeSchedule();
+                } catch (e) {
+                  console.error("[carpool] remove child from drive failed:", e);
+                  throw e;
+                }
+              }}
             />
           );
         }

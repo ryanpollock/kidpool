@@ -373,8 +373,10 @@ test("cancel and add-ride-back methods exist in repository", async () => {
   const repoUrl = new URL("../src/lib/supabase/carpool-repository.ts", import.meta.url);
   const source = await readFile(repoUrl, "utf8");
   assert.match(source, /async cancelRideForChild/);
+  assert.match(source, /async cancelRideForChildByCoordinator/);
   assert.match(source, /async addRideBackForChild/);
   assert.match(source, /cancel_ride_for_child/);
+  assert.match(source, /cancel_ride_for_child_by_coordinator/);
   assert.match(source, /add_ride_back_for_child/);
 });
 
@@ -382,5 +384,6 @@ test("cancel and add-ride-back RPC types exist in database types", async () => {
   const typesUrl = new URL("../src/lib/supabase/database.types.ts", import.meta.url);
   const source = await readFile(typesUrl, "utf8");
   assert.match(source, /cancel_ride_for_child:/);
+  assert.match(source, /cancel_ride_for_child_by_coordinator:/);
   assert.match(source, /add_ride_back_for_child:/);
 });

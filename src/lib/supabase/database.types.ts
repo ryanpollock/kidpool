@@ -530,6 +530,10 @@ export type Database = {
         Args: { p_child_id: string; p_driver_assignment_id: string };
         Returns: void;
       };
+      cancel_ride_for_child_by_coordinator: {
+        Args: { p_child_id: string; p_driver_assignment_id: string };
+        Returns: void;
+      };
       add_ride_back_for_child: {
         Args: {
           p_child_id: string;
