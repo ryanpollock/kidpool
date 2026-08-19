@@ -32,6 +32,7 @@ import {
   getSupabaseClient,
   type CheckinDetails,
   type DeclinedDriveAlert,
+  type DriveStatusEntry,
   type HouseholdSetup,
   type MyDriverAssignment,
   type ScheduleRosterEntry,
@@ -42,7 +43,7 @@ import {
   type WeekWithTrips,
 } from "./lib/supabase";
 import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference } from "./lib/supabase/database.types";
-import { getNoSchoolReason, todayInTimezone, dateInTimezone } from "./lib/school-calendar";
+import { getNoSchoolReason, todayInTimezone, dateInTimezone, isWithinStatusWindow } from "./lib/school-calendar";
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
 
@@ -1142,6 +1143,11 @@ function DriveCard({
   homeScheduleVersionGroupId,
   onAddRideBack,
   onOnMyWay,
+  driveStatuses,
+  timezone,
+  onSetDriverOnMyWay,
+  onSetRiderReady,
+  onClearDriveStatus,
 }: {
   trip: Tables<"trips">;
   roster: ScheduleRosterEntry;
@@ -1165,6 +1171,11 @@ function DriveCard({
   homeScheduleVersionGroupId: string | null;
   onAddRideBack: (childId: string, driverAssignmentId: string, tripId: string, versionId: string, groupId: string) => Promise<void>;
   onOnMyWay?: () => void;
+  driveStatuses: DriveStatusEntry[];
+  timezone: string;
+  onSetDriverOnMyWay?: () => void;
+  onSetRiderReady?: (childId: string) => void;
+  onClearDriveStatus?: (childId: string | null) => void;
 }) {
   const period = trip.direction === "morning" ? "Morning" : "Afternoon";
   const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
@@ -1175,6 +1186,15 @@ function DriveCard({
   const headerLabel = isToday
     ? period
     : `${dateInfo.weekday} · ${period}`;
+
+  // Status: driver "on my way" + per-child "ready"
+  const driverStatus = driveStatuses.find(s => s.child_id === null);
+  const withinWindow = isToday && isWithinStatusWindow(trip.service_date, trip.meeting_time, timezone);
+
+  // Confirmation state for "on my way" and "mark ready" — prevents accidental
+  // taps from sending push notifications to other families.
+  const [confirmingOnMyWay, setConfirmingOnMyWay] = useState(false);
+  const [confirmingReadyChildId, setConfirmingReadyChildId] = useState<string | null>(null);
 
   if (isUserDriving && myAssignment) {
     const isConfirmed = myAssignment.assignment.status === "confirmed";
@@ -1220,9 +1240,34 @@ function DriveCard({
             >
               Drive details <ChevronRightIcon />
             </button>
-            {/* Reserved: On my way — Today driver-confirmed only, time-gated near meeting_time.
-                Renders null until the feature ships. onOnMyWay is the future handler. */}
-            {isToday && isConfirmed && onOnMyWay ? <div className="drive-card-on-my-way" /> : null}
+            {/* On my way button — only for Today, confirmed, within the status time window */}
+            {withinWindow && isConfirmed && onSetDriverOnMyWay ? (
+              driverStatus ? (
+                <span className="drive-status-line" data-testid={`driver-on-my-way-${myAssignment.assignment.id}`}>
+                  <span className="drive-status-dot drive-status-dot--green" /> On my way · {formatMeetingTime(driverStatus.set_at.slice(11, 16))}
+                </span>
+              ) : confirmingOnMyWay ? (
+                <div className="drive-status-confirm" data-testid={`on-my-way-confirm-${myAssignment.assignment.id}`}>
+                  <p>Let the other families know you're on your way?</p>
+                  <button
+                    className="on-my-way-button"
+                    data-testid={`confirm-on-my-way-${myAssignment.assignment.id}`}
+                    onClick={() => { onSetDriverOnMyWay(); setConfirmingOnMyWay(false); }}
+                  >
+                    Yes, I'm on my way
+                  </button>
+                  <button className="text-button" onClick={() => setConfirmingOnMyWay(false)}>Not yet</button>
+                </div>
+              ) : (
+                <button
+                  className="on-my-way-button"
+                  data-testid={`on-my-way-${myAssignment.assignment.id}`}
+                  onClick={() => setConfirmingOnMyWay(true)}
+                >
+                  I'm on my way
+                </button>
+              )
+            ) : null}
             {isConfirmed ? (
               <button
                 className="today-card-cancel-link"
@@ -1342,7 +1387,14 @@ function DriveCard({
           <small className="drive-card-route">{formatMeetingTime(trip.meeting_time)}</small>
         </div>
         <div className="drive-card-body">
-          <span className="drive-card-role">{child.first_name} riding with {childRoster.driverProfile.full_name}</span>
+          <span className="drive-card-role">
+            {child.first_name} riding with {childRoster.driverProfile.full_name}
+            {withinWindow && driverStatus ? (
+              <span className="drive-status-line drive-status-line--inline" data-testid={`driver-on-my-way-${roster.driverAssignment.id}`}>
+                <span className="drive-status-dot drive-status-dot--green" /> On my way
+              </span>
+            ) : null}
+          </span>
           <div className="drive-card-roster">
             <strong>{childRoster.vehicle.label}</strong>
             <span>{childRoster.children.length} rider{childRoster.children.length !== 1 ? "s" : ""}: {childRoster.children.map(c => c.first_name).join(", ")}</span>
@@ -1356,8 +1408,47 @@ function DriveCard({
           >
             Drive details <ChevronRightIcon />
           </button>
-          {/* Reserved: On my way — passenger parents don't get this action, slot stays empty */}
-          {null}
+          {(() => {
+            const childStatus = driveStatuses.find(s => s.child_id === child.id);
+            // Rider "ready" roll call is morning-only: kids are picked up from
+            // home in the morning (driver needs to know they're at the curb),
+            // but in the afternoon they're all at school together — no "ready"
+            // status needed.
+            if (withinWindow && onSetRiderReady && trip.direction === "morning") {
+              if (childStatus) {
+                return (
+                  <span className="drive-status-line" data-testid={`rider-ready-${child.id}`}>
+                    <span className="drive-status-dot drive-status-dot--green" /> Ready · {formatMeetingTime(childStatus.set_at.slice(11, 16))}
+                  </span>
+                );
+              }
+              if (confirmingReadyChildId === child.id) {
+                return (
+                  <div className="drive-status-confirm" data-testid={`mark-ready-confirm-${child.id}`}>
+                    <p>Let {childRoster.driverProfile.full_name.split(" ")[0]} know {child.first_name} is at the curb?</p>
+                    <button
+                      className="rider-ready-button"
+                      data-testid={`confirm-mark-ready-${child.id}`}
+                      onClick={() => { onSetRiderReady(child.id); setConfirmingReadyChildId(null); }}
+                    >
+                      Yes, ready
+                    </button>
+                    <button className="text-button" onClick={() => setConfirmingReadyChildId(null)}>Not yet</button>
+                  </div>
+                );
+              }
+              return (
+                <button
+                  className="rider-ready-button"
+                  data-testid={`mark-ready-${child.id}`}
+                  onClick={() => setConfirmingReadyChildId(child.id)}
+                >
+                  Mark {child.first_name} ready
+                </button>
+              );
+            }
+            return null;
+          })()}
           <button
             className="today-card-cancel-link"
             data-testid={`cancel-ride-${child.id}`}
@@ -1419,6 +1510,10 @@ function HomeScreen({
   householdChildren,
   onCancelRide,
   onAddRideBack,
+  driveStatuses,
+  onSetDriverOnMyWay,
+  onSetRiderReady,
+  onClearDriveStatus,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -1465,6 +1560,10 @@ function HomeScreen({
   householdChildren: Tables<"children">[];
   onCancelRide: (childId: string, driverAssignmentId: string, childName: string) => Promise<void>;
   onAddRideBack: (childId: string, driverAssignmentId: string, tripId: string, versionId: string, groupId: string) => Promise<void>;
+  driveStatuses: Map<string, DriveStatusEntry[]>;
+  onSetDriverOnMyWay: (assignmentId: string) => void;
+  onSetRiderReady: (assignmentId: string, childId: string) => void;
+  onClearDriveStatus: (assignmentId: string, childId: string | null) => void;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const [cancelingId, setCancelingId] = useState<string | null>(null);
@@ -1711,6 +1810,11 @@ function HomeScreen({
                           homeScheduleVersionId={homeSchedule?.version.id ?? null}
                           homeScheduleVersionGroupId={homeSchedule?.version.group_id ?? null}
                           onAddRideBack={onAddRideBack}
+                          driveStatuses={driveStatuses.get(roster.driverAssignment.id) ?? []}
+                          timezone={timezone}
+                          onSetDriverOnMyWay={() => onSetDriverOnMyWay(roster.driverAssignment.id)}
+                          onSetRiderReady={(childId) => onSetRiderReady(roster.driverAssignment.id, childId)}
+                          onClearDriveStatus={(childId) => onClearDriveStatus(roster.driverAssignment.id, childId)}
                         />
                       );
                     })()
@@ -1746,6 +1850,11 @@ function HomeScreen({
                               homeScheduleVersionId={homeSchedule?.version.id ?? null}
                               homeScheduleVersionGroupId={homeSchedule?.version.group_id ?? null}
                               onAddRideBack={onAddRideBack}
+                              driveStatuses={driveStatuses.get(roster.driverAssignment.id) ?? []}
+                              timezone={timezone}
+                              onSetDriverOnMyWay={() => onSetDriverOnMyWay(roster.driverAssignment.id)}
+                              onSetRiderReady={(childId) => onSetRiderReady(roster.driverAssignment.id, childId)}
+                              onClearDriveStatus={(childId) => onClearDriveStatus(roster.driverAssignment.id, childId)}
                             />
                           );
                         }
@@ -1953,6 +2062,11 @@ function HomeScreen({
                   homeScheduleVersionId={homeSchedule?.version.id ?? null}
                   homeScheduleVersionGroupId={homeSchedule?.version.group_id ?? null}
                   onAddRideBack={onAddRideBack}
+                  driveStatuses={driveStatuses.get(roster.driverAssignment.id) ?? []}
+                  timezone={timezone}
+                  onSetDriverOnMyWay={() => onSetDriverOnMyWay(roster.driverAssignment.id)}
+                  onSetRiderReady={(childId) => onSetRiderReady(roster.driverAssignment.id, childId)}
+                  onClearDriveStatus={(childId) => onClearDriveStatus(roster.driverAssignment.id, childId)}
                 />
               );
             })}
@@ -4813,6 +4927,11 @@ function DriveDetailScreen({
   householdId,
   isCoordinator,
   onRemoveChild,
+  driveStatuses,
+  timezone,
+  currentProfileId,
+  onSetDriverOnMyWay,
+  onSetRiderReady,
 }: {
   entry: ScheduleRosterEntry;
   trip: Tables<"trips">;
@@ -4821,6 +4940,11 @@ function DriveDetailScreen({
   householdId: string | null;
   isCoordinator: boolean;
   onRemoveChild: (childId: string, driverAssignmentId: string, childName: string) => Promise<void>;
+  driveStatuses: DriveStatusEntry[];
+  timezone: string;
+  currentProfileId: string | null;
+  onSetDriverOnMyWay?: () => void;
+  onSetRiderReady?: (childId: string) => void;
 }) {
   const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", {
     weekday: "long",
@@ -4833,6 +4957,9 @@ function DriveDetailScreen({
   const vehicleLabel = entry.vehicle.label;
   const seats = entry.vehicle.child_passenger_capacity;
   const children = entry.children;
+  const isUserDriving = currentProfileId === entry.driverAssignment.driver_profile_id;
+  const driverStatus = driveStatuses.find(s => s.child_id === null);
+  const withinWindow = isWithinStatusWindow(trip.service_date, trip.meeting_time, timezone);
 
   const [confirmRemoveChildId, setConfirmRemoveChildId] = useState<string | null>(null);
   const [removeWorking, setRemoveWorking] = useState(false);
@@ -4847,18 +4974,11 @@ function DriveDetailScreen({
       <section className="drive-detail-meta">
         <div className="drive-detail-row">
           <span className="drive-detail-label">Time</span>
-          <strong>{trip.meeting_time}</strong>
+          <strong>{formatMeetingTime(trip.meeting_time)}</strong>
         </div>
         <div className="drive-detail-row">
           <span className="drive-detail-label">Route</span>
           <strong>{trip.origin} → {trip.destination}</strong>
-        </div>
-        <div className="drive-detail-row drive-detail-driver-row">
-          <span className="drive-detail-label">Driver</span>
-          <div className="drive-detail-driver">
-            <PhotoButton url={driverAvatarUrl} name={driverName} className="child-photo-thumb" />
-            <strong>{driverName}</strong>
-          </div>
         </div>
         <div className="drive-detail-row">
           <span className="drive-detail-label">Vehicle</span>
@@ -4876,17 +4996,42 @@ function DriveDetailScreen({
         </div>
       </section>
 
+      <section className="drive-detail-driver--large">
+        <PhotoButton url={driverAvatarUrl} name={driverName} className="child-photo-thumb" />
+        <strong>{driverName}</strong>
+        {withinWindow && driverStatus ? (
+          <span className="drive-status-line">
+            <span className="drive-status-dot drive-status-dot--green" /> On my way · {formatMeetingTime(driverStatus.set_at.slice(11, 16))}
+          </span>
+        ) : withinWindow && isUserDriving && onSetDriverOnMyWay ? (
+          <button
+            className="on-my-way-button"
+            data-testid={`on-my-way-${entry.driverAssignment.id}`}
+            onClick={onSetDriverOnMyWay}
+          >
+            I'm on my way
+          </button>
+        ) : withinWindow ? (
+          <span className="drive-status-line">
+            <span className="drive-status-dot drive-status-dot--orange" /> Not started yet
+          </span>
+        ) : null}
+      </section>
+
       <section className="drive-detail-children">
         <h2>Children on this drive ({children.length})</h2>
         {children.length === 0 ? (
           <p className="helper-copy">No children assigned to this drive.</p>
         ) : (
-          <div className="child-photo-grid">
+          <div className="child-status-list">
             {children.map((child) => {
               const canRemove = isCoordinator || child.household_id === householdId;
               const isConfirming = confirmRemoveChildId === child.id;
+              const childStatus = driveStatuses.find(s => s.child_id === child.id);
+              const isMyChild = child.household_id === householdId;
+
               return (
-                <div key={child.id} className="child-photo-card" data-testid="child-photo-card">
+                <div key={child.id} className="child-status-row" data-testid="child-photo-card">
                   {canRemove && !isConfirming && (
                     <button
                       className="child-remove-x"
@@ -4936,16 +5081,39 @@ function DriveDetailScreen({
                   ) : (
                     <>
                       <PhotoButton url={child.photo_url} name={`${child.first_name} ${child.last_name}`} className="child-photo-thumb" />
-                      <strong>{child.first_name} {child.last_name}</strong>
-                      {child.phone ? (
-                        <a
-                          href={`tel:${child.phone.replace(/\s/g, "")}`}
-                          className="call-kid-link"
-                          data-testid={`call-kid-${child.id}`}
-                        >
-                          <MobileIcon width="13" height="13" /> Call {child.first_name}
-                        </a>
-                      ) : null}
+                      <div className="child-status-info">
+                        <strong>{child.first_name} {child.last_name}</strong>
+                        {child.phone ? (
+                          <a
+                            href={`tel:${child.phone.replace(/\s/g, "")}`}
+                            className="call-kid-link"
+                            data-testid={`call-kid-${child.id}`}
+                          >
+                            <MobileIcon width="13" height="13" /> Call {child.first_name}
+                          </a>
+                        ) : null}
+                      </div>
+                      <div className="child-status-actions">
+                        {/* Rider "ready" roll call is morning-only — afternoon
+                            kids are all at school together, no "at the curb" status. */}
+                        {withinWindow && trip.direction === "morning" && childStatus ? (
+                          <span className="drive-status-line" data-testid={`rider-ready-${child.id}`}>
+                            <span className="drive-status-dot drive-status-dot--green" /> Ready
+                          </span>
+                        ) : withinWindow && trip.direction === "morning" && isMyChild && onSetRiderReady ? (
+                          <button
+                            className="rider-ready-button"
+                            data-testid={`mark-ready-${child.id}`}
+                            onClick={() => onSetRiderReady(child.id)}
+                          >
+                            Mark ready
+                          </button>
+                        ) : withinWindow && trip.direction === "morning" ? (
+                          <span className="drive-status-line">
+                            <span className="drive-status-dot drive-status-dot--orange" /> Not confirmed
+                          </span>
+                        ) : null}
+                      </div>
                     </>
                   )}
                 </div>
@@ -5007,6 +5175,7 @@ export default function Prototype() {
   const [uncoveredAlerts, setUncoveredAlerts] = useState<UncoveredChildAlert[]>([]);
   const [volunteerWorking, setVolunteerWorking] = useState(false);
   const [volunteerError, setVolunteerError] = useState<string | null>(null);
+  const [driveStatuses, setDriveStatuses] = useState<Map<string, DriveStatusEntry[]>>(new Map());
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmWorking, setConfirmWorking] = useState(false);
   const [pushSubscribing, setPushSubscribing] = useState(false);
@@ -5268,6 +5437,63 @@ export default function Prototype() {
       setHomeScheduleError(readableError(error));
     }
   }, [identity?.group, weekData, repository]);
+
+  // Load drive statuses (On my way / Ready) for today's assignments
+  const loadDriveStatuses = useCallback(async () => {
+    if (!homeSchedule || !identity) return;
+    const today = todayInTimezone(identity.group.timezone);
+    const todayTrips = homeSchedule.trips.filter(t => t.service_date === today);
+    if (todayTrips.length === 0) { setDriveStatuses(new Map()); return; }
+    const assignmentIds = new Set<string>();
+    for (const trip of todayTrips) {
+      const rosters = homeSchedule.rostersByTrip.get(trip.id) ?? [];
+      rosters.forEach(r => {
+        if (r.driverAssignment.status === "confirmed" || r.driverAssignment.status === "tentative") {
+          assignmentIds.add(r.driverAssignment.id);
+        }
+      });
+    }
+    if (assignmentIds.size === 0) { setDriveStatuses(new Map()); return; }
+    try {
+      const next = new Map<string, DriveStatusEntry[]>();
+      for (const id of assignmentIds) {
+        const statuses = await repository.getDriveStatuses(id);
+        next.set(id, statuses);
+      }
+      setDriveStatuses(next);
+    } catch (e) {
+      console.error("[carpool] loadDriveStatuses failed:", e);
+    }
+  }, [homeSchedule, identity, repository]);
+
+  useEffect(() => { void loadDriveStatuses(); }, [loadDriveStatuses]);
+
+  const handleSetDriverOnMyWay = useCallback(async (assignmentId: string) => {
+    try {
+      await repository.setDriverOnMyWay(assignmentId);
+      await loadDriveStatuses();
+    } catch (e) {
+      console.error("[carpool] setDriverOnMyWay failed:", e);
+    }
+  }, [repository, loadDriveStatuses]);
+
+  const handleSetRiderReady = useCallback(async (assignmentId: string, childId: string) => {
+    try {
+      await repository.setRiderReady(assignmentId, childId);
+      await loadDriveStatuses();
+    } catch (e) {
+      console.error("[carpool] setRiderReady failed:", e);
+    }
+  }, [repository, loadDriveStatuses]);
+
+  const handleClearDriveStatus = useCallback(async (assignmentId: string, childId: string | null) => {
+    try {
+      await repository.clearDriveStatus(assignmentId, childId);
+      await loadDriveStatuses();
+    } catch (e) {
+      console.error("[carpool] clearDriveStatus failed:", e);
+    }
+  }, [repository, loadDriveStatuses]);
 
   const loadPublishedSchedule = useCallback(async () => {
     if (!identity?.group || !publishedWeek) { setPublishedSchedule(null); return; }
@@ -5907,6 +6133,11 @@ const navItems = useMemo(() => {
                   throw e;
                 }
               }}
+              driveStatuses={driveStatuses.get(found.entry.driverAssignment.id) ?? []}
+              timezone={identity.group.timezone}
+              currentProfileId={identity.profile.id}
+              onSetDriverOnMyWay={() => void handleSetDriverOnMyWay(found.entry.driverAssignment.id)}
+              onSetRiderReady={(childId) => void handleSetRiderReady(found.entry.driverAssignment.id, childId)}
             />
           );
         }
@@ -5976,7 +6207,7 @@ const navItems = useMemo(() => {
           weekStartsOn={weekScreenWeek?.week.starts_on ?? null}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
-          onOpenDrive={(id) => setDriveDetailId(id)}
+          onOpenDrive={(id) => { void loadDriveStatuses(); setDriveDetailId(id); }}
           onCheckIn={() => navigate("plan")}
           todayDate={todayDate}
         />
@@ -6083,7 +6314,7 @@ const navItems = useMemo(() => {
         onDismissIOSInstall={() => { setIOSInstallDismissed(true); localStorage.setItem("ios_install_dismissed", "true"); }}
         timezone={identity.group.timezone}
         todayDate={todayDate}
-        onOpenDrive={(id) => setDriveDetailId(id)}
+        onOpenDrive={(id) => { void loadDriveStatuses(); setDriveDetailId(id); }}
         showAvatarNudge={shouldShowAvatarNudge}
         householdId={householdId ?? null}
         householdChildren={householdId ? groupChildren.filter(c => c.household_id === householdId) : []}
@@ -6096,6 +6327,10 @@ const navItems = useMemo(() => {
           await repository.addRideBackForChild(childId, driverAssignmentId, tripId, versionId, groupId);
           await loadHomeSchedule();
         }}
+        driveStatuses={driveStatuses}
+        onSetDriverOnMyWay={(assignmentId) => void handleSetDriverOnMyWay(assignmentId)}
+        onSetRiderReady={(assignmentId, childId) => void handleSetRiderReady(assignmentId, childId)}
+        onClearDriveStatus={(assignmentId, childId) => void handleClearDriveStatus(assignmentId, childId)}
       />
     );
   };

@@ -105,6 +105,16 @@ export type UncoveredChildAlert = {
   volunteerVehicleCapacity: number | null;
 };
 
+export type DriveStatusEntry = {
+  id: string;
+  profile_id: string;
+  child_id: string | null;
+  status: "on_my_way" | "ready";
+  set_at: string;
+  full_name: string;
+  avatar_url: string | null;
+};
+
 function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
   if (result.error) throw new Error(result.error.message);
   return result.data;
@@ -1646,7 +1656,7 @@ export class CarpoolRepository {
   async sendPushNotification(
     assignmentId: string | null,
     versionId: string | null,
-    type: "declined" | "uncovered" | "published" | "volunteered" | "admin_escalation" | "manually_assigned" | "drive_confirmed" | "drive_cancelled" | "rider_cancelled" | "rider_cancelled_by_coordinator",
+    type: "declined" | "uncovered" | "published" | "volunteered" | "admin_escalation" | "manually_assigned" | "drive_confirmed" | "drive_cancelled" | "rider_cancelled" | "rider_cancelled_by_coordinator" | "driver_on_my_way" | "rider_ready",
     childId?: string,
   ): Promise<void> {
     try {
@@ -1694,6 +1704,107 @@ export class CarpoolRepository {
         .delete()
         .eq("endpoint", endpoint),
     );
+  }
+
+  async getDriveStatuses(assignmentId: string): Promise<DriveStatusEntry[]> {
+    const { data, error } = await this.client
+      .from("drive_status")
+      .select("id, profile_id, child_id, status, set_at")
+      .eq("driver_assignment_id", assignmentId);
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as Array<{
+      id: string; profile_id: string; child_id: string | null;
+      status: "on_my_way" | "ready"; set_at: string;
+    }>;
+    if (rows.length === 0) return [];
+    // Fetch profiles separately (the FK to profiles isn't in the generated types)
+    const profileIds = [...new Set(rows.map(r => r.profile_id))];
+    const { data: profiles, error: profilesError } = await this.client
+      .from("profiles")
+      .select("id, full_name, avatar_url")
+      .in("id", profileIds);
+    if (profilesError) throw new Error(profilesError.message);
+    const profileMap = new Map((profiles ?? []).map(p => [p.id, p]));
+    return rows.map(r => {
+      const p = profileMap.get(r.profile_id);
+      return {
+        id: r.id, profile_id: r.profile_id, child_id: r.child_id,
+        status: r.status, set_at: r.set_at,
+        full_name: p?.full_name ?? "", avatar_url: p?.avatar_url ?? null,
+      };
+    });
+  }
+
+  async setDriverOnMyWay(assignmentId: string): Promise<void> {
+    const { data: userData, error: userError } = await this.client.auth.getUser();
+    if (userError || !userData.user) throw new Error("Authentication required");
+    const { data: assignment, error: assignmentError } = await this.client
+      .from("driver_assignments")
+      .select("group_id, trip_id")
+      .eq("id", assignmentId)
+      .maybeSingle();
+    if (assignmentError || !assignment) throw new Error("Assignment not found");
+    // Delete existing driver status (if any), then insert. Can't use upsert
+    // because the partial unique index doesn't work with onConflict.
+    await this.client
+      .from("drive_status")
+      .delete()
+      .eq("driver_assignment_id", assignmentId)
+      .is("child_id", null);
+    const { error: insertError } = await this.client.from("drive_status").insert({
+      group_id: assignment.group_id,
+      driver_assignment_id: assignmentId,
+      trip_id: assignment.trip_id,
+      profile_id: userData.user.id,
+      child_id: null,
+      status: "on_my_way",
+    });
+    if (insertError) throw new Error(insertError.message);
+    void this.sendPushNotification(assignmentId, null, "driver_on_my_way");
+  }
+
+  async setRiderReady(assignmentId: string, childId: string): Promise<void> {
+    const { data: userData, error: userError } = await this.client.auth.getUser();
+    if (userError || !userData.user) throw new Error("Authentication required");
+    const { data: assignment, error: assignmentError } = await this.client
+      .from("driver_assignments")
+      .select("group_id, trip_id")
+      .eq("id", assignmentId)
+      .maybeSingle();
+    if (assignmentError || !assignment) throw new Error("Assignment not found");
+    // Delete existing rider status for this child (if any), then insert.
+    await this.client
+      .from("drive_status")
+      .delete()
+      .eq("driver_assignment_id", assignmentId)
+      .eq("child_id", childId);
+    const { error: insertError } = await this.client.from("drive_status").insert({
+      group_id: assignment.group_id,
+      driver_assignment_id: assignmentId,
+      trip_id: assignment.trip_id,
+      profile_id: userData.user.id,
+      child_id: childId,
+      status: "ready",
+    });
+    if (insertError) throw new Error(insertError.message);
+    void this.sendPushNotification(assignmentId, null, "rider_ready", childId);
+  }
+
+  async clearDriveStatus(assignmentId: string, childId: string | null): Promise<void> {
+    const { data: userData, error: userError } = await this.client.auth.getUser();
+    if (userError || !userData.user) throw new Error("Authentication required");
+    let query = this.client
+      .from("drive_status")
+      .delete()
+      .eq("driver_assignment_id", assignmentId)
+      .eq("profile_id", userData.user.id);
+    if (childId === null) {
+      query = query.is("child_id", null);
+    } else {
+      query = query.eq("child_id", childId);
+    }
+    const { error: deleteError } = await query;
+    if (deleteError) throw new Error(deleteError.message);
   }
 
   async getUncoveredChildren(

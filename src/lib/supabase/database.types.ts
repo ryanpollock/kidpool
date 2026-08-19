@@ -223,6 +223,17 @@ export type PushSubscriptionRow = Timestamps & {
   auth_key: string;
 };
 
+export type DriveStatusRow = Timestamps & {
+  id: string;
+  group_id: string;
+  driver_assignment_id: string;
+  trip_id: string;
+  profile_id: string;
+  child_id: string | null;
+  status: "on_my_way" | "ready";
+  set_at: string;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -481,6 +492,19 @@ export type Database = {
           p256dh_key: string;
           auth_key: string;
           created_at?: string;
+        }
+      >;
+      drive_status: Table<
+        DriveStatusRow,
+        {
+          id?: never;
+          group_id: string;
+          driver_assignment_id: string;
+          trip_id: string;
+          profile_id: string;
+          child_id?: string | null;
+          status: "on_my_way" | "ready";
+          set_at?: string;
         }
       >;
     };

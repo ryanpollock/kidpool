@@ -62,3 +62,51 @@ export function dateInTimezone(date: Date, timezone: string = PILOT_TIMEZONE): s
 }
 
 export { PILOT_TIMEZONE };
+
+// ── Drive status time gate ────────────────────────────────────
+// The "I'm on my way" / "Ready" buttons are only active within a window
+// around the meeting time. STATUS_WINDOW_BEFORE_HOURS is intentionally
+// wide (6h) for testing; tighten to 1h after pilot validation.
+export const STATUS_WINDOW_BEFORE_HOURS = 6;
+export const STATUS_WINDOW_AFTER_MINUTES = 30;
+
+// Build a Date for a trip's meeting time in the pilot timezone.
+// serviceDate is "YYYY-MM-DD"; meetingTime is "HH:MM:SS" or "HH:MM".
+export function meetingDatetimeForTrip(
+  serviceDate: string,
+  meetingTime: string,
+  timezone: string = PILOT_TIMEZONE,
+): Date {
+  const [h, m] = meetingTime.split(":");
+  const [y, mo, d] = serviceDate.split("-").map(Number);
+  // Parse the wall time as UTC (not local machine time)
+  const wallAsUtc = Date.UTC(y, mo - 1, d, parseInt(h, 10), parseInt(m, 10), 0);
+  // Get the Pacific offset at that instant
+  const tzInfo = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    timeZoneName: "shortOffset",
+  }).formatToParts(new Date(wallAsUtc));
+  const offsetPart = tzInfo.find(p => p.type === "timeZoneName")?.value ?? "-07:00";
+  const offsetMatch = offsetPart.match(/GMT([+-])(\d+)(?::(\d+))?/);
+  let offsetHours = 0, offsetMinutes = 0;
+  if (offsetMatch) {
+    offsetHours = parseInt(offsetMatch[2], 10);
+    offsetMinutes = offsetMatch[3] ? parseInt(offsetMatch[3], 10) : 0;
+  }
+  const sign = offsetMatch?.[1] === "+" ? 1 : -1;
+  const offsetMs = sign * (offsetHours * 60 + offsetMinutes) * 60 * 1000;
+  // UTC = wall_time - offset (Pacific is -7, so UTC = wall + 7h)
+  return new Date(wallAsUtc - offsetMs);
+}
+
+export function isWithinStatusWindow(
+  serviceDate: string,
+  meetingTime: string,
+  timezone: string = PILOT_TIMEZONE,
+  now: Date = new Date(),
+): boolean {
+  const meeting = meetingDatetimeForTrip(serviceDate, meetingTime, timezone);
+  const opens = new Date(meeting.getTime() - STATUS_WINDOW_BEFORE_HOURS * 60 * 60 * 1000);
+  const closes = new Date(meeting.getTime() + STATUS_WINDOW_AFTER_MINUTES * 60 * 1000);
+  return now >= opens && now <= closes;
+}
