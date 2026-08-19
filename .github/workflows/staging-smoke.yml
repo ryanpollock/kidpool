@@ -18,15 +18,13 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
-        working-directory: carpool-app
         run: npm ci
 
       - name: Install Playwright browsers
-        working-directory: carpool-app
         run: npx playwright install --with-deps chromium
 
       - name: Install Supabase CLI
@@ -35,20 +33,17 @@ jobs:
           version: latest
 
       - name: Link to staging project
-        working-directory: carpool-app
         run: supabase link --project-ref jfyjgmhqnlbdcafoarrg
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
       - name: Run integration tests (staging)
-        working-directory: carpool-app
         run: npm run test:integration
         env:
           SUPABASE_TEST_SERVICE_KEY: ${{ secrets.SUPABASE_STAGING_SERVICE_KEY }}
           SUPABASE_TEST_ANON_KEY: ${{ secrets.SUPABASE_STAGING_ANON_KEY }}
 
       - name: Run Playwright tests (staging)
-        working-directory: carpool-app
         run: npm run test:runtime
         env:
           SUPABASE_TEST_SERVICE_KEY: ${{ secrets.SUPABASE_STAGING_SERVICE_KEY }}
@@ -59,5 +54,5 @@ jobs:
         if: failure()
         with:
           name: staging-test-results
-          path: carpool-app/test-results/
+          path: test-results/
           retention-days: 7
