@@ -3168,10 +3168,20 @@ a.directory-contact-item:hover {
   background: none;
   font: inherit;
   font-size: 12px;
+  font-weight: 700;
   color: var(--teal);
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+
+.today-card-ride-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  gap: 12px;
+  margin-top: 2px;
 }
 
 .today-card-cancel-link {
@@ -3180,7 +3190,7 @@ a.directory-contact-item:hover {
   background: none;
   font: inherit;
   font-size: 12px;
-  color: var(--ink-soft);
+  color: var(--red);
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;

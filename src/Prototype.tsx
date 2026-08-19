@@ -1501,14 +1501,23 @@ function HomeScreen({
                                   <button className="text-button" disabled={rideWorking} onClick={() => setCancellingRideKey(null)}>Keep ride</button>
                                 </div>
                               ) : (
-                                <button
-                                  className="today-card-cancel-link"
-                                  data-testid={`cancel-ride-${child.id}`}
-                                  disabled={rideWorking}
-                                  onClick={() => setCancellingRideKey(`${child.id}:${trip.id}:${roster.driverAssignment.id}`)}
-                                >
-                                  Cancel {child.first_name}'s ride
-                                </button>
+                                <div className="today-card-ride-actions">
+                                  <button
+                                    className="today-card-drive-link"
+                                    data-testid={`today-drive-status-${child.id}`}
+                                    onClick={() => onOpenDrive(roster.driverAssignment.id)}
+                                  >
+                                    Drive status <ChevronRightIcon />
+                                  </button>
+                                  <button
+                                    className="today-card-cancel-link"
+                                    data-testid={`cancel-ride-${child.id}`}
+                                    disabled={rideWorking}
+                                    onClick={() => setCancellingRideKey(`${child.id}:${trip.id}:${roster.driverAssignment.id}`)}
+                                  >
+                                    Cancel {child.first_name}'s ride
+                                  </button>
+                                </div>
                               )}
                             </div>
                           );
