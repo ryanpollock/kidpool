@@ -162,6 +162,49 @@ test.describe.serial("Today Card", () => {
     await expect(todayCard).toContainText("R1");
   });
 
+  test("Tapping Drive details from Today card opens drive detail", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const today = todayStrSF();
+    const dow = new Date(today + "T00:00:00").getDay();
+    if (dow === 0 || dow === 6) { test.skip(); return; }
+
+    const coord = setupHousehold(60, "DriveStatusCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(61, "DriveStatusDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(62, "DriveStatusRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds, dates } = setupCurrentWeekWithTrips();
+    const todayIdx = dates.indexOf(today);
+    if (todayIdx < 0) { test.skip(); return; }
+    const morningTrip = tripIds[todayIdx * 2];
+
+    runSql(`
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(763)}', '${GROUP_ID}', '${driver.householdId}', 'DriveStatusCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(764)}', '${GROUP_ID}', '${driver.householdId}', 'D1', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(765)}', '${GROUP_ID}', '${rider.householdId}', 'R1', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(766)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(767)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(766)}', '${morningTrip}', '${UID(764)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(767)}', '${morningTrip}', '${UID(765)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(766)}', '${morningTrip}', '${driver.userId}', '${UID(763)}', 'prefer') ON CONFLICT DO NOTHING;
+    `);
+
+    const genResult = generateSchedule(coord.email, weekId);
+    expect(genResult.success).toBe(true);
+    publishScheduleViaSql(weekId);
+
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("today-card")).toBeVisible({ timeout: 5000 });
+
+    const driveStatusBtn = page.locator('[data-testid^="today-drive-status-"]').first();
+    await expect(driveStatusBtn).toBeVisible({ timeout: 5000 });
+    await driveStatusBtn.click();
+    await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 5000 });
+  });
+
   test("Today card shows 'no ride' when child has no assignment for today", async ({ page }) => {
     test.skip(skip, "Requires service key");
     const today = todayStrSF();

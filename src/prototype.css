@@ -1082,7 +1082,7 @@ button.child-photo-thumb:active {
   background: none;
   font-size: 12px;
   font-weight: 700;
-  color: var(--ink-soft);
+  color: var(--red);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -3168,10 +3168,20 @@ a.directory-contact-item:hover {
   background: none;
   font: inherit;
   font-size: 12px;
+  font-weight: 700;
   color: var(--teal);
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+
+.today-card-ride-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  gap: 12px;
+  margin-top: 2px;
 }
 
 .today-card-cancel-link {
@@ -3180,7 +3190,7 @@ a.directory-contact-item:hover {
   background: none;
   font: inherit;
   font-size: 12px;
-  color: var(--ink-soft);
+  color: var(--red);
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
@@ -3226,6 +3236,102 @@ a.directory-contact-item:hover {
 .today-card-cancel-confirm button {
   margin-right: 8px;
 }
+
+/* ── Unified DriveCard (Today + Upcoming) ───────────────────── */
+.drive-card {
+  margin: 8px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.drive-card + .drive-card {
+  margin-top: 8px;
+}
+
+.drive-card--today {
+  border-color: var(--teal);
+  background: var(--teal-pale);
+}
+
+.drive-card--cancelled {
+  opacity: 0.7;
+}
+
+.drive-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+.drive-card-period {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.drive-card-period strong {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.drive-card-route {
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.drive-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.drive-card-role {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.drive-card-role--driving {
+  color: var(--teal);
+}
+
+.drive-card-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.drive-card-roster strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.drive-card-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+/* Reserved middle slot for 'On my way' — hidden until the feature ships.
+   When empty (null render), it still reserves flex space so the layout
+   doesn't shift when the button appears. */
+.drive-card-on-my-way:empty {
+  display: none;
+}
+
+/* ── End DriveCard ───────────────────────────────────────────── */
 
 .decline-alert {
   margin-top: 16px;
