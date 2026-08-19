@@ -3333,6 +3333,157 @@ a.directory-contact-item:hover {
 
 /* ── End DriveCard ───────────────────────────────────────────── */
 
+/* ── Drive status (On my way / Ready) ──────────────────────── */
+.drive-status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+.drive-status-dot--green {
+  background: #22c55e;
+}
+.drive-status-dot--orange {
+  background: #f59e0b;
+}
+
+.drive-status-line {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #16a34a;
+}
+.drive-status-line--inline {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.on-my-way-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: var(--teal);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.on-my-way-button:active {
+  opacity: 0.85;
+}
+
+.rider-ready-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 12px;
+  border: 1px solid var(--teal);
+  border-radius: 8px;
+  background: var(--teal-pale);
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rider-ready-button:active {
+  opacity: 0.85;
+}
+
+/* Confirmation dialog for "on my way" / "mark ready" — teal-tinted (positive action) */
+.drive-status-confirm {
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--teal);
+  border-radius: 10px;
+  background: var(--teal-pale);
+}
+.drive-status-confirm p {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink);
+  margin: 0 0 8px;
+}
+.drive-status-confirm button {
+  margin-right: 8px;
+}
+
+/* ── Drive detail rework: bigger photo, vertical children ──── */
+.drive-detail-driver--large {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px 16px;
+  background: var(--paper);
+  border-radius: 12px;
+}
+.drive-detail-driver--large .child-photo-thumb {
+  width: 96px;
+  height: 96px;
+}
+.drive-detail-driver--large .child-photo-thumb svg {
+  width: 44px;
+  height: 44px;
+}
+.drive-detail-driver--large strong {
+  font-size: 17px;
+}
+.drive-detail-driver--large .drive-status-line {
+  font-size: 14px;
+}
+
+.child-status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.child-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--paper);
+  border-radius: 12px;
+  position: relative;
+}
+.child-status-row .child-photo-thumb {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+}
+.child-status-row .child-photo-thumb svg {
+  width: 22px;
+  height: 22px;
+}
+.child-status-row .child-status-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.child-status-row .child-status-info strong {
+  font-size: 15px;
+}
+.child-status-row .child-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.child-status-row .child-remove-x {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
 .decline-alert {
   margin-top: 16px;
   padding: 15px 16px;

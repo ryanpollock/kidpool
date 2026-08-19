@@ -1371,12 +1371,12 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const pacificHour = parseInt(parts.hour, 10) % 24;
       const pacificMinute = parseInt(parts.minute, 10);
 
-      // 75 min before 8:40 AM = 7:25 AM -> morning
-      // 75 min before 5:15 PM = 4:00 PM -> afternoon
+      // 90 min before 8:40 AM = 7:10 AM -> morning
+      // 90 min before 5:15 PM = 3:45 PM -> afternoon
       let direction: "morning" | "afternoon" | null = null;
-      if (pacificHour === 7 && pacificMinute >= 25 && pacificMinute < 30) {
+      if (pacificHour === 7 && pacificMinute >= 10 && pacificMinute < 15) {
         direction = "morning";
-      } else if (pacificHour === 16 && pacificMinute >= 0 && pacificMinute < 5) {
+      } else if (pacificHour === 15 && pacificMinute >= 45 && pacificMinute < 50) {
         direction = "afternoon";
       }
       if (!direction) {
@@ -1461,7 +1461,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
         const kids = kidsByDriver.get(da.id) ?? [];
         const kidsStr = kids.length > 0 ? ` Kids in your car: ${kids.join(", ")}.` : "";
         const bodyText = `Your ${period} drive starts at ${formattedTime} from ${trip.origin}.${kidsStr}`;
-        const title = "Drive in 75 minutes";
+        const title = "Drive in 90 minutes";
         const tag = `drive-reminder-${trip.id}-${da.driver_profile_id}`;
         const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
 
@@ -1536,6 +1536,178 @@ Questions? Reply to this email or check the FAQ in the app.`;
       }
 
       return jsonResponse({ sent, failed, removed, email_sent: emailSent, email_failed: emailFailed });
+    }
+
+    // ── status_reminder: 30-min pre-drive action prompt ──────────────
+    // Notifies drivers to tap "I'm on my way" and (morning only) rider
+    // parents to tap "Mark ready". Afternoon rider parents get nothing —
+    // kids are at school together, no "at the curb" status needed.
+    if (type === "status_reminder") {
+      const now = new Date();
+      const parts = pacificParts(now, true);
+      const pacificHour = parseInt(parts.hour, 10) % 24;
+      const pacificMinute = parseInt(parts.minute, 10);
+
+      // 30 min before 8:40 AM = 8:10 AM -> morning
+      // 30 min before 5:15 PM = 4:45 PM -> afternoon
+      let direction: "morning" | "afternoon" | null = null;
+      if (pacificHour === 8 && pacificMinute >= 10 && pacificMinute < 15) {
+        direction = "morning";
+      } else if (pacificHour === 16 && pacificMinute >= 45 && pacificMinute < 50) {
+        direction = "afternoon";
+      }
+      if (!direction) {
+        return jsonResponse({ sent: 0, failed: 0, reason: "outside_window" });
+      }
+
+      const today = `${parts.year}-${parts.month}-${parts.day}`;
+      const trips = await supaFetch("trips", "id,service_date,direction,meeting_time,origin,destination,week_id,group_id", {
+        service_date: `eq.${today}`,
+        direction: `eq.${direction}`,
+      });
+      if (trips.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, reason: "no_trip_today" });
+      }
+      const trip = trips[0];
+      const groupId = trip.group_id;
+
+      const versions = await supaFetch("schedule_versions", "id", {
+        week_id: `eq.${trip.week_id}`,
+        group_id: `eq.${groupId}`,
+        status: "eq.published",
+      });
+      if (versions.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, reason: "no_published_version" });
+      }
+      const versionId = versions[0].id;
+
+      const driverAssignments = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id", {
+        schedule_version_id: `eq.${versionId}`,
+        trip_id: `eq.${trip.id}`,
+        group_id: `eq.${groupId}`,
+        status: "eq.confirmed",
+      });
+      if (driverAssignments.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, reason: "no_confirmed_drivers" });
+      }
+
+      // Fetch rider assignments + children
+      const daIds = driverAssignments.map((da: any) => da.id);
+      const riderAssignments = await supaFetch("rider_assignments", "child_id,driver_assignment_id", {
+        driver_assignment_id: `in.(${daIds.join(",")})`,
+      });
+      const childIds = [...new Set(riderAssignments.map((ra: any) => ra.child_id))];
+      const children = childIds.length > 0 ? await supaFetch("children", "id,first_name,last_name,household_id", { id: `in.(${childIds.join(",")})` }) : [];
+      const childMap = new Map(children.map((c: any) => [c.id, c]));
+
+      // Build driver_assignment_id -> kid names
+      const kidsByDriver = new Map<string, string[]>();
+      for (const ra of riderAssignments) {
+        const child = childMap.get(ra.child_id);
+        if (!child) continue;
+        const kidName = `${child.first_name} ${child.last_name}`.trim();
+        const arr = kidsByDriver.get(ra.driver_assignment_id) ?? [];
+        arr.push(kidName);
+        kidsByDriver.set(ra.driver_assignment_id, arr);
+      }
+
+      // Fetch driver profiles
+      const driverProfileIds = driverAssignments.map((da: any) => da.driver_profile_id);
+      const driverProfiles = await supaFetch("profiles", "id,full_name", { id: `in.(${driverProfileIds.join(",")})` });
+      const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
+
+      const formattedTime = formatTime(trip.meeting_time);
+      const period = direction === "morning" ? "morning" : "afternoon";
+      const isMorning = direction === "morning";
+
+      ensureVapid();
+
+      let sent = 0;
+      let failed = 0;
+      let removed = 0;
+
+      // ── Driver notifications: "Tap I'm on my way" ──
+      for (const da of driverAssignments) {
+        const driver = driverProfileMap.get(da.driver_profile_id);
+        if (!driver) continue;
+        const kids = kidsByDriver.get(da.id) ?? [];
+        const kidsStr = kids.length > 0 ? ` Kids: ${kids.join(", ")}.` : "";
+        const bodyText = `Tap "I'm on my way" for the ${formattedTime} ${period} pickup.${kidsStr}`;
+        const title = "On your way soon?";
+        const tag = `status-reminder-driver-${trip.id}-${da.driver_profile_id}`;
+        const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
+
+        const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${da.driver_profile_id}` });
+        for (const sub of subs) {
+          try {
+            await webpush.sendNotification(
+              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+              pushPayload,
+              { TTL: 2419200 },
+            );
+            sent++;
+          } catch (error: any) {
+            failed++;
+            const statusCode = error?.statusCode ?? 0;
+            if (statusCode === 410 || statusCode === 404) {
+              await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+              removed++;
+            }
+          }
+        }
+      }
+
+      // ── Rider parent notifications (morning only): "Tap Mark ready" ──
+      if (isMorning && childIds.length > 0) {
+        // Build child_id -> driver_name mapping
+        const childToDriver = new Map<string, string>();
+        for (const ra of riderAssignments) {
+          const da = driverAssignments.find((d: any) => d.id === ra.driver_assignment_id);
+          if (da) {
+            const driver = driverProfileMap.get(da.driver_profile_id);
+            if (driver) childToDriver.set(ra.child_id, driver.full_name.split(" ")[0]);
+          }
+        }
+
+        // Collect distinct households from children
+        const householdIds = [...new Set(children.map((c: any) => c.household_id))];
+        for (const hid of householdIds) {
+          const members = await supaFetch("memberships", "profile_id", { household_id: `eq.${hid}`, status: "eq.active" });
+          // Find children in this household
+          const householdChildren = children.filter((c: any) => c.household_id === hid);
+          const childNames = householdChildren.map((c: any) => c.first_name).join(" and ");
+          const driverNames = householdChildren.map((c: any) => childToDriver.get(c.id)).filter(Boolean);
+          const driverStr = driverNames.length > 0 ? ` ${driverNames[0]} is driving.` : "";
+
+          for (const member of members) {
+            const bodyText = `Is ${childNames} ready at the curb? Tap "Mark ready" for the ${formattedTime} pickup.${driverStr}`;
+            const title = `Is ${childNames} ready?`;
+            const tag = `status-reminder-rider-${trip.id}-${member.profile_id}`;
+            const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
+
+            const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${member.profile_id}` });
+            for (const sub of subs) {
+              try {
+                await webpush.sendNotification(
+                  { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                  pushPayload,
+                  { TTL: 2419200 },
+                );
+                sent++;
+              } catch (error: any) {
+                failed++;
+                const statusCode = error?.statusCode ?? 0;
+                if (statusCode === 410 || statusCode === 404) {
+                  await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+                  removed++;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      return jsonResponse({ sent, failed, removed });
     }
 
     // ── drive_confirmed: email calendar invite to the confirmed driver ──
@@ -2496,6 +2668,72 @@ ${cta}
         }
       }
       return jsonResponse({ sent: dSent, failed: dFailed });
+    } else if (type === "driver_on_my_way" && assignment_id) {
+      // Driver tapped "I'm on my way" → notify all parents with kids in this car
+      const daRows = await supaFetch("driver_assignments", "id,trip_id,driver_profile_id,group_id", { id: `eq.${assignment_id}` });
+      if (daRows.length === 0) return jsonError("Driver assignment not found", 404);
+      const da = daRows[0];
+
+      const tripRows = await supaFetch("trips", "service_date,direction,meeting_time,origin,destination", { id: `eq.${da.trip_id}` });
+      if (tripRows.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripRows[0];
+
+      const driverRows = await supaFetch("profiles", "id,full_name", { id: `eq.${da.driver_profile_id}` });
+      if (driverRows.length === 0) return jsonError("Driver not found", 404);
+      const driver = driverRows[0];
+      const driverFirst = (driver.full_name ?? "Your driver").split(" ")[0];
+
+      const dirLabel = trip.direction === "morning" ? "morning" : "afternoon";
+      const tripDate = new Date(trip.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+      const pushTitle = `${driverFirst} is on their way`;
+      const pushBody = `The ${dirLabel} pickup is en route for ${tripDate}.`;
+
+      // Recipients: all parents of children in this car (distinct households)
+      const riderAssignments = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${assignment_id}` });
+      const childIds = riderAssignments.map((ra: any) => ra.child_id);
+      let recipientProfileIds: string[] = [];
+      if (childIds.length > 0) {
+        const children = await supaFetch("children", "household_id", { id: `in.(${childIds.join(",")})` });
+        const householdIds = [...new Set(children.map((c: any) => c.household_id))];
+        for (const hid of householdIds) {
+          const members = await supaFetch("memberships", "profile_id", { household_id: `eq.${hid}`, status: "eq.active" });
+          members.forEach((m: any) => recipientProfileIds.push(m.profile_id));
+        }
+      }
+      // Remove the driver themselves — they set the status, no need to notify
+      recipientProfileIds = recipientProfileIds.filter((id: string) => id !== da.driver_profile_id);
+
+      title = pushTitle;
+      bodyText = pushBody;
+      tag = `driver-on-my-way-${assignment_id}`;
+      groupId = da.group_id;
+    } else if (type === "rider_ready" && assignment_id) {
+      // A parent tapped "My kid is ready" → notify the driver
+      const childId: string | undefined = body.child_id;
+      if (!childId) return jsonError("Missing child_id for rider_ready", 400);
+
+      const daRows = await supaFetch("driver_assignments", "id,trip_id,driver_profile_id,group_id", { id: `eq.${assignment_id}` });
+      if (daRows.length === 0) return jsonError("Driver assignment not found", 404);
+      const da = daRows[0];
+
+      const tripRows = await supaFetch("trips", "service_date,direction,meeting_time", { id: `eq.${da.trip_id}` });
+      if (tripRows.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripRows[0];
+
+      const childRows = await supaFetch("children", "first_name,last_name", { id: `eq.${childId}` });
+      if (childRows.length === 0) return jsonError("Child not found", 404);
+      const child = childRows[0];
+      const childFirst = child.first_name;
+
+      const dirLabel = trip.direction === "morning" ? "morning" : "afternoon";
+      const pushTitle = `${childFirst} is ready at the curb`;
+      const pushBody = `Ready for the ${dirLabel} pickup.`;
+
+      title = pushTitle;
+      bodyText = pushBody;
+      tag = `rider-ready-${assignment_id}-${childId}`;
+      groupId = da.group_id;
+      recipientProfileIds = [da.driver_profile_id];
     } else {
       return jsonError(`Invalid type or missing parameters: ${type}`, 400);
     }
