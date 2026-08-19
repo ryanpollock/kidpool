@@ -35,7 +35,7 @@ const driveReminderMigrationUrl = new URL(
   import.meta.url,
 );
 const publishSundayEveningMigrationUrl = new URL(
-  "../supabase/migrations/202608130001_publish_sunday_evening.sql",
+  "../supabase/migrations/202608130005_publish_sunday_evening.sql",
   import.meta.url,
 );
 const pgnetTimeoutMigrationUrl = new URL(
@@ -43,7 +43,7 @@ const pgnetTimeoutMigrationUrl = new URL(
   import.meta.url,
 );
 const pgnetTimeoutRemainingMigrationUrl = new URL(
-  "../supabase/migrations/202608130003_increase_pgnet_timeout_remaining.sql",
+  "../supabase/migrations/202608130007_increase_pgnet_timeout_remaining.sql",
   import.meta.url,
 );
 const fixVolunteerReacceptMigrationUrl = new URL(
@@ -137,7 +137,7 @@ test("schedule automation: creates cron wrapper function and two schedules", asy
   assert.match(sql, /0 23 \* \* 6/);
 
   // Sunday cron — originally '0 5 * * 1' here; rescheduled to 8:30 PM Pacific
-  // by 202608130001_publish_sunday_evening.sql (tested below). This assertion
+  // by 202608130005_publish_sunday_evening.sql (tested below). This assertion
   // documents the original schedule; the reschedule test covers the new one.
   assert.match(sql, /generate-schedule-sunday/);
   assert.match(sql, /0 5 \* \* 1/);
