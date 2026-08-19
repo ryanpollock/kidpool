@@ -3076,12 +3076,37 @@ a.directory-contact-item:hover {
   gap: 8px;
 }
 
+/* Unified Home section header — shared by all Home sections (Today,
+   Upcoming, Cancelled, alerts). Normalizes typography and placement:
+   floating above the cards, not inside a container. */
+.home-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.home-section-header > h2,
+.home-section-header > strong {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.home-section-header > span {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+/* Amber modifier for alert sections (decline/uncovered) */
+.home-section-header--alert > h2,
+.home-section-header--alert > strong {
+  color: var(--amber);
+}
+
 .today-card {
   margin-top: 16px;
-  padding: 16px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: white;
 }
 
 .today-card-header {
