@@ -98,6 +98,10 @@ const cancelRideByCoordinatorMigrationUrl = new URL(
   "../supabase/migrations/202608160010_cancel_ride_by_coordinator.sql",
   import.meta.url,
 );
+const moveNightBeforeTo730MigrationUrl = new URL(
+  "../supabase/migrations/202608170001_move_night_before_to_730pm.sql",
+  import.meta.url,
+);
 const surgicalSundayCronMigrationUrl = new URL(
   "../supabase/migrations/202608160004_surgical_sunday_evening_cron.sql",
   import.meta.url,
@@ -791,11 +795,11 @@ test("send-push: drive_reminder branch sends push + email to confirmed drivers",
 
   // Branch handled with its own early-return (per-driver custom content)
   assert.match(ts, /type === "drive_reminder"/);
-  assert.match(ts, /75-min pre-drive email \+ push to confirmed drivers/);
+  assert.match(ts, /90 min before/);
 
-  // Gates to exact Pacific minute (7:25 AM for morning, 4:00 PM for afternoon)
-  assert.match(ts, /pacificHour === 7 && pacificMinute >= 25/);
-  assert.match(ts, /pacificHour === 16 && pacificMinute >= 0/);
+  // Gates to exact Pacific minute (7:10 AM for morning, 3:45 PM for afternoon)
+  assert.match(ts, /pacificHour === 7 && pacificMinute >= 10/);
+  assert.match(ts, /pacificHour === 15 && pacificMinute >= 45/);
 
   // Only confirmed drivers (not tentative)
   assert.match(ts, /status: "eq.confirmed"/);
@@ -804,7 +808,7 @@ test("send-push: drive_reminder branch sends push + email to confirmed drivers",
   assert.match(ts, /drive-reminder-\$\{trip\.id\}-\$\{da\.driver_profile_id\}/);
 
   // Push title + email subject
-  assert.match(ts, /Drive in 75 minutes/);
+  assert.match(ts, /Drive in 90 minutes/);
 
   // Lists kids in the car
   assert.match(ts, /Kids in your car/);
@@ -814,6 +818,34 @@ test("send-push: drive_reminder branch sends push + email to confirmed drivers",
 
   // Resend tags include the type
   assert.match(ts, /value: "drive_reminder"/);
+});
+
+// ─── Status reminder (30-min pre-drive action prompt) ─────────
+
+test("send-push: status_reminder branch sends action prompts to drivers + rider parents", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Branch handled with its own early-return
+  assert.match(ts, /type === "status_reminder"/);
+  assert.match(ts, /30-min pre-drive action prompt/);
+
+  // Gates to exact Pacific minute (8:10 AM for morning, 4:45 PM for afternoon)
+  assert.match(ts, /pacificHour === 8 && pacificMinute >= 10/);
+  assert.match(ts, /pacificHour === 16 && pacificMinute >= 45/);
+
+  // Only confirmed drivers
+  assert.match(ts, /status: "eq.confirmed"/);
+
+  // Driver prompt: "Tap I'm on my way"
+  assert.match(ts, /Tap "I'm on my way"/);
+  assert.match(ts, /On your way soon\?/);
+
+  // Rider parent prompt (morning only): "Tap Mark ready"
+  assert.match(ts, /Tap "Mark ready"/);
+  assert.match(ts, /isMorning/);
+
+  // Afternoon rider parents skipped (no "ready" status for afternoon)
+  assert.match(ts, /Afternoon rider parents get nothing/);
 });
 
 // ─── Drive confirmed email (calendar invite) ────────────────
@@ -1092,6 +1124,24 @@ test("night-before 7:45pm: replaces hourly cron with fixed 7:45 PM schedule", as
   assert.match(sql, /45 2,3 \* \* 0-4/);
   assert.match(sql, /night-before-summary/);
   assert.match(sql, /send_night_before_summary/);
+});
+
+// ─── Night-before moved to 7:30 PM Pacific, DOW 1-5 ────────────
+
+test("night-before 7:30pm: moves to 7:30 PM and extends DOW to 1-5 (Sun–Thu Pacific)", async () => {
+  const sql = await readFile(moveNightBeforeTo730MigrationUrl, "utf8");
+
+  // Unschedules the 7:45 PM / DOW 1-4 night-before cron
+  assert.match(sql, /cron\.unschedule\('night-before-summary'\)/);
+
+  // New schedule: 7:30 PM Pacific = 02:30/03:30 UTC, Sun–Thu Pacific nights
+  // (DOW 1-5 in UTC = Sun–Thu Pacific, covering all 5 school mornings)
+  assert.match(sql, /30 2,3 \* \* 1-5/);
+  assert.match(sql, /night-before-summary/);
+  assert.match(sql, /send_night_before_summary/);
+
+  // Does NOT redefine the wrapper function — only the cron schedule changes
+  assert.doesNotMatch(sql, /create or replace function/);
 });
 
 // ─── Sunday morning coordinator tentative summary email ───────────
