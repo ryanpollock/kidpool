@@ -22,7 +22,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -34,27 +34,27 @@ jobs:
           version: latest
 
       - name: Start local Supabase stack
-        working-directory: carpool-app
         run: supabase start
 
       - name: Apply migrations + seed
-        working-directory: carpool-app
         run: supabase db reset
 
       - name: Run static contract tests
-        working-directory: carpool-app
-        run: npm test
+        run: npm run check:contracts
 
       - name: Run integration tests (local)
-        working-directory: carpool-app
         run: npm run test:integration:local
 
+      - name: Build (for sites worker test)
+        run: npm run build
+
+      - name: Run sites worker test
+        run: npm run test:sites
+
       - name: TypeScript check
-        working-directory: carpool-app
         run: npx tsc --noEmit
 
       - name: Mobile runtime integrity check
-        working-directory: carpool-app
         run: npm run check:runtime
 
   playwright:
@@ -68,15 +68,13 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
-        working-directory: carpool-app
         run: npm ci
 
       - name: Install Playwright browsers
-        working-directory: carpool-app
         run: npx playwright install --with-deps chromium
 
       - name: Install Supabase CLI
@@ -85,15 +83,12 @@ jobs:
           version: latest
 
       - name: Start local Supabase stack
-        working-directory: carpool-app
         run: supabase start
 
       - name: Apply migrations + seed
-        working-directory: carpool-app
         run: supabase db reset
 
       - name: Run Playwright tests (mobile runtime — no DB needed)
-        working-directory: carpool-app
         run: npx playwright test mobile-runtime.spec.ts
         env:
           TEST_DB_TARGET: local
@@ -103,5 +98,5 @@ jobs:
         if: failure()
         with:
           name: playwright-results
-          path: carpool-app/test-results/
+          path: test-results/
           retention-days: 7
