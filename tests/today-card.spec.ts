@@ -162,7 +162,7 @@ test.describe.serial("Today Card", () => {
     await expect(todayCard).toContainText("R1");
   });
 
-  test("Tapping Drive status from Today card opens drive detail", async ({ page }) => {
+  test("Tapping Drive details from Today card opens drive detail", async ({ page }) => {
     test.skip(skip, "Requires service key");
     const today = todayStrSF();
     const dow = new Date(today + "T00:00:00").getDay();
