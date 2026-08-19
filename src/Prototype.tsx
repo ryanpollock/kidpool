@@ -1767,7 +1767,7 @@ function HomeScreen({
         const todayInfo = formatTripDate(todayDate);
         return (
           <section className="today-card" data-testid="today-card">
-            <div className="today-card-header">
+            <div className="home-section-header">
               <strong>Today's drives</strong>
               <span>{todayInfo.full}</span>
             </div>
@@ -1910,10 +1910,9 @@ function HomeScreen({
       })()}
 
       {declinedAlerts.length > 0 ? (
-        <section className="decline-alert" data-testid="decline-alert" aria-labelledby="decline-alert-heading">
-          <div className="decline-alert-header">
-            <ExclamationTriangleIcon width="20" height="20" />
-            <h2 id="decline-alert-heading">Your child’s drive was cancelled</h2>
+<section className="decline-alert" data-testid="decline-alert" aria-labelledby="decline-alert-heading">
+          <div className="home-section-header home-section-header--alert">
+            <h2 id="decline-alert-heading"><ExclamationTriangleIcon width="18" height="18" style={{ display: "inline", verticalAlign: "middle", marginRight: "6px" }} />Your child's drive was cancelled</h2>
           </div>
           <p className="decline-alert-body">
             A driver declined the following {declinedAlerts.length === 1 ? "trip" : "trips"} that include your child. Another parent on the route can take it over.
@@ -1959,9 +1958,8 @@ function HomeScreen({
 
       {uncoveredAlerts.length > 0 ? (
         <section className="decline-alert" data-testid="uncovered-alert" aria-labelledby="uncovered-heading">
-          <div className="decline-alert-header">
-            <ExclamationTriangleIcon width="20" height="20" />
-            <h2 id="uncovered-heading">Your child needs a ride</h2>
+          <div className="home-section-header home-section-header--alert">
+            <h2 id="uncovered-heading"><ExclamationTriangleIcon width="18" height="18" style={{ display: "inline", verticalAlign: "middle", marginRight: "6px" }} />Your child needs a ride</h2>
           </div>
           <p className="decline-alert-body">
             The schedule doesn't have a driver for the following {uncoveredAlerts.length === 1 ? "trip" : "trips"}. You can volunteer to drive or contact the admin.
@@ -2007,7 +2005,7 @@ function HomeScreen({
         if (noAssignments || (upcomingAssignments.length === 0 && allConfirmed)) return null;
         return (
         <section className="assignment-section" aria-labelledby="assignment-heading">
-          <div className="section-heading-row">
+          <div className="home-section-header">
             <h2 id="assignment-heading">{allConfirmed ? "Upcoming drives" : "Upcoming drives — confirm by deadline"}</h2>
           </div>
           {upcomingAssignments.length > 0 ? (
@@ -2111,7 +2109,9 @@ function HomeScreen({
 
       {hasReacceptable ? (
         <section className="assignment-section" aria-labelledby="reaccept-heading">
-          <h2 id="reaccept-heading">Cancelled or missed drives</h2>
+          <div className="home-section-header">
+            <h2 id="reaccept-heading">Cancelled or missed drives</h2>
+          </div>
           <div className="assignment-list">
             {reacceptableAssignments.map((entry) => {
               const status = entry.assignment.status;
