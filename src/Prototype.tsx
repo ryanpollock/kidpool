@@ -761,6 +761,14 @@ function formatTripDate(serviceDate: string) {
   return { weekday, weekdayFull, short: `${month} ${day}`, full: `${weekday}, ${month} ${day}` };
 }
 
+function formatMeetingTime(meetingTime: string): string {
+  const [h, m] = meetingTime.split(":");
+  const hour = parseInt(h, 10);
+  const ampm = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return `${hour12}:${m} ${ampm}`;
+}
+
 function weekLabel(startsOn: string): string {
   const start = formatTripDate(startsOn);
   const endDate = new Date(startsOn + "T00:00:00");
@@ -1105,6 +1113,266 @@ function AssignmentRow({
   );
 }
 
+// Unified drive card for Today + Upcoming sections. One shape, two variants:
+//  - today: teal tint, "Today — Wednesday" header, reserved On my way slot
+//  - upcoming: neutral card, "Thursday · Morning" header
+// Action row has 3 slots: Drive details (bold, left) | On my way (reserved, middle) | cancel (crimson, right).
+// The On my way slot renders null today; when the feature ships it drops into the middle slot
+// for Today-driver-confirmed drives, time-gated near meeting_time. No layout rework needed.
+function DriveCard({
+  trip,
+  roster,
+  myAssignment,
+  householdChildren,
+  isToday,
+  isUserDriving,
+  cancelledRideKeys,
+  cancellingRideKey,
+  cancelingId,
+  working,
+  rideWorking,
+  onOpenDrive,
+  onCancelDrive,
+  onCancelRide,
+  setCancelingId,
+  setCancellingRideKey,
+  setRideWorking,
+  setCancelledRides,
+  homeScheduleVersionId,
+  homeScheduleVersionGroupId,
+  onAddRideBack,
+  onOnMyWay,
+}: {
+  trip: Tables<"trips">;
+  roster: ScheduleRosterEntry;
+  myAssignment: MyDriverAssignment | null;
+  householdChildren: Tables<"children">[];
+  isToday: boolean;
+  isUserDriving: boolean;
+  cancelledRideKeys: Set<string>;
+  cancellingRideKey: string | null;
+  cancelingId: string | null;
+  working: boolean;
+  rideWorking: boolean;
+  onOpenDrive: (assignmentId: string) => void;
+  onCancelDrive: (assignmentId: string) => void;
+  onCancelRide: (childId: string, driverAssignmentId: string, childName: string) => Promise<void>;
+  setCancelingId: (id: string | null) => void;
+  setCancellingRideKey: (key: string | null) => void;
+  setRideWorking: (working: boolean) => void;
+  setCancelledRides: (updater: (prev: Set<string>) => Set<string>) => void;
+  homeScheduleVersionId: string | null;
+  homeScheduleVersionGroupId: string | null;
+  onAddRideBack: (childId: string, driverAssignmentId: string, tripId: string, versionId: string, groupId: string) => Promise<void>;
+  onOnMyWay?: () => void;
+}) {
+  const period = trip.direction === "morning" ? "Morning" : "Afternoon";
+  const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
+  const dateInfo = formatTripDate(trip.service_date);
+  const riderFirstNames = roster.children.map(c => c.first_name).join(", ");
+  const riderCount = roster.children.length;
+
+  const headerLabel = isToday
+    ? period
+    : `${dateInfo.weekday} · ${period}`;
+
+  if (isUserDriving && myAssignment) {
+    const isConfirmed = myAssignment.assignment.status === "confirmed";
+    const isCanceling = cancelingId === myAssignment.assignment.id;
+    return (
+      <article className={`drive-card${isToday ? " drive-card--today" : " drive-card--upcoming"}`} data-testid={isToday ? "today-drive-card" : "upcoming-drive-card"}>
+        <div className="drive-card-header">
+          <span className="drive-card-period">
+            <PeriodIcon width="16" height="16" />
+            <strong>{headerLabel}</strong>
+          </span>
+          <small className="drive-card-route">{formatMeetingTime(trip.meeting_time)}</small>
+        </div>
+        <div className="drive-card-body">
+          <span className="drive-card-role drive-card-role--driving">You're driving</span>
+          <div className="drive-card-roster">
+            <strong>{roster.vehicle.label}</strong>
+            <span>{riderCount} rider{riderCount !== 1 ? "s" : ""}: {riderFirstNames}</span>
+          </div>
+        </div>
+        {isCanceling ? (
+          <div className="today-card-cancel-confirm" data-testid={`cancel-confirm-${myAssignment.assignment.id}`}>
+            <p>Cancel this drive? Affected families will be notified immediately.</p>
+            <button
+              className="decline-button"
+              data-testid={`confirm-cancel-${myAssignment.assignment.id}`}
+              disabled={working}
+              onClick={() => {
+                void onCancelDrive(myAssignment.assignment.id);
+                setCancelingId(null);
+              }}
+            >
+              {working ? "Canceling…" : "Yes, cancel drive"}
+            </button>
+            <button className="text-button" disabled={working} onClick={() => setCancelingId(null)}>Keep drive</button>
+          </div>
+        ) : (
+          <div className="drive-card-actions">
+            <button
+              className="today-card-drive-link"
+              data-testid={`today-drive-status-${myAssignment.assignment.id}`}
+              onClick={() => onOpenDrive(myAssignment.assignment.id)}
+            >
+              Drive details <ChevronRightIcon />
+            </button>
+            {/* Reserved: On my way — Today driver-confirmed only, time-gated near meeting_time.
+                Renders null until the feature ships. onOnMyWay is the future handler. */}
+            {isToday && isConfirmed && onOnMyWay ? <div className="drive-card-on-my-way" /> : null}
+            {isConfirmed ? (
+              <button
+                className="today-card-cancel-link"
+                data-testid={`cancel-drive-${myAssignment.assignment.id}`}
+                disabled={working}
+                onClick={() => setCancelingId(myAssignment.assignment.id)}
+              >
+                Can't make this drive
+              </button>
+            ) : null}
+          </div>
+        )}
+      </article>
+    );
+  }
+
+  // Passenger branch: one card per household child with a roster on this trip.
+  const childCards = householdChildren.map((child) => {
+    const rideKey = `${child.id}:${trip.id}`;
+    const childRoster = roster.children.some(c => c.id === child.id) ? roster : null;
+    if (!childRoster) return null;
+    const isCancelling = cancellingRideKey === `${child.id}:${trip.id}:${childRoster.driverAssignment.id}`;
+    if (isCancelling) {
+      return (
+        <article className={`drive-card${isToday ? " drive-card--today" : " drive-card--upcoming"}`} key={child.id} data-testid={`cancel-ride-confirm-${child.id}`}>
+          <div className="drive-card-header">
+            <span className="drive-card-period">
+              <PeriodIcon width="16" height="16" />
+              <strong>{headerLabel}</strong>
+            </span>
+            <small className="drive-card-route">{formatMeetingTime(trip.meeting_time)}</small>
+          </div>
+          <div className="drive-card-body">
+            <span className="drive-card-role">{child.first_name} riding with {childRoster.driverProfile.full_name}</span>
+            <div className="drive-card-roster">
+              <strong>{childRoster.vehicle.label}</strong>
+              <span>{childRoster.children.length} rider{childRoster.children.length !== 1 ? "s" : ""}: {childRoster.children.map(c => c.first_name).join(", ")}</span>
+            </div>
+          </div>
+          <div className="today-card-cancel-confirm">
+            <p>Cancel {child.first_name}'s ride? {childRoster.driverProfile.full_name} will be notified.</p>
+            <button
+              className="decline-button"
+              data-testid={`confirm-cancel-ride-${child.id}`}
+              disabled={rideWorking}
+              onClick={async () => {
+                setRideWorking(true);
+                try {
+                  await onCancelRide(child.id, childRoster.driverAssignment.id, `${child.first_name} ${child.last_name}`);
+                  setCancelledRides(prev => new Set(prev).add(rideKey));
+                  setCancellingRideKey(null);
+                } catch (e) {
+                  console.error("[carpool] cancel ride failed:", e);
+                } finally {
+                  setRideWorking(false);
+                }
+              }}
+            >
+              {rideWorking ? "Canceling…" : "Yes, cancel ride"}
+            </button>
+            <button className="text-button" disabled={rideWorking} onClick={() => setCancellingRideKey(null)}>Keep ride</button>
+          </div>
+        </article>
+      );
+    }
+    if (cancelledRideKeys.has(rideKey)) {
+      return (
+        <article className={`drive-card drive-card--cancelled${isToday ? " drive-card--today" : ""}`} key={child.id}>
+          <div className="drive-card-header">
+            <span className="drive-card-period">
+              <PeriodIcon width="16" height="16" />
+              <strong>{headerLabel}</strong>
+            </span>
+          </div>
+          <div className="drive-card-body">
+            <span className="drive-card-role">{child.first_name}'s ride cancelled</span>
+          </div>
+          <button
+            className="today-card-addback-link"
+            data-testid={`add-ride-back-${child.id}`}
+            disabled={rideWorking}
+            onClick={async () => {
+              if (!homeScheduleVersionId || !homeScheduleVersionGroupId) return;
+              setRideWorking(true);
+              try {
+                await onAddRideBack(
+                  child.id,
+                  childRoster.driverAssignment.id,
+                  trip.id,
+                  homeScheduleVersionId,
+                  homeScheduleVersionGroupId,
+                );
+                setCancelledRides(prev => {
+                  const next = new Set(prev);
+                  next.delete(rideKey);
+                  return next;
+                });
+              } catch (e) {
+                console.error("[carpool] add ride back failed:", e);
+              } finally {
+                setRideWorking(false);
+              }
+            }}
+          >
+            Add {child.first_name}'s ride back
+          </button>
+        </article>
+      );
+    }
+    return (
+      <article className={`drive-card${isToday ? " drive-card--today" : " drive-card--upcoming"}`} key={child.id}>
+        <div className="drive-card-header">
+          <span className="drive-card-period">
+            <PeriodIcon width="16" height="16" />
+            <strong>{headerLabel}</strong>
+          </span>
+          <small className="drive-card-route">{formatMeetingTime(trip.meeting_time)}</small>
+        </div>
+        <div className="drive-card-body">
+          <span className="drive-card-role">{child.first_name} riding with {childRoster.driverProfile.full_name}</span>
+          <div className="drive-card-roster">
+            <strong>{childRoster.vehicle.label}</strong>
+            <span>{childRoster.children.length} rider{childRoster.children.length !== 1 ? "s" : ""}: {childRoster.children.map(c => c.first_name).join(", ")}</span>
+          </div>
+        </div>
+        <div className="drive-card-actions">
+          <button
+            className="today-card-drive-link"
+            data-testid={`today-drive-status-${childRoster.driverAssignment.id}`}
+            onClick={() => onOpenDrive(childRoster.driverAssignment.id)}
+          >
+            Drive details <ChevronRightIcon />
+          </button>
+          {/* Reserved: On my way — passenger parents don't get this action, slot stays empty */}
+          {null}
+          <button
+            className="today-card-cancel-link"
+            data-testid={`cancel-ride-${child.id}`}
+            disabled={rideWorking}
+            onClick={() => setCancellingRideKey(`${child.id}:${trip.id}:${childRoster.driverAssignment.id}`)}
+          >
+            Cancel {child.first_name}'s ride
+          </button>
+        </div>
+      </article>
+    );
+  });
+  return <>{childCards.filter(Boolean)}</>;
+}
+
 function HomeScreen({
   myAssignments,
   assignmentsLoading,
@@ -1242,19 +1510,6 @@ function HomeScreen({
     : "Sat midnight";
   const todaysDrives = activeAssignments.filter((a) => a.trip.service_date === todayDate);
   const hasTodaysDrive = todaysDrives.length > 0;
-  const todayWeekdayFull = todaysDrives.length > 0 ? formatTripDate(todaysDrives[0].trip.service_date).weekdayFull : "";
-  const todayHasMorning = todaysDrives.some((a) => a.trip.direction === "morning");
-  const todayHasAfternoon = todaysDrives.some((a) => a.trip.direction === "afternoon");
-  const todayPeriodLabel = todayHasMorning && todayHasAfternoon
-    ? `${todayWeekdayFull} morning & afternoon`
-    : todayHasMorning
-      ? `${todayWeekdayFull} morning`
-      : todayHasAfternoon
-        ? `${todayWeekdayFull} afternoon`
-        : "";
-  const todayRouteLabel = todaysDrives.length > 0
-    ? `${todaysDrives[0].trip.meeting_time} · ${todaysDrives[0].trip.origin} → ${todaysDrives[0].trip.destination}`
-    : "";
   const todaysTentative = todaysDrives.some((a) => a.assignment.status === "tentative");
   const sortedActiveAssignments = [...activeAssignments].sort((a, b) => {
     const aToday = a.trip.service_date === todayDate ? 0 : 1;
@@ -1376,11 +1631,6 @@ function HomeScreen({
                   ? (schedulePublished ? "You're all set" : "Drives confirmed")
                   : hasAlerts ? "Your child needs a ride" : "Confirm your drives"}
           </h1>
-          {hasTodaysDrive ? (
-            <p className="hero-deadline hero-deadline--today">
-              <strong>{todayPeriodLabel}</strong> <span aria-hidden="true">·</span> {todayRouteLabel}
-            </p>
-          ) : null}
           <p className="hero-deadline">
             {hasReacceptable ? (
               <>{confirmed.length} confirmed <span aria-hidden="true">·</span> <strong>{reacceptableAssignments.length} cancelled — re-accept below</strong></>
@@ -1419,107 +1669,84 @@ function HomeScreen({
         return (
           <section className="today-card" data-testid="today-card">
             <div className="today-card-header">
-              <strong>Today — {todayInfo.weekdayFull}</strong>
-              <span>{todayInfo.short}</span>
+              <strong>Today's drives</strong>
+              <span>{todayInfo.full}</span>
             </div>
-            {todaysTrips.map((trip) => {
-              const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
-              const periodLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
+{todaysTrips.map((trip) => {
               const rosters = (homeSchedule.rostersByTrip.get(trip.id) ?? [])
                 .filter(r => r.driverAssignment.status === "tentative" || r.driverAssignment.status === "confirmed");
-              const isUserDrivingThisTrip = myAssignments.some(a =>
+              const myTripAssignment = myAssignments.find(a =>
                 a.trip.id === trip.id &&
                 a.assignment.status !== "declined" &&
                 a.assignment.status !== "released" &&
                 a.assignment.status !== "expired"
               );
+              const isUserDrivingThisTrip = !!myTripAssignment;
               return (
                 <div className="today-card-trip" key={trip.id}>
-                  <div className="today-card-trip-header">
-                    <PeriodIcon width="16" height="16" />
-                    <span>{periodLabel}</span>
-                    <small>{trip.meeting_time} · {trip.origin} → {trip.destination}</small>
-                  </div>
-                  {isUserDrivingThisTrip ? (
-                    <div className="today-card-ride today-card-ride--driving">
-                      <strong>You're driving</strong>
-                      {(() => {
-                        const myTripAssignment = myAssignments.find(a =>
-                          a.trip.id === trip.id &&
-                          a.assignment.status !== "declined" &&
-                          a.assignment.status !== "released" &&
-                          a.assignment.status !== "expired"
-                        );
-                        return myTripAssignment ? (
-                          <button
-                            className="today-card-drive-link"
-                            onClick={() => onOpenDrive(myTripAssignment.assignment.id)}
-                          >
-                            {myTripAssignment.children.length} rider{myTripAssignment.children.length !== 1 ? "s" : ""} · tap for roster <ChevronRightIcon />
-                          </button>
-                        ) : null;
-                      })()}
-                    </div>
+                  {isUserDrivingThisTrip && myTripAssignment ? (
+                    (() => {
+                      const roster = rosters.find(r => r.driverAssignment.id === myTripAssignment.assignment.id);
+                      if (!roster) return null;
+                      return (
+                        <DriveCard
+                          trip={trip}
+                          roster={roster}
+                          myAssignment={myTripAssignment}
+                          householdChildren={householdChildren}
+                          isToday={true}
+                          isUserDriving={true}
+                          cancelledRideKeys={cancelledRides}
+                          cancellingRideKey={cancellingRideKey}
+                          cancelingId={cancelingId}
+                          working={working}
+                          rideWorking={rideWorking}
+                          onOpenDrive={onOpenDrive}
+                          onCancelDrive={onCancelDrive}
+                          onCancelRide={onCancelRide}
+                          setCancelingId={setCancelingId}
+                          setCancellingRideKey={setCancellingRideKey}
+                          setRideWorking={setRideWorking}
+                          setCancelledRides={setCancelledRides}
+                          homeScheduleVersionId={homeSchedule?.version.id ?? null}
+                          homeScheduleVersionGroupId={homeSchedule?.version.group_id ?? null}
+                          onAddRideBack={onAddRideBack}
+                        />
+                      );
+                    })()
                   ) : (
-                    <div className="today-card-children">
+                    <>
                       {householdChildren.map((child) => {
                         const rideKey = `${child.id}:${trip.id}`;
                         const roster = rosters.find(r =>
                           r.children.some(c => c.id === child.id)
                         );
-                        const isCancelling = cancellingRideKey === `${child.id}:${trip.id}:${roster?.driverAssignment.id ?? ""}`;
                         if (roster) {
                           return (
-                            <div className="today-card-ride" key={child.id}>
-                              <span>
-                                <strong>{child.first_name}</strong> riding with{" "}
-                                <strong>{roster.driverProfile.full_name}</strong>
-                              </span>
-                              <small>{roster.vehicle.label}</small>
-                              {isCancelling ? (
-                                <div className="today-card-cancel-confirm" data-testid={`cancel-ride-confirm-${child.id}`}>
-                                  <p>Cancel {child.first_name}'s ride? {roster.driverProfile.full_name} will be notified.</p>
-                                  <button
-                                    className="decline-button"
-                                    data-testid={`confirm-cancel-ride-${child.id}`}
-                                    disabled={rideWorking}
-                                    onClick={async () => {
-                                      setRideWorking(true);
-                                      try {
-                                        await onCancelRide(child.id, roster.driverAssignment.id, `${child.first_name} ${child.last_name}`);
-                                        setCancelledRides(prev => new Set(prev).add(rideKey));
-                                        setCancellingRideKey(null);
-                                      } catch (e) {
-                                        console.error("[carpool] cancel ride failed:", e);
-                                      } finally {
-                                        setRideWorking(false);
-                                      }
-                                    }}
-                                  >
-                                    {rideWorking ? "Canceling…" : "Yes, cancel ride"}
-                                  </button>
-                                  <button className="text-button" disabled={rideWorking} onClick={() => setCancellingRideKey(null)}>Keep ride</button>
-                                </div>
-                              ) : (
-                                <div className="today-card-ride-actions">
-                                  <button
-                                    className="today-card-drive-link"
-                                    data-testid={`today-drive-status-${child.id}`}
-                                    onClick={() => onOpenDrive(roster.driverAssignment.id)}
-                                  >
-                                    Drive status <ChevronRightIcon />
-                                  </button>
-                                  <button
-                                    className="today-card-cancel-link"
-                                    data-testid={`cancel-ride-${child.id}`}
-                                    disabled={rideWorking}
-                                    onClick={() => setCancellingRideKey(`${child.id}:${trip.id}:${roster.driverAssignment.id}`)}
-                                  >
-                                    Cancel {child.first_name}'s ride
-                                  </button>
-                                </div>
-                              )}
-                            </div>
+                            <DriveCard
+                              key={child.id}
+                              trip={trip}
+                              roster={roster}
+                              myAssignment={null}
+                              householdChildren={[child]}
+                              isToday={true}
+                              isUserDriving={false}
+                              cancelledRideKeys={cancelledRides}
+                              cancellingRideKey={cancellingRideKey}
+                              cancelingId={cancelingId}
+                              working={working}
+                              rideWorking={rideWorking}
+                              onOpenDrive={onOpenDrive}
+                              onCancelDrive={onCancelDrive}
+                              onCancelRide={onCancelRide}
+                              setCancelingId={setCancelingId}
+                              setCancellingRideKey={setCancellingRideKey}
+                              setRideWorking={setRideWorking}
+                              setCancelledRides={setCancelledRides}
+                              homeScheduleVersionId={homeSchedule?.version.id ?? null}
+                              homeScheduleVersionGroupId={homeSchedule?.version.group_id ?? null}
+                              onAddRideBack={onAddRideBack}
+                            />
                           );
                         }
                         if (cancelledRides.has(rideKey)) {
@@ -1564,7 +1791,7 @@ function HomeScreen({
                           </div>
                         );
                       })}
-                    </div>
+                    </>
                   )}
                 </div>
               );
@@ -1664,57 +1891,73 @@ function HomeScreen({
         </section>
       ) : null}
 
-      {!noAssignments ? (
+      {(() => {
+        const upcomingAssignments = sortedActiveAssignments.filter(
+          (entry) => entry.trip.service_date !== todayDate,
+        );
+        if (noAssignments || (upcomingAssignments.length === 0 && allConfirmed)) return null;
+        return (
         <section className="assignment-section" aria-labelledby="assignment-heading">
           <div className="section-heading-row">
-            <h2 id="assignment-heading">{allConfirmed ? "Your confirmed drives" : "Your tentative drives"}</h2>
+            <h2 id="assignment-heading">{allConfirmed ? "Upcoming drives" : "Upcoming drives — confirm by deadline"}</h2>
           </div>
+          {upcomingAssignments.length > 0 ? (
           <div className="assignment-list">
-            {sortedActiveAssignments.map((entry) => {
-              const isToday = entry.trip.service_date === todayDate;
+            {upcomingAssignments.map((entry) => {
+              const roster = homeSchedule?.rostersByTrip.get(entry.trip.id)?.find(
+                r => r.driverAssignment.id === entry.assignment.id,
+              );
+              if (!roster) {
+                return (
+                  <div className="assignment-row-wrapper" key={entry.assignment.id}>
+                    <AssignmentRow
+                      trip={entry.trip}
+                      vehicle={entry.vehicle}
+                      riderCount={entry.children.length}
+                      status={entry.assignment.status}
+                      onClick={() => onOpenDrive(entry.assignment.id)}
+                    />
+                    {entry.assignment.status === "confirmed" ? (
+                      <button
+                        className="cancel-drive-link"
+                        data-testid={`cancel-drive-${entry.assignment.id}`}
+                        onClick={() => setCancelingId(entry.assignment.id)}
+                      >
+                        Can't make this drive
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              }
               return (
-                <div className={`assignment-row-wrapper${isToday ? " assignment-row-wrapper--today" : ""}`} key={entry.assignment.id}>
-                <AssignmentRow
+                <DriveCard
+                  key={entry.assignment.id}
                   trip={entry.trip}
-                  vehicle={entry.vehicle}
-                  riderCount={entry.children.length}
-                  status={entry.assignment.status}
-                  isToday={isToday}
-                  onClick={() => onOpenDrive(entry.assignment.id)}
+                  roster={roster}
+                  myAssignment={entry}
+                  householdChildren={householdChildren}
+                  isToday={false}
+                  isUserDriving={true}
+                  cancelledRideKeys={cancelledRides}
+                  cancellingRideKey={cancellingRideKey}
+                  cancelingId={cancelingId}
+                  working={working}
+                  rideWorking={rideWorking}
+                  onOpenDrive={onOpenDrive}
+                  onCancelDrive={onCancelDrive}
+                  onCancelRide={onCancelRide}
+                  setCancelingId={setCancelingId}
+                  setCancellingRideKey={setCancellingRideKey}
+                  setRideWorking={setRideWorking}
+                  setCancelledRides={setCancelledRides}
+                  homeScheduleVersionId={homeSchedule?.version.id ?? null}
+                  homeScheduleVersionGroupId={homeSchedule?.version.group_id ?? null}
+                  onAddRideBack={onAddRideBack}
                 />
-                {entry.assignment.status === "confirmed" ? (
-                  cancelingId === entry.assignment.id ? (
-                    <div className="cancel-confirm" data-testid={`cancel-confirm-${entry.assignment.id}`}>
-                      <p className="cancel-confirm-warning">Cancel this drive? Affected families will be notified immediately.</p>
-                      <div className="confirm-code-actions">
-                        <button
-                          className="decline-button"
-                          data-testid={`confirm-cancel-${entry.assignment.id}`}
-                          disabled={working}
-                          onClick={() => {
-                            void onCancelDrive(entry.assignment.id);
-                            setCancelingId(null);
-                          }}
-                        >
-                          {working ? "Canceling…" : "Yes, cancel drive"}
-                        </button>
-                        <button className="text-button" disabled={working} onClick={() => setCancelingId(null)}>Keep drive</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      className="cancel-drive-link"
-                      data-testid={`cancel-drive-${entry.assignment.id}`}
-                      onClick={() => setCancelingId(entry.assignment.id)}
-                    >
-                      Can't make this drive
-                    </button>
-                  )
-                ) : null}
-              </div>
               );
             })}
           </div>
+          ) : null}
           {!allConfirmed ? (
             <>
               {tentative.length > 0 ? (
@@ -1724,7 +1967,7 @@ function HomeScreen({
               ) : null}
               {confirmAllOpen ? (
                 <div className="confirm-code-block" data-testid="confirm-all-dialog">
-                  <p className="confirm-code-warning">You're committing to drive for all {tentative.length} trip{tentative.length !== 1 ? "s" : ""} below. Please verify each one.</p>
+                  <p className="confirm-code-warning">You're committing to drive for all {tentative.length} trip{tentative.length !== 1 ? "s" : ""}. Please verify each one.</p>
                   <ul className="confirm-all-list">
                     {tentative.map((entry) => (
                       <li key={entry.assignment.id}>
@@ -1744,10 +1987,13 @@ function HomeScreen({
               <button className="text-button" onClick={onReview}>Review individually</button>
             </>
           ) : (
-            <button className="secondary-button" onClick={onReview}>View passenger rosters <ChevronRightIcon /></button>
+            upcomingAssignments.length > 0 ? (
+              <button className="secondary-button" onClick={onReview}>View passenger rosters <ChevronRightIcon /></button>
+            ) : null
           )}
-        </section>
-      ) : null}
+         </section>
+        );
+      })()}
 
       {hasReacceptable ? (
         <section className="assignment-section" aria-labelledby="reaccept-heading">
