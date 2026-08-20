@@ -1573,6 +1573,7 @@ function HomeScreen({
   const activeAssignments = myAssignments.filter(
     (a) => a.assignment.status !== "declined" && a.assignment.status !== "released" && a.assignment.status !== "expired",
   );
+  const isPastDriveTime = new Date().getHours() >= 19; // after 7 PM local (Pacific in production)
   // Assignments the current user cancelled (declined) or let expire
   // (expired). These are reachable for re-acceptance from Home when
   // there are no active drives — without this path the cancelled
@@ -1602,7 +1603,6 @@ function HomeScreen({
   const noAssignments = activeAssignments.length === 0;
   const hasAlerts = declinedAlerts.length > 0 || uncoveredAlerts.length > 0;
   const isSaturday = new Date(todayDate + "T00:00:00").getDay() === 6;
-  const isPastDriveTime = new Date().getHours() >= 19; // after 7 PM local (Pacific in production)
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
     ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
