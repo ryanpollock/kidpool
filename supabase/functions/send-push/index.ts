@@ -1680,8 +1680,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
           const driverStr = driverNames.length > 0 ? ` ${driverNames[0]} is driving.` : "";
 
           for (const member of members) {
-            const bodyText = `Is ${childNames} ready at the curb? Tap "Mark ready" for the ${formattedTime} pickup.${driverStr}`;
-            const title = `Is ${childNames} ready?`;
+            const bodyText = `On your way? Tap "I'm on my way" in the app for the ${formattedTime} pickup.${driverStr}`;
+            const title = `On your way?`;
             const tag = `status-reminder-rider-${trip.id}-${member.profile_id}`;
             const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
 
