@@ -1787,7 +1787,7 @@ export class CarpoolRepository {
       status: "ready",
     });
     if (insertError) throw new Error(insertError.message);
-    void this.sendPushNotification(assignmentId, null, "rider_ready", childId);
+    // No push notification — only the driver's "on my way" notifies other families.
   }
 
   async clearDriveStatus(assignmentId: string, childId: string | null): Promise<void> {

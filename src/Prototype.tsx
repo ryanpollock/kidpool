@@ -1244,7 +1244,7 @@ function DriveCard({
             {withinWindow && isConfirmed && onSetDriverOnMyWay ? (
               driverStatus ? (
                 <span className="drive-status-line" data-testid={`driver-on-my-way-${myAssignment.assignment.id}`}>
-                  <span className="drive-status-dot drive-status-dot--green" /> On my way · {formatMeetingTime(driverStatus.set_at.slice(11, 16))}
+                  <span className="drive-status-dot drive-status-dot--green" /> On my way · {new Date(driverStatus.set_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: timezone })}
                 </span>
               ) : confirmingOnMyWay ? (
                 <div className="drive-status-confirm" data-testid={`on-my-way-confirm-${myAssignment.assignment.id}`}>
@@ -1418,20 +1418,20 @@ function DriveCard({
               if (childStatus) {
                 return (
                   <span className="drive-status-line" data-testid={`rider-ready-${child.id}`}>
-                    <span className="drive-status-dot drive-status-dot--green" /> Ready · {formatMeetingTime(childStatus.set_at.slice(11, 16))}
+                    <span className="drive-status-dot drive-status-dot--green" /> On my way · {new Date(childStatus.set_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: timezone })}
                   </span>
                 );
               }
               if (confirmingReadyChildId === child.id) {
                 return (
                   <div className="drive-status-confirm" data-testid={`mark-ready-confirm-${child.id}`}>
-                    <p>Let {childRoster.driverProfile.full_name.split(" ")[0]} know {child.first_name} is at the curb?</p>
+                    <p>Let the other families know you're on your way?</p>
                     <button
                       className="rider-ready-button"
                       data-testid={`confirm-mark-ready-${child.id}`}
                       onClick={() => { onSetRiderReady(child.id); setConfirmingReadyChildId(null); }}
                     >
-                      Yes, ready
+                      Yes, I'm on my way
                     </button>
                     <button className="text-button" onClick={() => setConfirmingReadyChildId(null)}>Not yet</button>
                   </div>
@@ -1443,7 +1443,7 @@ function DriveCard({
                   data-testid={`mark-ready-${child.id}`}
                   onClick={() => setConfirmingReadyChildId(child.id)}
                 >
-                  Mark {child.first_name} ready
+                  I'm on my way
                 </button>
               );
             }
@@ -4996,7 +4996,7 @@ function DriveDetailScreen({
         <strong>{driverName}</strong>
         {withinWindow && driverStatus ? (
           <span className="drive-status-line">
-            <span className="drive-status-dot drive-status-dot--green" /> On my way · {formatMeetingTime(driverStatus.set_at.slice(11, 16))}
+            <span className="drive-status-dot drive-status-dot--green" /> On my way · {new Date(driverStatus.set_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: timezone })}
           </span>
         ) : withinWindow && isUserDriving && onSetDriverOnMyWay ? (
           <button
@@ -5089,11 +5089,11 @@ function DriveDetailScreen({
                         ) : null}
                       </div>
                       <div className="child-status-actions">
-                        {/* Rider "ready" roll call is morning-only — afternoon
-                            kids are all at school together, no "at the curb" status. */}
+                        {/* Rider "on my way" is morning-only — afternoon
+                            kids are all at school together. */}
                         {withinWindow && trip.direction === "morning" && childStatus ? (
                           <span className="drive-status-line" data-testid={`rider-ready-${child.id}`}>
-                            <span className="drive-status-dot drive-status-dot--green" /> Ready
+                            <span className="drive-status-dot drive-status-dot--green" /> On my way
                           </span>
                         ) : withinWindow && trip.direction === "morning" && isMyChild && onSetRiderReady ? (
                           <button
@@ -5101,11 +5101,11 @@ function DriveDetailScreen({
                             data-testid={`mark-ready-${child.id}`}
                             onClick={() => onSetRiderReady(child.id)}
                           >
-                            Mark ready
+                            I'm on my way
                           </button>
                         ) : withinWindow && trip.direction === "morning" ? (
                           <span className="drive-status-line">
-                            <span className="drive-status-dot drive-status-dot--orange" /> Not confirmed
+                            <span className="drive-status-dot drive-status-dot--orange" /> Not yet
                           </span>
                         ) : null}
                       </div>

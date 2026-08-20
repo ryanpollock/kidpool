@@ -69,23 +69,23 @@ test.describe.serial("Drive Status (On my way / Ready)", () => {
       // Outside the morning window — verify the driver status is visible
       // (the core cross-user visibility test) and skip the ready flow.
       await expect(driverStatus.first()).toContainText("On my way");
-      test.skip(true, "Outside the morning status window — 'Mark ready' only shows for morning drives 40min before to 30min after 8:40 AM");
+test.skip(true, "Outside the morning status window — 'I'm on my way' only shows for morning drives 40min before to 30min after 8:40 AM");
     }
 
     // Tap it — opens a confirmation
     await markReadyBtn.click();
     await page.waitForTimeout(500);
 
-    // Confirm the "mark ready" status
+    // Confirm the "on my way" status
     const confirmBtn = page.locator('[data-testid^="confirm-mark-ready-"]').first();
     await expect(confirmBtn).toBeVisible({ timeout: 5000 });
     await confirmBtn.click();
     await page.waitForTimeout(1500);
 
-    // Should show "Ready" status
+    // Should show "On my way" status
     const readyStatus = page.locator('[data-testid^="rider-ready-"]').first();
     await expect(readyStatus).toBeVisible({ timeout: 5000 });
-    await expect(readyStatus).toContainText("Ready");
+    await expect(readyStatus).toContainText("On my way");
   });
 
   test("driver sees rider's ready status on Drive Details", async ({ page }) => {
