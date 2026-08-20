@@ -1893,7 +1893,7 @@ function HomeScreen({
                         }
                         return (
                           <div className="today-card-ride today-card-ride--none" key={child.id}>
-                            <span>No ride scheduled for <strong>{child.first_name}</strong></span>
+                            <span>No {trip.direction === "morning" ? "morning" : "afternoon"} ride for <strong>{child.first_name}</strong></span>
                           </div>
                         );
                       })}
