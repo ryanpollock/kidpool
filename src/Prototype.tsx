@@ -1600,6 +1600,7 @@ function HomeScreen({
   const allConfirmed = tentative.length === 0 && confirmed.length > 0;
   const noAssignments = activeAssignments.length === 0;
   const hasAlerts = declinedAlerts.length > 0 || uncoveredAlerts.length > 0;
+  const isSaturday = new Date(todayDate + "T00:00:00").getDay() === 6;
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
     ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
@@ -1676,6 +1677,13 @@ function HomeScreen({
           <div className="auth-error" role="alert">{homeScheduleError}</div>
           <button className="primary-button" data-testid="retry-load-assignments" onClick={onRetryAssignments}>Try again</button>
         </section>
+      ) : isSaturday ? (
+        <section className="confirmation-hero confirmation-hero--done">
+          <span className="eyebrow">Check-in</span>
+          <h1>Check in for next week</h1>
+          <p className="hero-support">Submit by <strong>{checkinDeadlineLabel}</strong>.</p>
+          <button className="primary-button" onClick={onCheckIn}>Go to Next Week</button>
+        </section>
       ) : noAssignments && !hasReacceptable ? (
         <section className="confirmation-hero confirmation-hero--done">
           <span className="eyebrow">{weekEyebrow}</span>
@@ -1718,7 +1726,7 @@ function HomeScreen({
             {hasTodaysDrive
               ? "TODAY"
               : allConfirmed && !hasAlerts && !hasReacceptable
-                ? (schedulePublished ? "Published schedule" : "Draft confirmed — awaiting publish")
+                ? "This week"
                 : "Action needed"}
           </span>
           <h1>
@@ -1730,29 +1738,18 @@ function HomeScreen({
                   ? (schedulePublished ? "You're all set" : "Drives confirmed")
                   : hasAlerts ? "Your child needs a ride" : "Confirm your drives"}
           </h1>
-          <p className="hero-deadline">
-            {hasReacceptable ? (
-              <>{confirmed.length} confirmed <span aria-hidden="true">·</span> <strong>{reacceptableAssignments.length} cancelled — re-accept below</strong></>
-            ) : allConfirmed && !hasAlerts ? (
-              <><CheckCircledIcon width="18" height="18" /> {confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed</>
-            ) : hasAlerts ? (
-              <>{confirmed.length} drive{confirmed.length !== 1 ? "s" : ""} confirmed <span aria-hidden="true">·</span> <strong>{uncoveredAlerts.length + declinedAlerts.length} trip{uncoveredAlerts.length + declinedAlerts.length !== 1 ? "s" : ""} need{uncoveredAlerts.length + declinedAlerts.length === 1 ? "s" : ""} attention</strong></>
-            ) : (
-              <>{tentative.length} assignment{tentative.length !== 1 ? "s" : ""} <span aria-hidden="true">·</span> <strong>Confirm by {deadlineLabel}</strong></>
-            )}
-          </p>
+          {!allConfirmed && !hasAlerts && !hasReacceptable && tentative.length > 0 ? (
+            <p className="hero-deadline"><strong>Confirm by {deadlineLabel}</strong></p>
+          ) : null}
           <p className="hero-support">
             {hasReacceptable
-              ? "Re-accept cancelled drives below or contact the coordinator to reassign."
+              ? "Re-accept below or contact the coordinator to reassign."
               : allConfirmed && !hasAlerts
-                ? "We'll remind you the evening before each drive."
+                ? (hasTodaysDrive ? null : "We'll remind you before each drive.")
                 : hasAlerts
-                  ? "Some of your child's trips don't have a driver. See the details below."
-                  : "These are tentative until you accept them. Opening this schedule does not count as confirmation."}
+                  ? "See the details below."
+                  : (hasTodaysDrive ? "Confirm below before the drive." : "Confirm below before the deadline.")}
           </p>
-          {allConfirmed && schedulePublished && !hasAlerts && !hasReacceptable ? (
-            <p style={{ fontSize: "14px", color: "#4f6278", marginTop: "16px" }}>Calendar invites have been emailed to you.</p>
-          ) : null}
         </section>
       )}
 
@@ -2000,7 +1997,7 @@ function HomeScreen({
 
       {(() => {
         const upcomingAssignments = sortedActiveAssignments.filter(
-          (entry) => entry.trip.service_date !== todayDate,
+          (entry) => entry.trip.service_date > todayDate,
         );
         if (noAssignments || (upcomingAssignments.length === 0 && allConfirmed)) return null;
         return (
@@ -2098,11 +2095,7 @@ function HomeScreen({
               ) : null}
               <button className="text-button" onClick={onReview}>Review individually</button>
             </>
-          ) : (
-            upcomingAssignments.length > 0 ? (
-              <button className="secondary-button" onClick={onReview}>View passenger rosters <ChevronRightIcon /></button>
-            ) : null
-          )}
+          ) : null}
          </section>
         );
       })()}
