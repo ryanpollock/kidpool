@@ -88,8 +88,8 @@ jobs:
       - name: Apply migrations + seed
         run: supabase db reset
 
-      - name: Run Playwright tests (mobile runtime — no DB needed)
-        run: npx playwright test mobile-runtime.spec.ts
+      - name: Run Playwright E2E tests
+        run: npx playwright test tests/cross-family.spec.ts tests/weekly-cycle.spec.ts tests/today-card.spec.ts tests/toggle-drive-cycle.spec.ts tests/drive-status.spec.ts --workers=1
         env:
           TEST_DB_TARGET: local
 

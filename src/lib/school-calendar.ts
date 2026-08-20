@@ -41,6 +41,15 @@ export function isNoSchoolDay(dateStr: string): boolean {
 const PILOT_TIMEZONE = "America/Los_Angeles";
 
 export function todayInTimezone(timezone: string = PILOT_TIMEZONE): string {
+  // Dev/test override: ?testDate=YYYY-MM-DD forces a specific "today" so
+  // tests can exercise phase-aware hero (Saturday check-in, Sunday confirm,
+  // weekday Today/Upcoming). Read once per call (not cached) so changing
+  // the URL param mid-session picks up immediately.
+  if (typeof window !== "undefined" && import.meta.env.DEV) {
+    const params = new URLSearchParams(window.location.search);
+    const testDate = params.get("testDate");
+    if (testDate && /^\d{4}-\d{2}-\d{2}$/.test(testDate)) return testDate;
+  }
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
     year: "numeric",
