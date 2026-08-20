@@ -287,17 +287,17 @@ test.describe.serial("Today Card", () => {
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
     await expect(page.getByTestId("today-card")).toBeVisible({ timeout: 5000 });
 
-    const cancelBtn = page.getByTestId("cancel-ride-733");
+    const cancelBtn = page.locator('[data-testid^="cancel-ride-"]').first();
     await expect(cancelBtn).toBeVisible({ timeout: 5000 });
     await cancelBtn.click();
 
-    const confirmBtn = page.getByTestId("confirm-cancel-ride-733");
+    const confirmBtn = page.locator('[data-testid^="confirm-cancel-ride-"]').first();
     await expect(confirmBtn).toBeVisible({ timeout: 5000 });
     await confirmBtn.click();
 
     await page.waitForTimeout(3000);
 
-    await expect(page.getByTestId("add-ride-back-733")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid^="add-ride-back-"]').first()).toBeVisible({ timeout: 5000 });
 
     const postCancelRiderCount = getRiderCount(driverAssignmentId!);
     expect(postCancelRiderCount).toBe(initialRiderCount - 1);
@@ -344,18 +344,18 @@ test.describe.serial("Today Card", () => {
     await expect(page.getByTestId("today-card")).toBeVisible({ timeout: 5000 });
 
     // Cancel first
-    const cancelBtn = page.getByTestId("cancel-ride-743");
+    const cancelBtn = page.locator('[data-testid^="cancel-ride-"]').first();
     await cancelBtn.click();
-    await page.getByTestId("confirm-cancel-ride-743").click();
+    await page.locator('[data-testid^="confirm-cancel-ride-"]').first().click();
     await page.waitForTimeout(3000);
-    await expect(page.getByTestId("add-ride-back-743")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid^="add-ride-back-"]').first()).toBeVisible({ timeout: 5000 });
     expect(getRiderCount(driverAssignmentId!)).toBe(1);
 
     // Add back
-    const addBackBtn = page.getByTestId("add-ride-back-743");
+    const addBackBtn = page.locator('[data-testid^="add-ride-back-"]').first();
     await addBackBtn.click();
     await page.waitForTimeout(3000);
-    await expect(page.getByTestId("cancel-ride-743")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('[data-testid^="cancel-ride-"]').first()).toBeVisible({ timeout: 5000 });
     expect(getRiderCount(driverAssignmentId!)).toBe(2);
   });
 
@@ -417,6 +417,6 @@ test.describe.serial("Today Card", () => {
     await expect(rosterSection).toBeVisible({ timeout: 5000 });
     await rosterSection.click();
     await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 5000 });
-    await expect(page.locator(".child-photo-card")).not.toHaveCount(0);
+    await expect(page.locator(".child-status-row")).not.toHaveCount(0);
   });
 });
