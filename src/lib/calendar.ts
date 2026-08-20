@@ -36,7 +36,15 @@ function eventDescription(assignment: MyDriverAssignment): string {
 }
 
 function eventLocation(assignment: MyDriverAssignment): string {
-  return assignment.trip.origin;
+  return assignment.trip.direction === "morning"
+    ? "30th Avenue and Clement Street, San Francisco"
+    : "Presidio Middle School, San Francisco";
+}
+
+function eventLocationUrl(assignment: MyDriverAssignment): string {
+  return assignment.trip.direction === "morning"
+    ? "https://maps.google.com/?q=30th+Avenue+and+Clement+Street+San+Francisco"
+    : "https://maps.google.com/?q=Presidio+Middle+School+San+Francisco";
 }
 
 export function buildIcsEvent(assignment: MyDriverAssignment, timezone: string): string {
@@ -45,6 +53,7 @@ export function buildIcsEvent(assignment: MyDriverAssignment, timezone: string):
   const summary = eventSummary(assignment);
   const description = eventDescription(assignment);
   const location = eventLocation(assignment);
+  const locationUrl = eventLocationUrl(assignment);
   const uid = `${assignment.assignment.id}@carpoolcrew.co`;
   const dtstamp = toIcsLocal(todayInTimezone(), new Date().toTimeString().slice(0, 5));
   return [
@@ -55,7 +64,7 @@ export function buildIcsEvent(assignment: MyDriverAssignment, timezone: string):
     `DTEND;TZID=${timezone}:${dtend}`,
     `SUMMARY:${summary}`,
     `DESCRIPTION:${description}`,
-    `LOCATION:${location}`,
+    `LOCATION:${locationUrl}`,
     "END:VEVENT",
   ].join("\r\n");
 }
@@ -80,7 +89,7 @@ export function buildGoogleCalendarUrl(assignment: MyDriverAssignment, timezone:
     text: eventSummary(assignment),
     dates: `${start}/${end}`,
     ctz: timezone,
-    location: eventLocation(assignment),
+location: eventLocationUrl(assignment),
     details: eventDescription(assignment).replaceAll("\\n", "\n"),
   });
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
@@ -93,7 +102,7 @@ export function buildOutlookUrl(assignment: MyDriverAssignment, _timezone: strin
     subject: eventSummary(assignment),
     startdt: start,
     enddt: end,
-    location: eventLocation(assignment),
+    location: eventLocationUrl(assignment),
     body: eventDescription(assignment).replaceAll("\\n", "\n"),
   });
   return `https://outlook.live.com/calendar/0/deeplink/compose?${params.toString()}`;

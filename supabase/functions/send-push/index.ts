@@ -1775,6 +1775,9 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const summary = `Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive to ${trip.destination}`;
       const ridersStr = kidNames.length > 0 ? kidNames.join(", ") : "No riders assigned";
       const description = `Riders: ${ridersStr}\\nVehicle: ${vehicleLabel || "Unknown"}\\nMeet at ${meetingTime} at ${trip.origin}\\nDepart ${departureTime}`;
+      const locationUrl = trip.direction === "morning"
+        ? "https://maps.google.com/?q=30th+Avenue+and+Clement+Street+San+Francisco"
+        : "https://maps.google.com/?q=Presidio+Middle+School+San+Francisco";
       const icsContent = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -1787,7 +1790,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
         `DTEND;TZID=${timezone}:${dtend}`,
         `SUMMARY:${summary}`,
         `DESCRIPTION:${description}`,
-        `LOCATION:${trip.origin}`,
+        `LOCATION:${locationUrl}`,
         "END:VEVENT",
         "END:VCALENDAR",
       ].join("\r\n");
@@ -1803,7 +1806,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
         text: summary,
         dates: `${googleStart}/${googleEnd}`,
         ctz: timezone,
-        location: trip.origin,
+        location: locationUrl,
         details: description.replaceAll("\\n", "\n"),
       });
       const googleUrl = `https://calendar.google.com/calendar/render?${googleParams.toString()}`;
@@ -1813,6 +1816,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
         `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
         `<h1 style="font-size:22px;margin:0 0 16px;">You're driving, ${escapeHtml(firstName)}</h1>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Your ${dirLabel} drive is confirmed for ${escapeHtml(trip.service_date)}. Meet at ${escapeHtml(trip.origin)} at ${escapeHtml(meetingTime)}. Depart ${escapeHtml(departureTime)}.${kidsStr}</p>` +
+        `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><a href="${locationUrl}">Map to pickup location</a></p>` +
         `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">A calendar invite is attached to this email. Open it to add the event to your calendar — it covers the full drive (15 min before pickup through 45 min after departure).</p>` +
         `<p style="font-size:14px;line-height:1.6;margin:0 0 16px;">Or add via <a href="${googleUrl}">Google Calendar</a>.</p>` +
         `<p style="margin-top:24px;">${APP_URL ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>` : ""}</p>` +
@@ -1821,6 +1825,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const textBody =
         `You're driving, ${firstName}\n\n` +
         `Your ${dirLabel} drive is confirmed for ${trip.service_date}. Meet at ${trip.origin} at ${meetingTime}. Depart ${departureTime}.${kidsStr}\n\n` +
+        `Map to pickup location: ${locationUrl}\n\n` +
         `A calendar invite is attached to this email. Open it to add the event to your calendar — it covers the full drive (15 min before pickup through 45 min after departure).\n\n` +
         `Or add via Google Calendar: ${googleUrl}`;
 
@@ -1924,7 +1929,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
         `DTEND;TZID=${timezone}:${toIcsLocal(trip.service_date, addMinutes(trip.departure_time, 45))}`,
         `SUMMARY:CANCELLED: Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive`,
         "STATUS:CANCELLED",
-        `LOCATION:${trip.origin}`,
+        `LOCATION:${trip.direction === "morning" ? "https://maps.google.com/?q=30th+Avenue+and+Clement+Street+San+Francisco" : "https://maps.google.com/?q=Presidio+Middle+School+San+Francisco"}`,
         "END:VEVENT",
         "END:VCALENDAR",
       ].join("\r\n");
