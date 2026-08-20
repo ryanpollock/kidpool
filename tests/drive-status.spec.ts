@@ -69,7 +69,7 @@ test.describe.serial("Drive Status (On my way / Ready)", () => {
       // Outside the morning window — verify the driver status is visible
       // (the core cross-user visibility test) and skip the ready flow.
       await expect(driverStatus.first()).toContainText("On my way");
-      test.skip(true, "Outside the morning status window — 'Mark ready' only shows for morning drives 6h before to 30min after 8:40 AM");
+      test.skip(true, "Outside the morning status window — 'Mark ready' only shows for morning drives 40min before to 30min after 8:40 AM");
     }
 
     // Tap it — opens a confirmation

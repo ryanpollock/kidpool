@@ -74,9 +74,10 @@ export { PILOT_TIMEZONE };
 
 // ── Drive status time gate ────────────────────────────────────
 // The "I'm on my way" / "Ready" buttons are only active within a window
-// around the meeting time. STATUS_WINDOW_BEFORE_HOURS is intentionally
-// wide (6h) for testing; tighten to 1h after pilot validation.
-export const STATUS_WINDOW_BEFORE_HOURS = 6;
+// around the meeting time. STATUS_WINDOW_BEFORE_MINUTES is set to 40 so the
+// button appears ~40 min before pickup — tight enough to be actionable,
+// wide enough to accommodate early prep.
+export const STATUS_WINDOW_BEFORE_MINUTES = 40;
 export const STATUS_WINDOW_AFTER_MINUTES = 30;
 
 // Build a Date for a trip's meeting time in the pilot timezone.
@@ -115,7 +116,7 @@ export function isWithinStatusWindow(
   now: Date = new Date(),
 ): boolean {
   const meeting = meetingDatetimeForTrip(serviceDate, meetingTime, timezone);
-  const opens = new Date(meeting.getTime() - STATUS_WINDOW_BEFORE_HOURS * 60 * 60 * 1000);
+  const opens = new Date(meeting.getTime() - STATUS_WINDOW_BEFORE_MINUTES * 60 * 1000);
   const closes = new Date(meeting.getTime() + STATUS_WINDOW_AFTER_MINUTES * 60 * 1000);
   return now >= opens && now <= closes;
 }
