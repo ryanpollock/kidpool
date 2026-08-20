@@ -1584,6 +1584,7 @@ function HomeScreen({
   // driver is actively driving, hide the released assignment so the
   // original driver doesn't see a stale "re-accept" prompt.
   const reacceptableAssignments = myAssignments.filter((a) => {
+    if (isPastDriveTime && a.trip.service_date <= todayDate) return false;
     if (a.assignment.status === "declined" || a.assignment.status === "expired") return true;
     if (a.assignment.status === "released") {
       const rosters = homeSchedule?.rostersByTrip.get(a.trip.id) ?? [];
@@ -1601,6 +1602,7 @@ function HomeScreen({
   const noAssignments = activeAssignments.length === 0;
   const hasAlerts = declinedAlerts.length > 0 || uncoveredAlerts.length > 0;
   const isSaturday = new Date(todayDate + "T00:00:00").getDay() === 6;
+  const isPastDriveTime = new Date().getHours() >= 19; // after 7 PM local (Pacific in production)
   const weekEyebrow = weekStartsOn ? weekLabel(weekStartsOn) : "This week";
   const deadlineLabel = confirmationDeadline
     ? new Date(confirmationDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
@@ -1609,7 +1611,7 @@ function HomeScreen({
     ? new Date(checkinDeadline).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: timezone })
     : "Sat midnight";
   const todaysDrives = activeAssignments.filter((a) => a.trip.service_date === todayDate);
-  const hasTodaysDrive = todaysDrives.length > 0;
+  const hasTodaysDrive = todaysDrives.length > 0 && !isPastDriveTime;
   const todaysTentative = todaysDrives.some((a) => a.assignment.status === "tentative");
   const sortedActiveAssignments = [...activeAssignments].sort((a, b) => {
     const aToday = a.trip.service_date === todayDate ? 0 : 1;
@@ -1760,7 +1762,7 @@ function HomeScreen({
         const todaysTrips = homeSchedule.trips
           .filter(t => t.service_date === todayDate)
           .sort((a, b) => a.direction === "morning" ? -1 : 1);
-        if (todaysTrips.length === 0) return null;
+        if (todaysTrips.length === 0 || isPastDriveTime) return null;
         const todayInfo = formatTripDate(todayDate);
         return (
           <section className="today-card" data-testid="today-card">
