@@ -407,7 +407,7 @@ test.describe.serial("Afternoon Trip Feature", () => {
 
   // ── C6: DrivePreferenceGrid renders 3 columns ───────────────────
 
-  test("C6: DrivePreferenceGrid renders 3 columns (AM, PM 4:20, PM 5:15)", async ({ page }) => {
+  test("C6: DrivePreferenceGrid renders 3 slot rows (AM, PM 4:20, PM 5:15)", async ({ page }) => {
     test.skip(skip || !setupReady, "Requires service key and successful setup");
 
     await signInWithTestAuth(page, parentEmail);
@@ -420,14 +420,16 @@ test.describe.serial("Afternoon Trip Feature", () => {
     const drivePrefGrid = page.getByTestId("drive-preference-grid");
     await expect(drivePrefGrid).toBeVisible({ timeout: 15000 });
 
-    // 3 columns: AM, PM 4:20, PM 5:15
-    const headerLabels = drivePrefGrid.locator(".drive-template-header-label");
-    await expect(headerLabels).toHaveCount(3);
-    await expect(headerLabels.nth(0)).toContainText("AM");
-    await expect(headerLabels.nth(1)).toContainText("PM");
-    await expect(headerLabels.nth(1)).toContainText("4:20");
-    await expect(headerLabels.nth(2)).toContainText("PM");
-    await expect(headerLabels.nth(2)).toContainText("5:15");
+    // Stacked layout: each day has 3 slot rows (AM, PM 4:20, PM 5:15)
+    // Verify the slot labels exist with correct times
+    await expect(drivePrefGrid.locator(".drive-template-slot-label", { hasText: "AM" }).first()).toBeVisible({ timeout: 5000 });
+    await expect(drivePrefGrid.locator(".drive-template-slot-label", { hasText: "4:20" }).first()).toBeVisible({ timeout: 5000 });
+    await expect(drivePrefGrid.locator(".drive-template-slot-label", { hasText: "5:15" }).first()).toBeVisible({ timeout: 5000 });
+
+    // Verify Prefer/Can/Can't buttons exist for each slot
+    const slotRows = drivePrefGrid.locator(".drive-template-slot-row");
+    const count = await slotRows.count();
+    assert.ok(count >= 15, `Expected at least 15 slot rows (5 days × 3 slots), got ${count}`);
   });
 
   // ── C7: WeekScreen shows both afternoon legs with times ────────

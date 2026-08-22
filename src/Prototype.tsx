@@ -894,60 +894,69 @@ function DrivePreferenceGrid({
   const update = (day: number, slot: "am" | "pm_early" | "pm_late", pref: DrivePreference) => {
     if (disabled) return;
     if (pref !== "cannot" && !hasVehicle) return;
-    onChange(
-      preferences.map((p) =>
-        p.day === day && inferSlotFromPref(p) === slot ? { ...p, slot, preference: pref } : p,
-      ),
-    );
+    const existing = preferences.find((p) => p.day === day && inferSlotFromPref(p) === slot);
+    if (existing) {
+      onChange(
+        preferences.map((p) =>
+          p === existing ? { ...p, slot, preference: pref } : p,
+        ),
+      );
+    } else {
+      onChange([
+        ...preferences,
+        {
+          day,
+          direction: (slot === "am" ? "morning" : "afternoon") as "morning" | "afternoon",
+          slot,
+          preference: pref,
+        },
+      ]);
+    }
   };
 
-  const slotLabels: Record<string, { short: string; time: string }> = {
-    am: { short: "AM", time: MORNING_LABEL },
-    pm_early: { short: "PM", time: PM_EARLY_LABEL },
-    pm_late: { short: "PM", time: PM_LATE_LABEL },
-  };
+  const slotLabels: { slot: "am" | "pm_early" | "pm_late"; label: string; time: string }[] = [
+    { slot: "am", label: "AM", time: MORNING_LABEL },
+    { slot: "pm_early", label: "PM", time: PM_EARLY_LABEL },
+    { slot: "pm_late", label: "PM", time: PM_LATE_LABEL },
+  ];
 
   return (
     <div className="drive-template-grid" data-testid="drive-preference-grid">
-      <div className="drive-template-header" aria-hidden="true">
-        <span />
-        <span className="drive-template-header-label">AM<small>{MORNING_LABEL}</small></span>
-        <span className="drive-template-header-label">PM<small>{PM_EARLY_LABEL}</small></span>
-        <span className="drive-template-header-label">PM<small>{PM_LATE_LABEL}</small></span>
-      </div>
       {TEMPLATE_DAYS.map((day) => {
         const dayLabel = WEEKDAY_LABELS[day];
         return (
-          <div className="drive-template-row" key={day}>
+          <div className="drive-template-day-group" key={day}>
             <strong className="drive-template-day">{dayLabel}</strong>
-            {ALL_SLOTS.map((slot) => {
+            {slotLabels.map(({ slot, label, time }) => {
               const entry = preferences.find((p) => p.day === day && inferSlotFromPref(p) === slot);
               const current = entry?.preference ?? "cannot";
-              const label = slot === "am" ? "morning" : slot === "pm_early" ? "early afternoon" : "late afternoon";
+              const ariaLabel = slot === "am" ? "morning" : slot === "pm_early" ? "early afternoon" : "late afternoon";
               return (
-                <div
-                  className="drive-segments"
-                  role="group"
-                  aria-label={`${dayLabel} ${label}`}
-                  key={slot}
-                >
-                  {(["prefer", "can", "cannot"] as const).map((pref) => {
-                    const active = current === pref;
-                    const blocked = pref !== "cannot" && !hasVehicle;
-                    return (
-                      <button
-                        key={pref}
-                        className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
-                        disabled={disabled || blocked}
-                        onClick={() => update(day, slot, pref)}
-                        aria-pressed={active}
-                        aria-label={preferenceLabel(pref)}
-                        type="button"
-                      >
-                        {pref === "prefer" ? "Prefer" : pref === "can" ? "Can" : "Can't"}
-                      </button>
-                    );
-                  })}
+                <div className="drive-template-slot-row" key={slot}>
+                  <span className="drive-template-slot-label">{label}<small>{time}</small></span>
+                  <div
+                    className="drive-segments"
+                    role="group"
+                    aria-label={`${dayLabel} ${ariaLabel}`}
+                  >
+                    {(["prefer", "can", "cannot"] as const).map((pref) => {
+                      const active = current === pref;
+                      const blocked = pref !== "cannot" && !hasVehicle;
+                      return (
+                        <button
+                          key={pref}
+                          className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
+                          disabled={disabled || blocked}
+                          onClick={() => update(day, slot, pref)}
+                          aria-pressed={active}
+                          aria-label={preferenceLabel(pref)}
+                          type="button"
+                        >
+                          {pref === "prefer" ? "Prefer" : pref === "can" ? "Can" : "Can't"}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               );
             })}

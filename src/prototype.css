@@ -2583,11 +2583,10 @@ a.directory-contact-item:hover {
   gap: 10px;
 }
 
-.drive-template-row {
-  display: grid;
-  grid-template-columns: 36px 1fr 1fr 1fr;
-  gap: 6px;
-  align-items: center;
+.drive-template-day-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .drive-template-day {
@@ -2595,6 +2594,30 @@ a.directory-contact-item:hover {
   font-weight: 700;
   color: var(--ink-soft);
   text-transform: uppercase;
+  margin-bottom: 2px;
+}
+
+.drive-template-slot-row {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.drive-template-slot-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.drive-template-slot-label small {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  opacity: 0.7;
 }
 
 .ride-needs-grid {
@@ -2693,12 +2716,7 @@ a.directory-contact-item:hover {
 }
 
 .drive-template-header {
-  display: grid;
-  grid-template-columns: 36px 1fr 1fr 1fr;
-  gap: 6px;
-  align-items: center;
-  padding-bottom: 6px;
-  margin-bottom: 2px;
+  display: none;
 }
 
 .ride-needs-header {
