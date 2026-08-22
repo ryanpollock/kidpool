@@ -864,6 +864,11 @@ const PM_LATE_LABEL = "5:15 PM";
 const AFTERNOON_SLOTS = ["pm_early", "pm_late"] as const;
 const ALL_SLOTS = ["am", "pm_early", "pm_late"] as const;
 
+function inferSlotFromPref(p: { direction: string; slot?: string }): string {
+  if (p.slot === "am" || p.slot === "pm_early" || p.slot === "pm_late") return p.slot;
+  return p.direction === "morning" ? "am" : "pm_late";
+}
+
 function emptyDriveDefaults(): DefaultDrivePref[] {
   return TEMPLATE_DAYS.flatMap((day) =>
     ALL_SLOTS.map((slot) => ({
@@ -891,7 +896,7 @@ function DrivePreferenceGrid({
     if (pref !== "cannot" && !hasVehicle) return;
     onChange(
       preferences.map((p) =>
-        p.day === day && p.slot === slot ? { ...p, preference: pref } : p,
+        p.day === day && inferSlotFromPref(p) === slot ? { ...p, slot, preference: pref } : p,
       ),
     );
   };
@@ -916,7 +921,7 @@ function DrivePreferenceGrid({
           <div className="drive-template-row" key={day}>
             <strong className="drive-template-day">{dayLabel}</strong>
             {ALL_SLOTS.map((slot) => {
-              const entry = preferences.find((p) => p.day === day && p.slot === slot);
+              const entry = preferences.find((p) => p.day === day && inferSlotFromPref(p) === slot);
               const current = entry?.preference ?? "cannot";
               const label = slot === "am" ? "morning" : slot === "pm_early" ? "early afternoon" : "late afternoon";
               return (
