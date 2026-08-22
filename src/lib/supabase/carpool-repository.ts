@@ -8,6 +8,7 @@ import type {
   DefaultRideNeed,
   DrivePreference,
   Json,
+  ReassignmentRequestRow,
   RidePreference,
   Tables,
   TablesInsert,
@@ -1307,6 +1308,75 @@ export class CarpoolRepository {
         p_vehicle_id: vehicleId,
       }),
     );
+  }
+
+  async requestDriveReassignment(
+    assignmentId: string,
+    targetProfileId: string,
+  ): Promise<ReassignmentRequestRow> {
+    return unwrapRequired(
+      await this.client.rpc("request_drive_reassignment", {
+        p_assignment_id: assignmentId,
+        p_target_profile_id: targetProfileId,
+      }),
+    );
+  }
+
+  async respondToReassignmentRequest(
+    requestId: string,
+    response: "accepted" | "declined",
+  ): Promise<ReassignmentRequestRow> {
+    return unwrapRequired(
+      await this.client.rpc("respond_to_reassignment_request", {
+        p_request_id: requestId,
+        p_response: response,
+      }),
+    );
+  }
+
+  async cancelReassignmentRequest(requestId: string): Promise<ReassignmentRequestRow> {
+    return unwrapRequired(
+      await this.client.rpc("cancel_reassignment_request", {
+        p_request_id: requestId,
+      }),
+    );
+  }
+
+  async getPendingIncomingReassignments(): Promise<ReassignmentRequestRow[]> {
+    const userResult = await this.client.auth.getUser();
+    if (userResult.error || !userResult.data.user) return [];
+    const { data, error } = await this.client
+      .from("reassignment_requests")
+      .select("*")
+      .eq("target_profile_id", userResult.data.user.id)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false });
+    if (error) return [];
+    return (data ?? []) as unknown as ReassignmentRequestRow[];
+  }
+
+  async getPendingOutgoingReassignment(assignmentId: string): Promise<ReassignmentRequestRow | null> {
+    const { data, error } = await this.client
+      .from("reassignment_requests")
+      .select("*")
+      .eq("assignment_id", assignmentId)
+      .eq("status", "pending")
+      .maybeSingle();
+    if (error || !data) return null;
+    return data as unknown as ReassignmentRequestRow;
+  }
+
+  async sendReassignmentNotification(
+    requestId: string,
+    type: "reassignment_requested" | "reassignment_accepted" | "reassignment_declined",
+  ): Promise<void> {
+    try {
+      await this.client.functions.invoke("send-push", {
+        body: { request_id: requestId, type },
+      });
+    } catch (err) {
+      console.error("[carpool] send-push reassignment invocation failed:", err);
+    }
   }
 
   async getDeclinedWithoutVolunteer(

@@ -241,7 +241,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { type, assignment_id, version_id, displaced_drivers, nonce, test_date, test_status } = body;
+    const { type, assignment_id, version_id, displaced_drivers, nonce, test_date, test_status, request_id } = body;
 
     if (!SERVICE_ROLE_KEY) return jsonError("Service role key not configured", 500);
     if (!type) return jsonError("Missing notification type", 400);
@@ -2521,6 +2521,390 @@ ${cta}
       }
 
       return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    } else if (
+    // ── reassignment_requested: notify target parent ──────────
+    // Triggered by the client after request_drive_reassignment RPC.
+    // Sends email + push to the target parent only.
+    type === "reassignment_requested" && request_id) {
+      const requests = await supaFetch("reassignment_requests", "*", { id: `eq.${request_id}` });
+      if (requests.length === 0) return jsonError("Reassignment request not found", 404);
+      const req = requests[0];
+
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,trip_id,group_id", { id: `eq.${req.assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,meeting_time,departure_time,origin,destination,slot", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const driverProfile = await supaFetch("profiles", "id,full_name", { id: `eq.${da.driver_profile_id}` });
+      const driverName = driverProfile.length > 0 ? (driverProfile[0].full_name ?? "A driver") : "A driver";
+      const driverFirst = driverName.split(" ")[0];
+
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      const timeLabel = formatTime(trip.meeting_time);
+      const notifTitle = `${driverFirst} requested you take over a drive`;
+      const notifBody = `${driverFirst} can't drive the ${period} trip on ${trip.service_date} (${timeLabel} pickup) and asked you to take it over. Open the app to accept or decline.`;
+      const idempotencyKey = `carpool-reassignment-requested-${request_id}-${req.target_profile_id}`;
+      const pushTag = `reassignment-requested-${request_id}`;
+
+      await sendEmailAndPush(req.target_profile_id, notifTitle, notifBody, idempotencyKey, pushTag);
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    }
+
+    } else if (
+    // ── reassignment_declined: notify original driver ─────────
+    // Triggered by the client after respond_to_reassignment_request declines.
+    type === "reassignment_declined" && request_id) {
+      const requests = await supaFetch("reassignment_requests", "*", { id: `eq.${request_id}` });
+      if (requests.length === 0) return jsonError("Reassignment request not found", 404);
+      const req = requests[0];
+
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,trip_id,group_id", { id: `eq.${req.assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,meeting_time", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const targetProfile = await supaFetch("profiles", "id,full_name", { id: `eq.${req.target_profile_id}` });
+      const targetName = targetProfile.length > 0 ? (targetProfile[0].full_name ?? "The parent") : "The parent";
+      const targetFirst = targetName.split(" ")[0];
+
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      const notifTitle = `${targetFirst} declined — you're still driving`;
+      const notifBody = `${targetFirst} declined your request to take over the ${period} trip on ${trip.service_date}. You're still assigned to this drive. Try another parent or contact the coordinator.`;
+      const idempotencyKey = `carpool-reassignment-declined-${request_id}-${req.requested_by}`;
+      const pushTag = `reassignment-declined-${request_id}`;
+
+      await sendEmailAndPush(req.requested_by, notifTitle, notifBody, idempotencyKey, pushTag);
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    }
+
+    } else if (
+    // ── reassignment_accepted: 3 audiences ─────────────────────
+    // Triggered by the client after respond_to_reassignment_request accepts.
+    //   1. Original driver: .ics CANCEL + "you're no longer driving"
+    //   2. Target driver: .ics INVITE + "you're now driving"
+    //   3. Rider parents: plain notification "new driver is covering"
+    type === "reassignment_accepted" && request_id) {
+      const requests = await supaFetch("reassignment_requests", "*", { id: `eq.${request_id}` });
+      if (requests.length === 0) return jsonError("Reassignment request not found", 404);
+      const req = requests[0];
+
+      // The original assignment is now 'released' — load it to get trip + driver info
+      const origAssignments = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,status", { id: `eq.${req.assignment_id}` });
+      if (origAssignments.length === 0) return jsonError("Original assignment not found", 404);
+      const origDa = origAssignments[0];
+
+      // The new assignment (target's) — find it for the same trip + version
+      const newAssignments = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,trip_id,group_id,status", [
+        ["trip_id", `eq.${origDa.trip_id}`],
+        ["schedule_version_id", `in.(select schedule_version_id from driver_assignments where id = eq.${req.assignment_id})`],
+        ["driver_profile_id", `eq.${req.target_profile_id}`],
+        ["status", "eq.confirmed"],
+      ]);
+      if (newAssignments.length === 0) return jsonError("New assignment not found", 404);
+      const newDa = newAssignments[0];
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,meeting_time,departure_time,origin,destination,slot,week_id,group_id", { id: `eq.${origDa.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const [origDriverRes, targetDriverRes] = await Promise.all([
+        supaFetch("profiles", "id,full_name,email", { id: `eq.${origDa.driver_profile_id}` }),
+        supaFetch("profiles", "id,full_name,email", { id: `eq.${req.target_profile_id}` }),
+      ]);
+      const origDriver = origDriverRes[0];
+      const targetDriver = targetDriverRes[0];
+      const origFirst = (origDriver?.full_name ?? "there").split(" ")[0];
+      const targetFirst = (targetDriver?.full_name ?? "there").split(" ")[0];
+
+      const groupId = origDa.group_id;
+      const timezone = "America/Los_Angeles";
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      const meetingTime = formatTime(trip.meeting_time);
+      const departureTime = formatTime(trip.departure_time);
+
+      // Fetch rider assignments (kids in this car — now on the new assignment)
+      const riderAssignments = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${newDa.id}` });
+      const childIds = riderAssignments.map((ra: any) => ra.child_id);
+      const children = childIds.length > 0 ? await supaFetch("children", "first_name,last_name,household_id", { id: `in.(${childIds.join(",")})` }) : [];
+      const kidNames = children.map((c: any) => `${c.first_name} ${c.last_name}`.trim());
+
+      // Fetch vehicle label for the new assignment
+      let vehicleLabel = "";
+      if (newDa.vehicle_id) {
+        const vehicles = await supaFetch("vehicles", "label", { id: `eq.${newDa.vehicle_id}` });
+        if (vehicles.length > 0) vehicleLabel = vehicles[0].label;
+      }
+
+      // Calendar event times (same as drive_confirmed)
+      const eventStart = addMinutes(trip.meeting_time, -15);
+      const eventEnd = addMinutes(trip.departure_time, 45);
+      const dtstart = toIcsLocal(trip.service_date, eventStart);
+      const dtend = toIcsLocal(trip.service_date, eventEnd);
+      const dtstamp = toIcsLocal(
+        new Date().toISOString().slice(0, 10),
+        new Date().toTimeString().slice(0, 5),
+      );
+      const summary = `Carpool Crew: ${period === "morning" ? "Morning" : "Afternoon"} drive (${trip.meeting_time}) to ${trip.destination}`;
+      const ridersStr = kidNames.length > 0 ? kidNames.join(", ") : "No riders assigned";
+      const description = `Riders: ${ridersStr}\\nVehicle: ${vehicleLabel || "Unknown"}\\nMeet at ${meetingTime} at ${trip.origin}\\nDepart ${departureTime}`;
+      const locationUrl = mapsUrlForOrigin(trip.origin);
+      const googleParams = new URLSearchParams({
+        action: "TEMPLATE",
+        text: summary,
+        dates: `${dtstart}/${dtend}`,
+        ctz: timezone,
+        location: locationUrl,
+        details: description.replaceAll("\\n", "\n"),
+      });
+      const googleUrl = `https://calendar.google.com/calendar/render?${googleParams.toString()}`;
+
+      let emailSent = 0;
+      let emailFailed = 0;
+      let pushSent = 0;
+      let pushFailed = 0;
+
+      // ── Audience 1: Original driver (.ics CANCEL) ────────────
+      if (origDriver?.email && !isTestEmail(origDriver.email) && RESEND_API_KEY) {
+        const icsCancel = [
+          "BEGIN:VCALENDAR",
+          "VERSION:2.0",
+          "PRODID:-//Carpool Crew//EN",
+          `X-WR-TIMEZONE:${timezone}`,
+          "METHOD:CANCEL",
+          "BEGIN:VEVENT",
+          `UID:drive-confirmed-${req.assignment_id}@carpoolcrew.co`,
+          `DTSTAMP:${dtstamp}`,
+          `DTSTART;TZID=${timezone}:${dtstart}`,
+          `DTEND;TZID=${timezone}:${dtend}`,
+          `SUMMARY:CANCELLED: ${summary}`,
+          "STATUS:CANCELLED",
+          `LOCATION:${locationUrl}`,
+          "END:VEVENT",
+          "END:VCALENDAR",
+        ].join("\r\n");
+        const icsBase64 = btoa(unescape(encodeURIComponent(icsCancel)));
+
+        const htmlBody =
+          `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+          `<h1 style="font-size:22px;margin:0 0 16px;">${escapeHtml(targetFirst)} accepted your drive</h1>` +
+          `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">${escapeHtml(targetFirst)} is now driving the ${period} trip on ${escapeHtml(trip.service_date)}. You're no longer assigned to this drive.</p>` +
+          `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">A calendar cancellation is attached so your calendar app can remove the event.</p>` +
+          `<p style="margin-top:24px;">${APP_URL ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>` : ""}</p>` +
+          `</body></html>`;
+        const textBody =
+          `${targetFirst} accepted your drive\n\n` +
+          `${targetFirst} is now driving the ${period} trip on ${trip.service_date}. You're no longer assigned to this drive.\n\n` +
+          `A calendar cancellation is attached so your calendar app can remove the event.`;
+
+        const idempotencyKey = `carpool-reassignment-accepted-${request_id}-${origDriver.id}`;
+        try {
+          const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKey,
+            },
+            body: JSON.stringify({
+              from: RESEND_FROM_EMAIL,
+              to: origDriver.email,
+              reply_to: RESEND_REPLY_TO,
+              subject: `${targetFirst} accepted — you're no longer driving`,
+              html: htmlBody,
+              text: textBody,
+              attachments: [{ filename: "carpool-crew-cancel.ics", content: icsBase64 }],
+              tags: [
+                { name: "type", value: "reassignment_accepted" },
+                { name: "group", value: groupId ?? "unknown" },
+              ],
+            }),
+          });
+          if (!res.ok) { emailFailed++; } else { emailSent++; }
+        } catch (e) { emailFailed++; }
+
+        // Push to original driver
+        if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+          ensureVapid();
+          const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${origDriver.id}` });
+          for (const sub of subs) {
+            try {
+              await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                JSON.stringify({ title: `${targetFirst} accepted — you're no longer driving`, body: `${targetFirst} is now driving the ${period} trip on ${trip.service_date}.`, tag: `reassignment-accepted-${request_id}-${origDriver.id}`, url: "/" }),
+                { TTL: 86400 },
+              );
+              pushSent++;
+            } catch (error: any) {
+              pushFailed++;
+              const statusCode = error?.statusCode ?? 0;
+              if (statusCode === 410 || statusCode === 404) {
+                await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+              }
+            }
+          }
+        }
+      }
+
+      // ── Audience 2: Target driver (.ics INVITE) ──────────────
+      if (targetDriver?.email && !isTestEmail(targetDriver.email) && RESEND_API_KEY) {
+        const icsInvite = [
+          "BEGIN:VCALENDAR",
+          "VERSION:2.0",
+          "PRODID:-//Carpool Crew//EN",
+          `X-WR-TIMEZONE:${timezone}`,
+          "BEGIN:VEVENT",
+          `UID:drive-confirmed-${newDa.id}@carpoolcrew.co`,
+          `DTSTAMP:${dtstamp}`,
+          `DTSTART;TZID=${timezone}:${dtstart}`,
+          `DTEND;TZID=${timezone}:${dtend}`,
+          `SUMMARY:${summary}`,
+          `DESCRIPTION:${description}`,
+          `LOCATION:${locationUrl}`,
+          "END:VEVENT",
+          "END:VCALENDAR",
+        ].join("\r\n");
+        const icsBase64 = btoa(unescape(encodeURIComponent(icsInvite)));
+        const kidsStr = kidNames.length > 0 ? ` Kids in your car: ${kidNames.join(", ")}.` : "";
+
+        const htmlBody =
+          `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+          `<h1 style="font-size:22px;margin:0 0 16px;">You're now driving, ${escapeHtml(targetFirst)}</h1>` +
+          `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">You accepted ${escapeHtml(origFirst)}'s request. Your ${period} drive is confirmed for ${escapeHtml(trip.service_date)}. Meet at ${escapeHtml(trip.origin)} at ${escapeHtml(meetingTime)}. Depart ${escapeHtml(departureTime)}.${kidsStr}</p>` +
+          `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;"><a href="${locationUrl}">Map to pickup location</a></p>` +
+          `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;">A calendar invite is attached to this email. Open it to add the event to your calendar.</p>` +
+          `<p style="font-size:14px;line-height:1.6;margin:0 0 16px;">Or add via <a href="${googleUrl}">Google Calendar</a>.</p>` +
+          `<p style="margin-top:24px;">${APP_URL ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>` : ""}</p>` +
+          `</body></html>`;
+        const textBody =
+          `You're now driving, ${targetFirst}\n\n` +
+          `You accepted ${origFirst}'s request. Your ${period} drive is confirmed for ${trip.service_date}. Meet at ${trip.origin} at ${meetingTime}. Depart ${departureTime}.${kidsStr}\n\n` +
+          `Map to pickup location: ${locationUrl}\n\n` +
+          `A calendar invite is attached to this email. Open it to add the event to your calendar.\n\n` +
+          `Or add via Google Calendar: ${googleUrl}`;
+
+        const idempotencyKey = `carpool-reassignment-accepted-${request_id}-${targetDriver.id}`;
+        try {
+          const res = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+              "Idempotency-Key": idempotencyKey,
+            },
+            body: JSON.stringify({
+              from: RESEND_FROM_EMAIL,
+              to: targetDriver.email,
+              reply_to: RESEND_REPLY_TO,
+              subject: `You're now driving ${period} — ${trip.service_date}`,
+              html: htmlBody,
+              text: textBody,
+              attachments: [{ filename: "carpool-crew-drive.ics", content: icsBase64 }],
+              tags: [
+                { name: "type", value: "reassignment_accepted" },
+                { name: "group", value: groupId ?? "unknown" },
+              ],
+            }),
+          });
+          if (!res.ok) { emailFailed++; } else { emailSent++; }
+        } catch (e) { emailFailed++; }
+
+        // Push to target driver
+        if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+          ensureVapid();
+          const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${targetDriver.id}` });
+          for (const sub of subs) {
+            try {
+              await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                JSON.stringify({ title: `You're now driving the ${period} trip`, body: `You accepted ${origFirst}'s request. You're driving the ${period} trip on ${trip.service_date}.`, tag: `reassignment-accepted-${request_id}-${targetDriver.id}`, url: "/" }),
+                { TTL: 86400 },
+              );
+              pushSent++;
+            } catch (error: any) {
+              pushFailed++;
+              const statusCode = error?.statusCode ?? 0;
+              if (statusCode === 410 || statusCode === 404) {
+                await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+              }
+            }
+          }
+        }
+      }
+
+      // ── Audience 3: Rider parents (plain notification) ────────
+      const householdIds = [...new Set(children.map((c: any) => c.household_id))];
+      const riderParentIds: string[] = [];
+      for (const hid of householdIds) {
+        const memberships = await supaFetch("memberships", "profile_id", { household_id: `eq.${hid}`, status: "eq.active" });
+        riderParentIds.push(...memberships.map((m: any) => m.profile_id));
+      }
+      // Exclude both drivers
+      const notifyParentIds = riderParentIds.filter((id: string) => id !== origDa.driver_profile_id && id !== req.target_profile_id);
+      const uniqueParentIds = [...new Set(notifyParentIds)];
+
+      if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY && uniqueParentIds.length > 0) {
+        ensureVapid();
+        const parentIdsStr = `(${uniqueParentIds.join(",")})`;
+        const subs = await supaFetch("push_subscriptions", "*", { profile_id: `in.${parentIdsStr}` });
+        for (const sub of subs) {
+          try {
+            await webpush.sendNotification(
+              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+              JSON.stringify({ title: `${targetFirst} is now driving`, body: `${targetFirst} is now driving the ${period} trip on ${trip.service_date} for your child.`, tag: `reassignment-accepted-${request_id}-${sub.profile_id}`, url: "/" }),
+              { TTL: 86400 },
+            );
+            pushSent++;
+          } catch (error: any) {
+            pushFailed++;
+            const statusCode = error?.statusCode ?? 0;
+            if (statusCode === 410 || statusCode === 404) {
+              await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+            }
+          }
+        }
+      }
+
+      if (RESEND_API_KEY && uniqueParentIds.length > 0) {
+        const profiles = await supaFetch("profiles", "id,email", { id: `in.(${uniqueParentIds.join(",")})` });
+        const cta = APP_URL
+          ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
+          : "";
+        for (const profile of profiles) {
+          if (!profile.email || isTestEmail(profile.email)) continue;
+          const idempotencyKey = `carpool-reassignment-accepted-${request_id}-${profile.id}`;
+          try {
+            const res = await fetch("https://api.resend.com/emails", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${RESEND_API_KEY}`,
+                "Content-Type": "application/json",
+                "Idempotency-Key": idempotencyKey,
+              },
+              body: JSON.stringify({
+                from: RESEND_FROM_EMAIL,
+                to: profile.email,
+                reply_to: RESEND_REPLY_TO,
+                subject: `${targetFirst} is now driving`,
+                html: `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;"><h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1><p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(targetFirst)} is now driving the ${period} trip on ${trip.service_date} for your child.</p><p style="margin-top:24px;">${cta}</p></body></html>`,
+                text: `${targetFirst} is now driving the ${period} trip on ${trip.service_date} for your child.`,
+                tags: [
+                  { name: "type", value: "reassignment_accepted" },
+                  { name: "group", value: groupId ?? "unknown" },
+                ],
+              }),
+            });
+            if (!res.ok) { emailFailed++; } else { emailSent++; }
+          } catch (e) { emailFailed++; }
+        }
+      }
+
+      return jsonResponse({ sent: pushSent, failed: pushFailed, email_sent: emailSent, email_failed: emailFailed });
     } else if (type === "assignment_request" && version_id) {
       // Notify drivers with tentative assignments that they have drives to confirm.
       // Fired by generate-schedule Edge Function after writing a draft.

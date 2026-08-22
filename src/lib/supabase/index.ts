@@ -8,6 +8,8 @@ export type {
   Database,
   DrivePreference,
   MembershipStatus,
+  ReassignmentRequestRow,
+  ReassignmentStatus,
   ScheduleStatus,
   Tables,
   TablesInsert,

@@ -18,6 +18,7 @@ export type DrivePreference = "prefer" | "can" | "cannot";
 export type ScheduleStatus = "draft" | "published" | "superseded";
 export type AssignmentStatus = "tentative" | "confirmed" | "declined" | "expired" | "released";
 export type ConfirmationResponse = "confirmed" | "declined";
+export type ReassignmentStatus = "pending" | "accepted" | "declined" | "cancelled";
 
 type Table<Row, Insert, Update = Partial<Insert>> = {
   Row: Row;
@@ -197,6 +198,17 @@ export type RiderAssignmentRow = {
   driver_assignment_id: string;
   child_id: string;
   created_at: string;
+};
+
+export type ReassignmentRequestRow = {
+  id: string;
+  group_id: string;
+  assignment_id: string;
+  target_profile_id: string;
+  requested_by: string;
+  status: ReassignmentStatus;
+  created_at: string;
+  responded_at: string | null;
 };
 
 export type DriverConfirmationRow = {
@@ -623,6 +635,26 @@ export type Database = {
         };
         Returns: DriverAssignmentRow;
       };
+      request_drive_reassignment: {
+        Args: {
+          p_assignment_id: string;
+          p_target_profile_id: string;
+        };
+        Returns: ReassignmentRequestRow;
+      };
+      respond_to_reassignment_request: {
+        Args: {
+          p_request_id: string;
+          p_response: string;
+        };
+        Returns: ReassignmentRequestRow;
+      };
+      cancel_reassignment_request: {
+        Args: {
+          p_request_id: string;
+        };
+        Returns: ReassignmentRequestRow;
+      };
     };
     Enums: {
       app_role: AppRole;
@@ -637,6 +669,7 @@ export type Database = {
       schedule_status: ScheduleStatus;
       assignment_status: AssignmentStatus;
       confirmation_response: ConfirmationResponse;
+      reassignment_status: ReassignmentStatus;
     };
     CompositeTypes: Record<string, never>;
   };

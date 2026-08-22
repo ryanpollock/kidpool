@@ -42,7 +42,7 @@ import {
   type WeekOverview,
   type WeekWithTrips,
 } from "./lib/supabase";
-import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference } from "./lib/supabase/database.types";
+import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference, ReassignmentRequestRow } from "./lib/supabase/database.types";
 import { getNoSchoolReason, todayInTimezone, dateInTimezone, isWithinStatusWindow } from "./lib/school-calendar";
 
 type AppTab = "home" | "plan" | "week" | "coordinate";
@@ -1575,6 +1575,12 @@ function HomeScreen({
   checkinDeadline,
   declinedAlerts,
   uncoveredAlerts,
+  pendingIncomingReassignments,
+  onAcceptReassignment,
+  onDeclineReassignment,
+  reassignmentWorking,
+  reassignmentProfileById,
+  reassignmentSchedule,
   showPushBanner,
   onAllowPush,
   onDismissPush,
@@ -1625,6 +1631,12 @@ function HomeScreen({
   checkinDeadline: string | null;
   declinedAlerts: DeclinedDriveAlert[];
   uncoveredAlerts: UncoveredChildAlert[];
+  pendingIncomingReassignments: ReassignmentRequestRow[];
+  onAcceptReassignment: (requestId: string) => void;
+  onDeclineReassignment: (requestId: string) => void;
+  reassignmentWorking: boolean;
+  reassignmentProfileById: Map<string, { full_name: string; avatar_url: string | null }>;
+  reassignmentSchedule: ScheduleVersionWithRosters | null;
   showPushBanner: boolean;
   onAllowPush: () => void;
   onDismissPush: () => void;
@@ -2069,6 +2081,63 @@ function HomeScreen({
                   >
                     <CheckIcon width="18" height="18" /> {capacity === null ? "No vehicle" : tooSmall ? "Car too small" : "I can drive"}
                   </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+
+      {pendingIncomingReassignments.length > 0 ? (
+        <section className="decline-alert" data-testid="reassignment-alert" aria-labelledby="reassignment-heading">
+          <div className="home-section-header home-section-header--alert">
+            <h2 id="reassignment-heading"><ExclamationTriangleIcon width="18" height="18" style={{ display: "inline", verticalAlign: "middle", marginRight: "6px" }} />Drive reassignment request</h2>
+          </div>
+          <ul className="decline-alert-list">
+            {pendingIncomingReassignments.map((request) => {
+              const requestingName = reassignmentProfileById.get(request.requested_by)?.full_name ?? "A parent";
+              const requestingFirst = requestingName.split(" ")[0];
+              let tripInfo: { label: string; date: string } | null = null;
+              if (reassignmentSchedule) {
+                for (const trip of reassignmentSchedule.trips) {
+                  const rosters = reassignmentSchedule.rostersByTrip.get(trip.id);
+                  if (!rosters) continue;
+                  const entry = rosters.find((r) => r.driverAssignment.id === request.assignment_id);
+                  if (entry) {
+                    const dirLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
+                    tripInfo = { label: dirLabel, date: trip.service_date };
+                    break;
+                  }
+                }
+              }
+              return (
+                <li key={request.id}>
+                  <div className="decline-alert-trip">
+                    <strong>{tripInfo ? `${tripInfo.label} · ${tripInfo.date}` : "A drive"}</strong>
+                    <span className="decline-alert-children">
+                      {requestingFirst} requested you take over this drive
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+                    <button
+                      className="primary-button"
+                      data-testid={`reassignment-accept-${request.id}`}
+                      disabled={reassignmentWorking}
+                      onClick={() => onAcceptReassignment(request.id)}
+                      type="button"
+                    >
+                      Accept
+                    </button>
+                    <button
+                      className="secondary-button"
+                      data-testid={`reassignment-decline-${request.id}`}
+                      disabled={reassignmentWorking}
+                      onClick={() => onDeclineReassignment(request.id)}
+                      type="button"
+                    >
+                      Decline
+                    </button>
+                  </div>
                 </li>
               );
             })}
@@ -5111,6 +5180,10 @@ function DriveDetailScreen({
   currentProfileId,
   onSetDriverOnMyWay,
   onSetRiderReady,
+  onReassignDrive,
+  pendingOutgoingRequest,
+  onCancelReassignment,
+  profileById,
 }: {
   entry: ScheduleRosterEntry;
   trip: Tables<"trips">;
@@ -5124,6 +5197,10 @@ function DriveDetailScreen({
   currentProfileId: string | null;
   onSetDriverOnMyWay?: () => void;
   onSetRiderReady?: (childId: string) => void;
+  onReassignDrive?: (assignmentId: string) => void;
+  pendingOutgoingRequest?: ReassignmentRequestRow | null;
+  onCancelReassignment?: (requestId: string) => void;
+  profileById?: Map<string, { full_name: string }>;
 }) {
   const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", {
     weekday: "long",
@@ -5301,6 +5378,173 @@ function DriveDetailScreen({
           </div>
         )}
       </section>
+
+      {isUserDriving && entry.driverAssignment.status === "confirmed" && onReassignDrive ? (
+        pendingOutgoingRequest ? (
+          <section className="reassignment-pending" data-testid="reassignment-pending">
+            <p>
+              Reassignment requested — waiting for {profileById?.get(pendingOutgoingRequest.target_profile_id)?.full_name ?? "parent"}
+            </p>
+            {onCancelReassignment ? (
+              <button
+                className="secondary-button"
+                data-testid="cancel-reassignment"
+                onClick={() => onCancelReassignment(pendingOutgoingRequest.id)}
+                type="button"
+              >
+                Cancel request
+              </button>
+            ) : null}
+          </section>
+        ) : (
+          <section className="drive-detail-reassign">
+            <button
+              className="secondary-button"
+              data-testid="reassign-drive-button"
+              onClick={() => onReassignDrive(entry.driverAssignment.id)}
+              type="button"
+            >
+              Reassign this drive
+            </button>
+          </section>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+function ReassignmentPickerScreen({
+  assignmentId,
+  entry,
+  trip,
+  serviceDate,
+  roster,
+  currentProfileId,
+  currentHouseholdId,
+  onBack,
+  onRequest,
+  onCancelReassignment,
+  pendingOutgoingRequest,
+  profileById,
+  working,
+  error,
+}: {
+  assignmentId: string;
+  entry: ScheduleRosterEntry;
+  trip: Tables<"trips">;
+  serviceDate: string;
+  roster: { children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null;
+  currentProfileId: string | null;
+  currentHouseholdId: string | null;
+  onBack: () => void;
+  onRequest: (assignmentId: string, targetProfileId: string) => void;
+  onCancelReassignment: (requestId: string) => void;
+  pendingOutgoingRequest: ReassignmentRequestRow | null;
+  profileById: Map<string, { full_name: string; avatar_url: string | null }>;
+  working: boolean;
+  error: string | null;
+}) {
+  const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+  const directionLabel = trip.direction === "morning" ? "Morning" : `Afternoon · ${formatMeetingTime(trip.meeting_time)}`;
+  const kidsCount = entry.children.length;
+
+  const eligible = useMemo(() => {
+    if (!roster || !currentHouseholdId) return [];
+    const riderHouseholdIds = new Set(entry.children.map((c) => c.household_id));
+    const targetProfileIds = new Set<string>();
+    for (const m of roster.memberships) {
+      if (m.status !== "active") continue;
+      if (riderHouseholdIds.has(m.household_id) || m.household_id === currentHouseholdId) {
+        if (m.profile_id !== currentProfileId) targetProfileIds.add(m.profile_id);
+      }
+    }
+    return Array.from(targetProfileIds).map((pid) => {
+      const profile = roster.profiles.find((p) => p.id === pid);
+      const householdId = roster.memberships.find((m) => m.profile_id === pid && m.status === "active")?.household_id;
+      const vehicle = roster.vehicles
+        .filter((v) => v.active && v.household_id === householdId)
+        .sort((a, b) => b.child_passenger_capacity - a.child_passenger_capacity)[0];
+      const isRiderParent = householdId ? riderHouseholdIds.has(householdId) : false;
+      const isOwnHousehold = householdId === currentHouseholdId;
+      return {
+        profileId: pid,
+        fullName: profile?.full_name ?? "Unknown",
+        avatarUrl: profile?.avatar_url ?? null,
+        vehicleLabel: vehicle?.label ?? "No vehicle",
+        vehicleCapacity: vehicle?.child_passenger_capacity ?? 0,
+        hasEnoughSeats: vehicle ? vehicle.child_passenger_capacity >= kidsCount : false,
+        isRiderParent,
+        isOwnHousehold,
+      };
+    }).filter((t) => t.hasEnoughSeats).sort((a, b) => a.fullName.localeCompare(b.fullName));
+  }, [roster, currentHouseholdId, currentProfileId, entry.children, kidsCount]);
+
+  return (
+    <div className="screen-content drive-detail-screen" data-testid="reassignment-picker">
+      <header className="subpage-header">
+        <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
+        <div><span className="eyebrow">{dateLabel}</span><h1>Reassign drive</h1></div>
+      </header>
+
+      <section className="drive-detail-meta">
+        <div className="drive-detail-row">
+          <span className="drive-detail-label">Trip</span>
+          <strong>{directionLabel}</strong>
+        </div>
+        <div className="drive-detail-row">
+          <span className="drive-detail-label">Kids</span>
+          <strong>{kidsCount} on this drive</strong>
+        </div>
+      </section>
+
+      {error ? <div className="auth-error">{error}</div> : null}
+
+      {pendingOutgoingRequest ? (
+        <section className="reassignment-pending">
+          <p>
+            Reassignment requested — waiting for {profileById.get(pendingOutgoingRequest.target_profile_id)?.full_name ?? "parent"}
+          </p>
+          <button
+            className="secondary-button"
+            data-testid="cancel-reassignment-picker"
+            onClick={() => onCancelReassignment(pendingOutgoingRequest.id)}
+            disabled={working}
+            type="button"
+          >
+            Cancel request
+          </button>
+        </section>
+      ) : eligible.length === 0 ? (
+        <section className="drive-detail-meta">
+          <p style={{ fontSize: "15px", lineHeight: "1.6", color: "var(--ink-soft)" }}>
+            No eligible parents — no other parents on this drive have a vehicle with enough seats.
+          </p>
+        </section>
+      ) : (
+        <section className="reassignment-targets">
+          <h2 style={{ fontSize: "16px", margin: "0 0 8px" }}>Choose a parent to take over</h2>
+          {eligible.map((target) => (
+            <div className="reassignment-target" key={target.profileId} data-testid={`reassign-target-${target.profileId}`}>
+              <div className="reassignment-target-info">
+                <strong>{target.fullName}</strong>
+                <span style={{ fontSize: "13px", color: "var(--ink-soft)" }}>
+                  {target.vehicleLabel} · {target.vehicleCapacity} seats
+                  {target.isRiderParent ? " · On this drive" : target.isOwnHousehold ? " · Your household" : ""}
+                </span>
+              </div>
+              <button
+                className="primary-button"
+                data-testid={`request-reassign-${target.profileId}`}
+                onClick={() => onRequest(assignmentId, target.profileId)}
+                disabled={working}
+                type="button"
+              >
+                Request
+              </button>
+            </div>
+          ))}
+        </section>
+      )}
     </div>
   );
 }
@@ -5377,6 +5621,12 @@ export default function Prototype() {
   const [adminAssignTarget, setAdminAssignTarget] = useState<{ tripId: string; versionId: string } | null>(null);
   const [manualAssignWorking, setManualAssignWorking] = useState(false);
   const [manualAssignError, setManualAssignError] = useState<string | null>(null);
+  const [reassignDriveId, setReassignDriveId] = useState<string | null>(null);
+  const [reassignRoster, setReassignRoster] = useState<{ children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null>(null);
+  const [pendingIncomingReassignments, setPendingIncomingReassignments] = useState<ReassignmentRequestRow[]>([]);
+  const [pendingOutgoingReassignment, setPendingOutgoingReassignment] = useState<ReassignmentRequestRow | null>(null);
+  const [reassignWorking, setReassignWorking] = useState(false);
+  const [reassignError, setReassignError] = useState<string | null>(null);
 
   // Register service worker for PWA push notifications + cache-busting.
   // On a new SW taking over (skipWaiting + clients.claim), reload once
@@ -5946,6 +6196,13 @@ export default function Prototype() {
         setDeclinedAlerts([]);
         setUncoveredAlerts([]);
       }
+
+      try {
+        const incoming = await repository.getPendingIncomingReassignments();
+        setPendingIncomingReassignments(incoming);
+      } catch {
+        setPendingIncomingReassignments([]);
+      }
     } catch (error) {
       setMyAssignments([]);
       setDeclinedAlerts([]);
@@ -6064,6 +6321,102 @@ export default function Prototype() {
       setVolunteerWorking(false);
     }
   }, [repository, loadMyAssignments, loadSchedule, loadHomeSchedule, loadPublishedSchedule]);
+
+  const loadReassignRoster = useCallback(async () => {
+    if (!identity?.group) return;
+    const roster = await repository.getGroupRoster(identity.group.id);
+    setReassignRoster(roster);
+  }, [identity?.group, repository]);
+
+  const loadPendingOutgoing = useCallback(async (assignmentId: string) => {
+    try {
+      const req = await repository.getPendingOutgoingReassignment(assignmentId);
+      setPendingOutgoingReassignment(req);
+    } catch {
+      setPendingOutgoingReassignment(null);
+    }
+  }, [repository]);
+
+  const handleOpenReassign = useCallback(async (assignmentId: string) => {
+    setReassignError(null);
+    await Promise.all([loadReassignRoster(), loadPendingOutgoing(assignmentId)]);
+    setReassignDriveId(assignmentId);
+  }, [loadReassignRoster, loadPendingOutgoing]);
+
+  const handleRequestReassignment = useCallback(async (assignmentId: string, targetProfileId: string) => {
+    setReassignWorking(true);
+    setReassignError(null);
+    try {
+      const req = await repository.requestDriveReassignment(assignmentId, targetProfileId);
+      void repository.sendReassignmentNotification(req.id, "reassignment_requested");
+      setPendingOutgoingReassignment(req);
+      await loadPendingOutgoing(assignmentId);
+    } catch (error) {
+      setReassignError(readableError(error));
+    } finally {
+      setReassignWorking(false);
+    }
+  }, [repository, loadPendingOutgoing]);
+
+  const handleAcceptReassignment = useCallback(async (requestId: string) => {
+    setReassignWorking(true);
+    setReassignError(null);
+    try {
+      await repository.respondToReassignmentRequest(requestId, "accepted");
+      void repository.sendReassignmentNotification(requestId, "reassignment_accepted");
+      await loadMyAssignments();
+      await loadHomeSchedule();
+      await loadSchedule();
+      await loadPublishedSchedule();
+    } catch (error) {
+      setReassignError(readableError(error));
+    } finally {
+      setReassignWorking(false);
+    }
+  }, [repository, loadMyAssignments, loadSchedule, loadHomeSchedule, loadPublishedSchedule]);
+
+  const handleDeclineReassignment = useCallback(async (requestId: string) => {
+    setReassignWorking(true);
+    setReassignError(null);
+    try {
+      await repository.respondToReassignmentRequest(requestId, "declined");
+      void repository.sendReassignmentNotification(requestId, "reassignment_declined");
+      await loadMyAssignments();
+    } catch (error) {
+      setReassignError(readableError(error));
+    } finally {
+      setReassignWorking(false);
+    }
+  }, [repository, loadMyAssignments]);
+
+  const handleCancelReassignment = useCallback(async (requestId: string) => {
+    setReassignWorking(true);
+    setReassignError(null);
+    try {
+      await repository.cancelReassignmentRequest(requestId);
+      setPendingOutgoingReassignment(null);
+    } catch (error) {
+      setReassignError(readableError(error));
+    } finally {
+      setReassignWorking(false);
+    }
+  }, [repository]);
+
+  const profileByIdMap = useMemo(() => {
+    const m = new Map<string, { full_name: string; avatar_url: string | null }>();
+    if (reassignRoster) {
+      for (const p of reassignRoster.profiles) m.set(p.id, { full_name: p.full_name, avatar_url: p.avatar_url });
+    }
+    const schedule = publishedSchedule ?? homeSchedule;
+    if (schedule) {
+      for (const entries of schedule.rostersByTrip.values()) {
+        for (const entry of entries) {
+          if (!m.has(entry.driverProfile.id)) m.set(entry.driverProfile.id, { full_name: entry.driverProfile.full_name, avatar_url: entry.driverProfile.avatar_url });
+        }
+      }
+    }
+    return m;
+  }, [reassignRoster, publishedSchedule, homeSchedule]);
 
   const publishSchedule = useCallback(async () => {
     if (!schedule || !identity?.group) return;
@@ -6282,6 +6635,33 @@ const navItems = useMemo(() => {
       );
     }
 
+    if (reassignDriveId && identity) {
+      const searchSchedule = publishedSchedule ?? homeSchedule;
+      if (searchSchedule) {
+        const found = findDriveDetail(searchSchedule, reassignDriveId);
+        if (found) {
+          return (
+            <ReassignmentPickerScreen
+              assignmentId={reassignDriveId}
+              entry={found.entry}
+              trip={found.trip}
+              serviceDate={found.serviceDate}
+              roster={reassignRoster}
+              currentProfileId={identity.profile.id}
+              currentHouseholdId={identity.membership?.household_id ?? null}
+              onBack={() => { setReassignDriveId(null); setReassignError(null); }}
+              onRequest={(aid, tpid) => void handleRequestReassignment(aid, tpid)}
+              onCancelReassignment={(rid) => void handleCancelReassignment(rid)}
+              pendingOutgoingRequest={pendingOutgoingReassignment}
+              profileById={profileByIdMap}
+              working={reassignWorking}
+              error={reassignError}
+            />
+          );
+        }
+      }
+    }
+
     if (driveDetailId && identity) {
       const searchSchedule = publishedSchedule ?? homeSchedule;
       if (searchSchedule) {
@@ -6317,6 +6697,10 @@ const navItems = useMemo(() => {
               currentProfileId={identity.profile.id}
               onSetDriverOnMyWay={() => void handleSetDriverOnMyWay(found.entry.driverAssignment.id)}
               onSetRiderReady={(childId) => void handleSetRiderReady(found.entry.driverAssignment.id, childId)}
+              onReassignDrive={(aid) => void handleOpenReassign(aid)}
+              pendingOutgoingRequest={pendingOutgoingReassignment}
+              onCancelReassignment={(rid) => void handleCancelReassignment(rid)}
+              profileById={profileByIdMap}
             />
           );
         }
@@ -6386,7 +6770,7 @@ const navItems = useMemo(() => {
           weekStartsOn={weekScreenWeek?.week.starts_on ?? null}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
-          onOpenDrive={(id) => { void loadDriveStatuses(); setDriveDetailId(id); }}
+onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); setDriveDetailId(id); }}
           onCheckIn={() => navigate("plan")}
           todayDate={todayDate}
         />
@@ -6485,6 +6869,12 @@ const navItems = useMemo(() => {
         checkinDeadline={weekData?.week.checkin_deadline ?? null}
         declinedAlerts={declinedAlerts}
         uncoveredAlerts={uncoveredAlerts}
+        pendingIncomingReassignments={pendingIncomingReassignments}
+        onAcceptReassignment={(requestId) => void handleAcceptReassignment(requestId)}
+        onDeclineReassignment={(requestId) => void handleDeclineReassignment(requestId)}
+        reassignmentWorking={reassignWorking}
+        reassignmentProfileById={profileByIdMap}
+        reassignmentSchedule={publishedSchedule ?? homeSchedule}
         showPushBanner={shouldShowPushBanner}
         onAllowPush={() => { setPushPermissionShown(true); void subscribeToPush(); }}
         onDismissPush={() => { setPushPermissionShown(true); localStorage.setItem("push_dismissed", "true"); }}

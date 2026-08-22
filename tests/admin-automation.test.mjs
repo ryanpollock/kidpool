@@ -106,6 +106,10 @@ const surgicalSundayCronMigrationUrl = new URL(
   "../supabase/migrations/202608160004_surgical_sunday_evening_cron.sql",
   import.meta.url,
 );
+const reassignmentMigrationUrl = new URL(
+  "../supabase/migrations/202608220002_drive_reassignment.sql",
+  import.meta.url,
+);
 const generateScheduleUrl = new URL(
   "../supabase/functions/generate-schedule/index.ts",
   import.meta.url,
@@ -1315,4 +1319,131 @@ test("surgical_sunday: cron migration creates publish_and_update_schedule wrappe
   // Reschedules with the new wrapper at same time (8:30 PM Pacific)
   assert.match(sql, /30 3,4 \* \* 1/);
   assert.match(sql, /publish_and_update_schedule/);
+});
+
+// ─── Drive reassignment feature ────────────────────────────
+
+test("reassignment: migration creates reassignment_requests table with correct schema", async () => {
+  const sql = await readFile(reassignmentMigrationUrl, "utf8");
+
+  // Creates the enum
+  assert.match(sql, /create type public\.reassignment_status as enum/);
+  assert.match(sql, /'pending', 'accepted', 'declined', 'cancelled'/);
+
+  // Creates the table
+  assert.match(sql, /create table public\.reassignment_requests/);
+  assert.match(sql, /assignment_id uuid not null references public\.driver_assignments/);
+  assert.match(sql, /target_profile_id uuid not null references public\.profiles/);
+  assert.match(sql, /requested_by uuid not null references public\.profiles/);
+  assert.match(sql, /status public\.reassignment_status not null default 'pending'/);
+
+  // Partial unique index for one pending per assignment
+  assert.match(sql, /reassignment_requests_one_pending/);
+  assert.match(sql, /where status = 'pending'/);
+
+  // RLS enabled, select-only for group members
+  assert.match(sql, /alter table public\.reassignment_requests enable row level security/);
+  assert.match(sql, /reassignment_requests_select_group/);
+  assert.match(sql, /is_group_member/);
+});
+
+test("reassignment: 3 RPCs exist with security definer + revoked from public", async () => {
+  const sql = await readFile(reassignmentMigrationUrl, "utf8");
+
+  // request_drive_reassignment
+  assert.match(sql, /create or replace function public\.request_drive_reassignment/);
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.request_drive_reassignment\(uuid, uuid\) from public/);
+  assert.match(sql, /grant execute on function public\.request_drive_reassignment\(uuid, uuid\) to authenticated/);
+
+  // respond_to_reassignment_request
+  assert.match(sql, /create or replace function public\.respond_to_reassignment_request/);
+  assert.match(sql, /revoke all on function public\.respond_to_reassignment_request\(uuid, text\) from public/);
+  assert.match(sql, /grant execute on function public\.respond_to_reassignment_request\(uuid, text\) to authenticated/);
+
+  // cancel_reassignment_request
+  assert.match(sql, /create or replace function public\.cancel_reassignment_request/);
+  assert.match(sql, /revoke all on function public\.cancel_reassignment_request\(uuid\) from public/);
+  assert.match(sql, /grant execute on function public\.cancel_reassignment_request\(uuid\) to authenticated/);
+});
+
+test("reassignment: request RPC has all guards", async () => {
+  const sql = await readFile(reassignmentMigrationUrl, "utf8");
+
+  assert.match(sql, /auth\.uid\(\) is null/);
+  assert.match(sql, /driver_profile_id <> auth\.uid\(\)/);
+  assert.match(sql, /status <> 'confirmed'/);
+  assert.match(sql, /p_target_profile_id = auth\.uid\(\)/);
+  assert.match(sql, /status = 'active'/);
+  assert.match(sql, /Cannot reassign a drive that has already departed/);
+  assert.match(sql, /Target must be a parent of a child on this drive or a member of your household/);
+  assert.match(sql, /child_passenger_capacity >= v_rider_count/);
+});
+
+test("reassignment: accept RPC has all acceptance-time guards", async () => {
+  const sql = await readFile(reassignmentMigrationUrl, "utf8");
+
+  assert.match(sql, /target_profile_id <> auth\.uid\(\)/);
+  assert.match(sql, /status <> 'pending'/);
+  assert.match(sql, /assignment\.status <> 'confirmed'/);
+  assert.match(sql, /schedule has been updated/);
+  assert.match(sql, /already departed/);
+  assert.match(sql, /no riders remaining/);
+  assert.match(sql, /no longer has enough seats/);
+  assert.match(sql, /already assigned to drive this trip/);
+
+  // Rider transfer pattern (same as volunteer_for_declined_drive)
+  assert.match(sql, /set driver_assignment_id = v_new_assignment\.id/);
+  assert.match(sql, /set status = 'released'/);
+});
+
+test("reassignment: audit events written for all state transitions", async () => {
+  const sql = await readFile(reassignmentMigrationUrl, "utf8");
+
+  assert.match(sql, /'reassignment_requested'/);
+  assert.match(sql, /'drive_reassigned'/);
+  assert.match(sql, /'reassignment_declined'/);
+  assert.match(sql, /'reassignment_cancelled'/);
+});
+
+test("send-push: reassignment_requested branch notifies target", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  assert.match(ts, /type === "reassignment_requested"/);
+  assert.match(ts, /reassignment_requests/);
+  assert.match(ts, /carpool-reassignment-requested/);
+  assert.match(ts, /sendEmailAndPush/);
+});
+
+test("send-push: reassignment_declined branch notifies original driver", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  assert.match(ts, /type === "reassignment_declined"/);
+  assert.match(ts, /carpool-reassignment-declined/);
+  assert.match(ts, /you're still driving/);
+});
+
+test("send-push: reassignment_accepted branch sends .ics + 3 audiences", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  assert.match(ts, /type === "reassignment_accepted"/);
+
+  // .ics CANCEL for original driver
+  assert.match(ts, /METHOD:CANCEL/);
+
+  // .ics INVITE for target driver
+  assert.match(ts, /drive-confirmed-\$\{newDa\.id\}@carpoolcrew\.co/);
+
+  // Idempotency keys for all 3 audiences
+  assert.match(ts, /carpool-reassignment-accepted-\$\{request_id\}-\$\{origDriver\.id\}/);
+  assert.match(ts, /carpool-reassignment-accepted-\$\{request_id\}-\$\{targetDriver\.id\}/);
+  assert.match(ts, /carpool-reassignment-accepted-\$\{request_id\}-\$\{profile\.id\}/);
+
+  // Tags
+  assert.match(ts, /value: "reassignment_accepted"/);
+});
+
+test("send-push: request_id parsed from request body", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+  assert.match(ts, /request_id/);
 });
