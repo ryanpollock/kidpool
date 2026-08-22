@@ -188,7 +188,7 @@ Deno.serve(async (req: Request) => {
 
     const profileIds = (membershipsRes.data ?? []).map((m: { profile_id: string }) => m.profile_id);
     const profilesRes = profileIds.length
-      ? await supabase.from("profiles").select("id, full_name").in("id", profileIds)
+      ? await supabase.from("profiles").select("id, full_name, email").in("id", profileIds)
       : { data: [], error: null };
 
     if (profilesRes.error) return jsonError("Failed to load profiles.", 500);
@@ -264,6 +264,18 @@ Deno.serve(async (req: Request) => {
         if (householdId === c.household_id) {
           maxDrivesByDriver.set(profileId, c.max_drives);
         }
+      }
+    }
+
+    // Cap the founder at 2 algorithmic drives/week (preferential treatment).
+    // Volunteering for uncovered trips bypasses max_drives, so Ryan can still
+    // manually volunteer beyond this if he wants to.
+    const FOUNDER_EMAIL = "ryan.pollock@gmail.com";
+    const FOUNDER_MAX_DRIVES = 2;
+    for (const p of (profilesRes.data ?? []) as Array<{ id: string; email: string | null }>) {
+      if (p.email === FOUNDER_EMAIL) {
+        const current = maxDrivesByDriver.get(p.id) ?? 10;
+        maxDrivesByDriver.set(p.id, Math.min(current, FOUNDER_MAX_DRIVES));
       }
     }
 
