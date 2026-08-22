@@ -7,6 +7,7 @@ export type SchedulingTrip = {
   id: string;
   service_date: string;
   direction: "morning" | "afternoon";
+  slot: "am" | "pm_early" | "pm_late";
 };
 
 export type SchedulingChild = {
@@ -35,6 +36,7 @@ export type SchedulingRideRequest = {
   trip_id: string;
   child_id: string;
   needs_ride: boolean;
+  preference: "specific" | "either";
 };
 
 export type SchedulingAvailability = {

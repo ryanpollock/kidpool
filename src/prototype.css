@@ -2399,6 +2399,37 @@ a.directory-contact-item:hover {
   opacity: 0.6;
 }
 
+.checkin-rides--pm {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.checkin-afternoon-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.checkin-afternoon-name {
+  flex-shrink: 0;
+  width: 60px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.checkin-pm-segments {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+}
+
+.checkin-pm-segments .ride-pm-segment {
+  flex: 1;
+  padding: 8px 4px;
+  font-size: 11px;
+}
+
 .checkin-section {
   margin-top: 10px;
 }
@@ -2554,7 +2585,7 @@ a.directory-contact-item:hover {
 
 .drive-template-row {
   display: grid;
-  grid-template-columns: 36px 1fr 1fr;
+  grid-template-columns: 36px 1fr 1fr 1fr;
   gap: 6px;
   align-items: center;
 }
@@ -2586,7 +2617,7 @@ a.directory-contact-item:hover {
 
 .ride-needs-row {
   display: grid;
-  grid-template-columns: 36px 1fr 1fr;
+  grid-template-columns: 36px auto 1fr;
   gap: 6px;
   align-items: center;
 }
@@ -2602,6 +2633,34 @@ a.directory-contact-item:hover {
   justify-content: center;
   font-size: 11px;
   padding: 6px 4px;
+}
+
+.ride-needs-pm {
+  display: flex;
+  gap: 3px;
+}
+
+.ride-pm-segment {
+  flex: 1;
+  padding: 6px 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-soft);
+  text-align: center;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.ride-pm-segment--active {
+  background: var(--teal-pale);
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.ride-pm-segment:disabled {
+  opacity: 0.6;
 }
 
 .standard-week-subsection {
@@ -2633,14 +2692,26 @@ a.directory-contact-item:hover {
   border-radius: 8px;
 }
 
-.drive-template-header,
-.ride-needs-header {
+.drive-template-header {
   display: grid;
-  grid-template-columns: 36px 1fr 1fr;
+  grid-template-columns: 36px 1fr 1fr 1fr;
   gap: 6px;
   align-items: center;
   padding-bottom: 6px;
   margin-bottom: 2px;
+}
+
+.ride-needs-header {
+  display: grid;
+  grid-template-columns: 36px auto 1fr;
+  gap: 6px;
+  align-items: center;
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+}
+
+.ride-needs-header-pm {
+  white-space: nowrap;
 }
 
 .drive-template-header-label {

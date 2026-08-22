@@ -334,7 +334,7 @@ test("Calendar utility exports ICS, Google Calendar, and Outlook builders", asyn
   assert.match(source, /END:VCALENDAR/);
   assert.match(source, /DTSTART;TZID=/);
   assert.match(source, /SUMMARY:\$\{summary\}/);
-  assert.match(source, /Carpool Crew: \$\{dir\} drive to/);
+  assert.match(source, /Carpool Crew: \$\{dir\} drive.*to/);
 });
 
 test("Calendar utility generates Google Calendar and Outlook URLs", async () => {

@@ -203,7 +203,7 @@ export function makeAuth(env: SpecEnv) {
  *  Staging mode falls back to the spec's own cleanup function. */
 export function truncateAll(runSql: (sql: string) => { rows?: unknown[]; error?: { message: string } }, groupId: string) {
   runSql(`
-    TRUNCATE public.rider_assignments, public.driver_confirmations, public.driver_assignments, public.schedule_versions, public.ride_requests, public.driver_availability, public.weekly_checkins, public.trips, public.weeks, public.audit_events, public.vehicles, public.children, public.household_join_codes, public.memberships, public.households, public.push_subscriptions, public.profiles RESTART IDENTITY;
+    TRUNCATE public.drive_status, public.rider_assignments, public.driver_confirmations, public.driver_assignments, public.schedule_versions, public.ride_requests, public.driver_availability, public.weekly_checkins, public.trips, public.weeks, public.audit_events, public.vehicles, public.children, public.household_join_codes, public.memberships, public.households, public.push_subscriptions, public.profiles RESTART IDENTITY;
     DELETE FROM auth.users WHERE email LIKE '%@test.kidpool' OR email LIKE '%@e2e.kidpool' OR email LIKE '%@pilot.kidpool' OR email LIKE '%@lib.test.kidpool';
     INSERT INTO public.groups (id, name, slug, timezone, meeting_point, school_name) VALUES ('${groupId}', 'Midtown Terrace–Presidio Carpool', 'midtown-presidio', 'America/Los_Angeles', 'Midtown Terrace Playground', 'Presidio Middle School') ON CONFLICT (id) DO UPDATE SET name = excluded.name, slug = excluded.slug, timezone = excluded.timezone, meeting_point = excluded.meeting_point, school_name = excluded.school_name;
   `);

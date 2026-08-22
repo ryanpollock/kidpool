@@ -8,8 +8,10 @@ import type {
   DefaultRideNeed,
   DrivePreference,
   Json,
+  RidePreference,
   Tables,
   TablesInsert,
+  TripSlot,
 } from "./database.types";
 
 export type HouseholdSetup = {
@@ -120,8 +122,14 @@ function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
   return result.data;
 }
 
-function tripSortKey(trip: { service_date: string; direction: string }): string {
-  return `${trip.service_date}|${trip.direction === "morning" ? "0" : "1"}`;
+function tripSortKey(trip: { service_date: string; direction: string; slot?: string }): string {
+  const slotOrder = trip.slot === "am" ? "0" : trip.slot === "pm_early" ? "1" : "2";
+  return `${trip.service_date}|${slotOrder}`;
+}
+
+function inferSlot(direction: string, slot?: string): TripSlot {
+  if (slot === "am" || slot === "pm_early" || slot === "pm_late") return slot;
+  return direction === "morning" ? "am" : "pm_late";
 }
 
 function unwrapRequired<T>(
@@ -307,7 +315,7 @@ export class CarpoolRepository {
       const tripDate = new Date(trip.service_date + "T00:00:00");
       const isoDay = tripDate.getDay() === 0 ? 7 : tripDate.getDay();
       const match = defaults.find(
-        (d) => d.day === isoDay && d.direction === trip.direction,
+        (d) => d.day === isoDay && inferSlot(d.direction, d.slot) === trip.slot,
       );
       if (match) {
         await this.upsertDriverAvailability(
@@ -363,7 +371,14 @@ export class CarpoolRepository {
       const isoDay = tripDate.getDay() === 0 ? 7 : tripDate.getDay();
       for (const child of children) {
         const match = defaults.find(
-          (d) => d.child_id === child.id && d.day === isoDay && d.direction === trip.direction,
+          (d) => {
+            if (d.child_id !== child.id || d.day !== isoDay) return false;
+            const dSlot = d.slot ?? (d.direction === "morning" ? "am" : "pm_late");
+            if (dSlot === "pm_either") {
+              return trip.slot === "pm_early" || trip.slot === "pm_late";
+            }
+            return dSlot === trip.slot;
+          },
         );
         rows.push({
           group_id: groupId,
@@ -372,6 +387,7 @@ export class CarpoolRepository {
           child_id: child.id,
           needs_ride: match?.needs_ride ?? false,
           created_by: createdBy,
+          preference: match?.slot === "pm_either" ? "either" : "specific",
         });
       }
     }
@@ -880,6 +896,7 @@ export class CarpoolRepository {
         week_id: week.id,
         service_date: serviceDate,
         direction: "morning",
+        slot: "am",
         meeting_time: "08:40",
         departure_time: "08:45",
         origin: meetingPoint,
@@ -890,6 +907,18 @@ export class CarpoolRepository {
         week_id: week.id,
         service_date: serviceDate,
         direction: "afternoon",
+        slot: "pm_early",
+        meeting_time: "16:20",
+        departure_time: "16:25",
+        origin: schoolName,
+        destination: meetingPoint,
+      });
+      tripInserts.push({
+        group_id: groupId,
+        week_id: week.id,
+        service_date: serviceDate,
+        direction: "afternoon",
+        slot: "pm_late",
         meeting_time: "17:15",
         departure_time: "17:20",
         origin: schoolName,
@@ -1027,6 +1056,7 @@ export class CarpoolRepository {
     childId: string,
     needsRide: boolean,
     groupId: string,
+    preference: RidePreference = "specific",
   ) {
     const userResult = await this.client.auth.getUser();
     if (userResult.error) throw new Error(userResult.error.message);
@@ -1041,6 +1071,7 @@ export class CarpoolRepository {
           child_id: childId,
           needs_ride: needsRide,
           created_by: userResult.data.user.id,
+          preference,
         },
         { onConflict: "trip_id,child_id" },
       ),
@@ -1190,7 +1221,8 @@ export class CarpoolRepository {
         .select("*")
         .eq("week_id", weekId)
         .order("service_date")
-        .order("direction"),
+        .order("direction")
+        .order("slot"),
     );
   }
 
