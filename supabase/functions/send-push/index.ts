@@ -2551,8 +2551,6 @@ ${cta}
 
       await sendEmailAndPush(req.target_profile_id, notifTitle, notifBody, idempotencyKey, pushTag);
       return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
-    }
-
     } else if (
     // ── reassignment_declined: notify original driver ─────────
     // Triggered by the client after respond_to_reassignment_request declines.
@@ -2581,8 +2579,6 @@ ${cta}
 
       await sendEmailAndPush(req.requested_by, notifTitle, notifBody, idempotencyKey, pushTag);
       return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
-    }
-
     } else if (
     // ── reassignment_accepted: 3 audiences ─────────────────────
     // Triggered by the client after respond_to_reassignment_request accepts.
