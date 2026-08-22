@@ -64,7 +64,7 @@ export function getSpecEnv(): SpecEnv {
 
 function verifyLinkedProject() {
   try {
-    const linkedRef = readFileSync(path.join(import.meta.dirname, "..", "supabase/.temp/project-ref"), "utf8").trim();
+    const linkedRef = readFileSync(path.join(process.cwd(), "supabase/.temp/project-ref"), "utf8").trim();
     const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "jfyjgmhqnlbdcafoarrg";
     if (linkedRef !== PROJECT_REF) {
       console.error(`CLI linked to ${linkedRef} but PROJECT_REF is ${PROJECT_REF}. Run "npm run link:test".`);
