@@ -242,7 +242,7 @@ test.describe.serial("Today Card", () => {
 
     const todayCard = page.getByTestId("today-card");
     await expect(todayCard).toBeVisible({ timeout: 5000 });
-    await expect(todayCard).toContainText("No ride");
+    await expect(todayCard).toContainText(/No (morning|8:40 AM|4:20 PM|5:15 PM|3:15 PM) ride/);
   });
 
   test("Cancel ride from Today card updates card and deletes DB row", async ({ page }) => {

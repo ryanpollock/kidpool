@@ -31,8 +31,8 @@ async function loadGreedyModule() {
 function buildInputs() {
   return {
     trips: [
-      { id: "t1", service_date: "2026-08-03", direction: "morning" },
-      { id: "t2", service_date: "2026-08-03", direction: "afternoon" },
+      { id: "t1", service_date: "2026-08-03", direction: "morning", slot: "am" },
+      { id: "t2", service_date: "2026-08-03", direction: "afternoon", slot: "pm_late" },
     ],
     children: [
       { id: "c1", household_id: "h1", first_name: "Ava", last_name: "Adams" },
@@ -52,13 +52,13 @@ function buildInputs() {
       { id: "p3", full_name: "Chen Parent", household_id: "h3" },
     ],
     rideRequests: [
-      { trip_id: "t1", child_id: "c1", needs_ride: true },
-      { trip_id: "t1", child_id: "c2", needs_ride: true },
-      { trip_id: "t1", child_id: "c3", needs_ride: true },
-      { trip_id: "t1", child_id: "c4", needs_ride: true },
-      { trip_id: "t1", child_id: "c5", needs_ride: true },
-      { trip_id: "t2", child_id: "c1", needs_ride: true },
-      { trip_id: "t2", child_id: "c3", needs_ride: true },
+      { trip_id: "t1", child_id: "c1", needs_ride: true, preference: "specific" },
+      { trip_id: "t1", child_id: "c2", needs_ride: true, preference: "specific" },
+      { trip_id: "t1", child_id: "c3", needs_ride: true, preference: "specific" },
+      { trip_id: "t1", child_id: "c4", needs_ride: true, preference: "specific" },
+      { trip_id: "t1", child_id: "c5", needs_ride: true, preference: "specific" },
+      { trip_id: "t2", child_id: "c1", needs_ride: true, preference: "specific" },
+      { trip_id: "t2", child_id: "c3", needs_ride: true, preference: "specific" },
     ],
     availability: [
       { trip_id: "t1", driver_profile_id: "p1", vehicle_id: "v1", preference: "prefer" },

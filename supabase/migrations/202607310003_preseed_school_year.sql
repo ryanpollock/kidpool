@@ -4,6 +4,10 @@
 -- Afternoon: 17:15 meeting, 17:20 departure (Presidio → Midtown Terrace)
 -- Idempotent: safe to re-run. Existing weeks are kept, existing trips are
 -- updated to the correct times.
+--
+-- Note: The pm_early (4:20 PM) trip is NOT created here because this migration
+-- runs before the slot column is added. The 202608210003_add_pm_early_trips
+-- migration adds pm_early trips after the slot column and constraint exist.
 
 -- Step 1: Insert all weeks (Aug 2026 – Jul 2027)
 -- Guard: only insert if the pilot group exists (makes this truly idempotent

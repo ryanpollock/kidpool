@@ -10,6 +10,8 @@ export type AppRole = "member" | "coordinator";
 export type MembershipStatus = "active" | "suspended" | "removed";
 export type WeekStatus = "open" | "draft" | "confirming" | "published" | "closed";
 export type TripDirection = "morning" | "afternoon";
+export type TripSlot = "am" | "pm_early" | "pm_late";
+export type RidePreference = "specific" | "either";
 export type TripStatus = "scheduled" | "covered" | "uncovered" | "canceled";
 export type CheckinStatus = "draft" | "submitted";
 export type DrivePreference = "prefer" | "can" | "cannot";
@@ -32,6 +34,7 @@ type Timestamps = {
 export type DefaultDrivePref = {
   day: number;
   direction: TripDirection;
+  slot: TripSlot;
   preference: DrivePreference;
 };
 
@@ -39,6 +42,7 @@ export type DefaultRideNeed = {
   child_id: string;
   day: number;
   direction: TripDirection;
+  slot: TripSlot | "pm_either";
   needs_ride: boolean;
 };
 
@@ -126,6 +130,7 @@ export type TripRow = Timestamps & {
   origin: string;
   destination: string;
   status: TripStatus;
+  slot: TripSlot;
 };
 
 export type WeeklyCheckinRow = Timestamps & {
@@ -147,6 +152,7 @@ export type RideRequestRow = Timestamps & {
   child_id: string;
   needs_ride: boolean;
   created_by: string;
+  preference: RidePreference;
 };
 
 export type DriverAvailabilityRow = Timestamps & {
@@ -368,6 +374,7 @@ export type Database = {
           origin: string;
           destination: string;
           status?: TripStatus;
+          slot: TripSlot;
           created_at?: string;
           updated_at?: string;
         }
@@ -397,6 +404,7 @@ export type Database = {
           child_id: string;
           needs_ride?: boolean;
           created_by: string;
+          preference?: RidePreference;
           created_at?: string;
           updated_at?: string;
         }
@@ -621,6 +629,8 @@ export type Database = {
       membership_status: MembershipStatus;
       week_status: WeekStatus;
       trip_direction: TripDirection;
+      trip_slot: TripSlot;
+      ride_preference: RidePreference;
       trip_status: TripStatus;
       checkin_status: CheckinStatus;
       drive_preference: DrivePreference;

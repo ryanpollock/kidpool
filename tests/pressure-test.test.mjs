@@ -110,8 +110,8 @@ function buildTrips() {
   const trips = [];
   const dates = ["2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07"];
   for (let d = 0; d < 5; d++) {
-    trips.push({ id: `t-${d}-am`, service_date: dates[d], direction: "morning" });
-    trips.push({ id: `t-${d}-pm`, service_date: dates[d], direction: "afternoon" });
+    trips.push({ id: `t-${d}-am`, service_date: dates[d], direction: "morning", slot: "am" });
+    trips.push({ id: `t-${d}-pm`, service_date: dates[d], direction: "afternoon", slot: "pm_late" });
   }
   return trips;
 }
@@ -136,7 +136,7 @@ function buildRideRequests(trips, children) {
       `${a.household_id}|${a.first_name}`.localeCompare(`${b.household_id}|${b.first_name}`),
     );
     for (let i = 0; i < count; i++) {
-      requests.push({ trip_id: trip.id, child_id: sorted[i].id, needs_ride: true });
+      requests.push({ trip_id: trip.id, child_id: sorted[i].id, needs_ride: true, preference: "specific" });
     }
   }
   return requests;

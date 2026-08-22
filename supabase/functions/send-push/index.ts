@@ -84,6 +84,16 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+function slotOrder(slot: string | undefined): number {
+  if (slot === "am") return 0;
+  if (slot === "pm_early") return 1;
+  return 2;
+}
+
+function mapsUrlForOrigin(origin: string): string {
+  return `https://maps.google.com/?q=${encodeURIComponent(origin + ", San Francisco")}`;
+}
+
 // Skip test/seed/demo addresses — any email ending in "kidpool" is a non-deliverable test address.
 function isTestEmail(email: string): boolean {
   return email.endsWith("kidpool");
@@ -625,7 +635,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
       // Load trips for this week
       const trips = await supaFetch(
         "trips",
-        "id,service_date,direction,meeting_time,origin,destination",
+        "id,service_date,direction,slot,meeting_time,origin,destination",
         { week_id: `eq.${weekId}`, group_id: `eq.${groupId}` },
       );
       const tripIds = trips.map((t: any) => t.id);
@@ -677,13 +687,16 @@ Questions? Reply to this email or check the FAQ in the app.`;
         tripRidersByDriver.set(ra.driver_assignment_id, arr);
       }
 
-      // Group trips by date, then morning/afternoon
+      // Group trips by date, sorted by slot within each date
       const tripsById = new Map(trips.map((t: any) => [t.id, t]));
       const tripsByDate = new Map<string, any[]>();
       for (const trip of trips) {
         const arr = tripsByDate.get(trip.service_date) ?? [];
         arr.push(trip);
         tripsByDate.set(trip.service_date, arr);
+      }
+      for (const arr of tripsByDate.values()) {
+        arr.sort((a, b) => slotOrder(a.slot) - slotOrder(b.slot));
       }
       const sortedDates = [...tripsByDate.keys()].sort();
 
@@ -710,11 +723,9 @@ Questions? Reply to this email or check the FAQ in the app.`;
         rosterHtmlLines.push(`<h2 style="font-size:16px;margin:20px 0 8px;color:#0c2b52;">${escapeHtml(dayLabel)}</h2>`);
         rosterTextLines.push(`\n${dayLabel}`);
 
-        for (const direction of ["morning", "afternoon"] as const) {
-          const trip = dayTrips.find((t: any) => t.direction === direction);
-          if (!trip) continue;
+        for (const trip of dayTrips) {
           const time = formatTime(trip.meeting_time);
-          const dirLabel = direction === "morning" ? "Morning" : "Afternoon";
+          const dirLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
           const tripDrivers = driverAssignments.filter((da: any) => da.trip_id === trip.id);
 
           rosterHtmlLines.push(`<p style="font-size:14px;margin:4px 0 2px;font-weight:600;color:#118b8c;">${dirLabel} (${time})</p>`);
@@ -861,8 +872,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
       todayDate.setUTCDate(todayDate.getUTCDate() + 1);
       const tomorrow = todayDate.toISOString().slice(0, 10);
 
-      // Find trips for tomorrow (morning + afternoon)
-      const trips = await supaFetch("trips", "id,service_date,direction,meeting_time,origin,destination,week_id,group_id", { service_date: `eq.${tomorrow}` });
+      // Find trips for tomorrow (all slots)
+      const trips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", { service_date: `eq.${tomorrow}` });
       if (trips.length === 0) {
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_school_tomorrow" });
       }
@@ -935,16 +946,15 @@ Questions? Reply to this email or check the FAQ in the app.`;
         tripDriversMap.set(da.trip_id, arr);
       }
 
-      // Build roster text (morning then afternoon)
+      // Build roster text — iterate all trips sorted by slot
+      const sortedTrips = trips.slice().sort((a, b) => slotOrder(a.slot) - slotOrder(b.slot));
       const rosterLines: string[] = [];
-      for (const direction of ["morning", "afternoon"] as const) {
-        const dirTrips = trips.filter((t: any) => t.direction === direction);
-        if (dirTrips.length === 0) continue;
-        const drivers = dirTrips.flatMap((t: any) => tripDriversMap.get(t.id) ?? []);
+      for (const trip of sortedTrips) {
+        const drivers = tripDriversMap.get(trip.id) ?? [];
         if (drivers.length === 0) continue;
-        const label = direction === "morning" ? "Morning" : "Afternoon";
-        const time = formatTime(dirTrips[0].meeting_time);
-        const origin = dirTrips[0].origin;
+        const label = trip.direction === "morning" ? "Morning" : "Afternoon";
+        const time = formatTime(trip.meeting_time);
+        const origin = trip.origin;
         const driverLines = drivers.map((d) => {
           const kidsStr = d.kids.length > 0 ? ` — ${d.kids.join(", ")}` : "";
           const vehicleStr = d.vehicleLabel ? ` (${d.vehicleLabel})` : "";
@@ -1117,8 +1127,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const parts = pacificParts(now, false);
       const today = test_date || `${parts.year}-${parts.month}-${parts.day}`;
 
-      // Find today's trips (morning + afternoon)
-      const trips = await supaFetch("trips", "id,service_date,direction,meeting_time,origin,destination,week_id,group_id", { service_date: `eq.${today}` });
+      // Find today's trips (all slots)
+      const trips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", { service_date: `eq.${today}` });
       if (trips.length === 0) {
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_school_today" });
       }
@@ -1184,10 +1194,10 @@ Questions? Reply to this email or check the FAQ in the app.`;
         tripRidersByDriver.set(ra.driver_assignment_id, arr);
       }
 
-      // Map: childId -> { morning, afternoon } trip info
-      const childTripInfo = new Map<string, { morning: any; afternoon: any }>();
+      // Map: childId -> per-slot trip info (am, pm_early, pm_late)
+      const childTripInfo = new Map<string, Record<string, any>>();
       for (const child of children) {
-        childTripInfo.set(child.id, { morning: null, afternoon: null });
+        childTripInfo.set(child.id, {});
       }
       for (const da of allDriverAssignments) {
         const trip = tripsById.get(da.trip_id);
@@ -1207,8 +1217,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
         for (const ra of riders) {
           const info = childTripInfo.get(ra.child_id);
           if (!info) continue;
-          if (trip.direction === "morning") info.morning = entry;
-          else info.afternoon = entry;
+          const slotKey = trip.slot ?? (trip.direction === "morning" ? "am" : "pm_late");
+          info[slotKey] = entry;
         }
       }
 
@@ -1266,12 +1276,16 @@ Questions? Reply to this email or check the FAQ in the app.`;
 
           const sheetLinesHtml: string[] = [];
           const sheetLinesText: string[] = [];
-          for (const dir of ["morning", "afternoon"] as const) {
-            const tripInfo = dir === "morning" ? info.morning : info.afternoon;
-            const dirLabel = dir === "morning" ? "MORNING" : "AFTERNOON";
+          const slotOrder: { key: string; label: string }[] = [
+            { key: "am", label: "MORNING" },
+            { key: "pm_early", label: "AFTERNOON (4:20 PM)" },
+            { key: "pm_late", label: "AFTERNOON (5:15 PM)" },
+          ];
+          for (const { key, label } of slotOrder) {
+            const tripInfo = info[key];
             if (!tripInfo) {
-              sheetLinesHtml.push(`<p style="font-size:14px;margin:0 0 12px;padding:8px 12px;background:#fef2f2;border-radius:6px;color:#b91c1c;"><strong>${dirLabel}</strong> — ⚠️ No driver assigned — check with coordinator</p>`);
-              sheetLinesText.push(`${dirLabel}: ⚠️ No driver assigned — check with coordinator`);
+              sheetLinesHtml.push(`<p style="font-size:14px;margin:0 0 12px;padding:8px 12px;background:#fef2f2;border-radius:6px;color:#b91c1c;"><strong>${label}</strong> — ⚠️ No driver assigned — check with coordinator</p>`);
+              sheetLinesText.push(`${label}: ⚠️ No driver assigned — check with coordinator`);
               continue;
             }
             const time = formatTime(tripInfo.meetingTime);
@@ -1284,13 +1298,13 @@ Questions? Reply to this email or check the FAQ in the app.`;
               : "Riding alone";
             sheetLinesHtml.push(
               `<div style="margin:0 0 12px;padding:12px;background:#f8fafc;border-radius:8px;">` +
-              `<p style="font-size:14px;margin:0 0 4px;font-weight:600;color:#118b8c;">${dirLabel} (${time} from ${escapeHtml(tripInfo.origin)})</p>` +
+              `<p style="font-size:14px;margin:0 0 4px;font-weight:600;color:#118b8c;">${label} (${time} from ${escapeHtml(tripInfo.origin)})</p>` +
               `<p style="font-size:14px;margin:0 0 2px;">Driver: <strong>${escapeHtml(tripInfo.driverName)}</strong> — ${escapeHtml(phoneStr)}</p>` +
               `<p style="font-size:14px;margin:0 0 2px;color:#475569;">Car: ${escapeHtml(tripInfo.vehicleLabel) || "—"}</p>` +
               `<p style="font-size:14px;margin:0;color:#475569;">Riding with: ${escapeHtml(carmatesStr)}</p>` +
               `</div>`,
             );
-            sheetLinesText.push(`${dirLabel} (${time} from ${tripInfo.origin})\n  Driver: ${tripInfo.driverName} — ${phoneStr}\n  Car: ${tripInfo.vehicleLabel || "—"}\n  Riding with: ${carmatesStr}`);
+            sheetLinesText.push(`${label} (${time} from ${tripInfo.origin})\n  Driver: ${tripInfo.driverName} — ${phoneStr}\n  Car: ${tripInfo.vehicleLabel || "—"}\n  Riding with: ${carmatesStr}`);
           }
 
           childSheetsHtml.push(
@@ -1371,25 +1385,28 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const pacificHour = parseInt(parts.hour, 10) % 24;
       const pacificMinute = parseInt(parts.minute, 10);
 
-      // 90 min before 8:40 AM = 7:10 AM -> morning
-      // 90 min before 5:15 PM = 3:45 PM -> afternoon
-      let direction: "morning" | "afternoon" | null = null;
+      // 90 min before 8:40 AM = 7:10 AM -> am
+      // 90 min before 4:20 PM = 2:50 PM -> pm_early
+      // 90 min before 5:15 PM = 3:45 PM -> pm_late
+      let slot: "am" | "pm_early" | "pm_late" | null = null;
       if (pacificHour === 7 && pacificMinute >= 10 && pacificMinute < 15) {
-        direction = "morning";
+        slot = "am";
+      } else if (pacificHour === 14 && pacificMinute >= 50 && pacificMinute < 55) {
+        slot = "pm_early";
       } else if (pacificHour === 15 && pacificMinute >= 45 && pacificMinute < 50) {
-        direction = "afternoon";
+        slot = "pm_late";
       }
-      if (!direction) {
+      if (!slot) {
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "outside_window" });
       }
 
       // Today's Pacific date
       const today = `${parts.year}-${parts.month}-${parts.day}`;
 
-      // Find today's trip in the given direction
-      const trips = await supaFetch("trips", "id,service_date,direction,meeting_time,origin,destination,week_id,group_id", {
+      // Find today's trip in the given slot
+      const trips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", {
         service_date: `eq.${today}`,
-        direction: `eq.${direction}`,
+        slot: `eq.${slot}`,
       });
       if (trips.length === 0) {
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_trip_today" });
@@ -1445,7 +1462,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
 
       const formattedTime = formatTime(trip.meeting_time);
-      const period = direction === "morning" ? "morning" : "afternoon";
+      const period = slot === "am" ? "morning" : "afternoon";
 
       ensureVapid();
 
@@ -1548,22 +1565,25 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const pacificHour = parseInt(parts.hour, 10) % 24;
       const pacificMinute = parseInt(parts.minute, 10);
 
-      // 30 min before 8:40 AM = 8:10 AM -> morning
-      // 30 min before 5:15 PM = 4:45 PM -> afternoon
-      let direction: "morning" | "afternoon" | null = null;
+      // 30 min before 8:40 AM = 8:10 AM -> am
+      // 30 min before 4:20 PM = 3:50 PM -> pm_early
+      // 30 min before 5:15 PM = 4:45 PM -> pm_late
+      let slot: "am" | "pm_early" | "pm_late" | null = null;
       if (pacificHour === 8 && pacificMinute >= 10 && pacificMinute < 15) {
-        direction = "morning";
+        slot = "am";
+      } else if (pacificHour === 15 && pacificMinute >= 50 && pacificMinute < 55) {
+        slot = "pm_early";
       } else if (pacificHour === 16 && pacificMinute >= 45 && pacificMinute < 50) {
-        direction = "afternoon";
+        slot = "pm_late";
       }
-      if (!direction) {
+      if (!slot) {
         return jsonResponse({ sent: 0, failed: 0, reason: "outside_window" });
       }
 
       const today = `${parts.year}-${parts.month}-${parts.day}`;
-      const trips = await supaFetch("trips", "id,service_date,direction,meeting_time,origin,destination,week_id,group_id", {
+      const trips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", {
         service_date: `eq.${today}`,
-        direction: `eq.${direction}`,
+        slot: `eq.${slot}`,
       });
       if (trips.length === 0) {
         return jsonResponse({ sent: 0, failed: 0, reason: "no_trip_today" });
@@ -1617,8 +1637,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
 
       const formattedTime = formatTime(trip.meeting_time);
-      const period = direction === "morning" ? "morning" : "afternoon";
-      const isMorning = direction === "morning";
+      const period = slot === "am" ? "morning" : "afternoon";
+      const isMorning = slot === "am";
 
       ensureVapid();
 
@@ -1772,12 +1792,10 @@ Questions? Reply to this email or check the FAQ in the app.`;
         new Date().toISOString().slice(0, 10),
         new Date().toTimeString().slice(0, 5),
       );
-      const summary = `Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive to ${trip.destination}`;
+      const summary = `Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive (${trip.meeting_time}) to ${trip.destination}`;
       const ridersStr = kidNames.length > 0 ? kidNames.join(", ") : "No riders assigned";
       const description = `Riders: ${ridersStr}\\nVehicle: ${vehicleLabel || "Unknown"}\\nMeet at ${meetingTime} at ${trip.origin}\\nDepart ${departureTime}`;
-      const locationUrl = trip.direction === "morning"
-        ? "https://maps.google.com/?q=30th+Avenue+and+Clement+Street+San+Francisco"
-        : "https://maps.google.com/?q=Presidio+Middle+School+San+Francisco";
+      const locationUrl = mapsUrlForOrigin(trip.origin);
       const icsContent = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -1927,9 +1945,9 @@ Questions? Reply to this email or check the FAQ in the app.`;
         `DTSTAMP:${dtstamp}`,
         `DTSTART;TZID=${timezone}:${toIcsLocal(trip.service_date, addMinutes(trip.meeting_time, -15))}`,
         `DTEND;TZID=${timezone}:${toIcsLocal(trip.service_date, addMinutes(trip.departure_time, 45))}`,
-        `SUMMARY:CANCELLED: Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive`,
+        `SUMMARY:CANCELLED: Carpool Crew: ${dirLabel === "morning" ? "Morning" : "Afternoon"} drive (${trip.meeting_time})`,
         "STATUS:CANCELLED",
-        `LOCATION:${trip.direction === "morning" ? "https://maps.google.com/?q=30th+Avenue+and+Clement+Street+San+Francisco" : "https://maps.google.com/?q=Presidio+Middle+School+San+Francisco"}`,
+        `LOCATION:${mapsUrlForOrigin(trip.origin)}`,
         "END:VEVENT",
         "END:VCALENDAR",
       ].join("\r\n");
@@ -2343,7 +2361,7 @@ ${cta}
       const weekData = await supaFetch("weeks", "starts_on", { id: `eq.${week_id}` });
       const weekStartDate = weekData.length > 0 ? weekData[0].starts_on : "";
 
-      const trips = await supaFetch("trips", "id,service_date,direction,meeting_time,origin,destination", {
+      const trips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination", {
         week_id: `eq.${week_id}`,
         group_id: `eq.${group_id}`,
       });
@@ -2395,6 +2413,9 @@ ${cta}
         arr.push(trip);
         tripsByDate.set(trip.service_date, arr);
       }
+      for (const arr of tripsByDate.values()) {
+        arr.sort((a, b) => slotOrder(a.slot) - slotOrder(b.slot));
+      }
       const sortedDates = [...tripsByDate.keys()].sort();
 
       const rosterHtmlLines: string[] = [];
@@ -2403,11 +2424,9 @@ ${cta}
         const dayLabel = new Date(date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
         rosterHtmlLines.push(`<h2 style="font-size:16px;margin:20px 0 8px;color:#0c2b52;">${escapeHtml(dayLabel)}</h2>`);
 
-        for (const direction of ["morning", "afternoon"] as const) {
-          const trip = dayTrips.find((t: any) => t.direction === direction);
-          if (!trip) continue;
+        for (const trip of dayTrips) {
           const time = formatTime(trip.meeting_time);
-          const dirLabel = direction === "morning" ? "Morning" : "Afternoon";
+          const dirLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
           const tripDrivers = driverAssignments.filter((da: any) => da.trip_id === trip.id);
 
           rosterHtmlLines.push(`<p style="font-size:14px;margin:4px 0 2px;font-weight:600;color:#118b8c;">${dirLabel} (${time})</p>`);

@@ -596,7 +596,7 @@ function OnboardingScreen({
           <h1>Your typical week</h1>
           <p>Set your family's defaults for a normal school week. New weeks start with these — you can still adjust any week before submitting.</p>
         </header>
-        <p className="standard-week-intro">Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickup is 5:15 PM from Presidio.</p>
+        <p className="standard-week-intro">Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickups are 4:20 PM and 5:15 PM from Presidio — pick a time, or choose "Either" if both work.</p>
 
         {onboardingChildren.length > 0 ? (
           <div className="standard-week-subsection">
@@ -778,9 +778,19 @@ function weekLabel(startsOn: string): string {
   return `Week of ${start.short} – ${end.short}`;
 }
 
+function slotSortOrder(slot: string | undefined): number {
+  if (slot === "am") return 0;
+  if (slot === "pm_early") return 1;
+  return 2;
+}
+
+function tripSlotSort(a: Tables<"trips">, b: Tables<"trips">): number {
+  return slotSortOrder(a.slot) - slotSortOrder(b.slot);
+}
+
 function tripLabel(trip: Tables<"trips">): string {
   const dateInfo = formatTripDate(trip.service_date);
-  const period = trip.direction === "morning" ? "Morning" : "Afternoon";
+  const period = trip.direction === "morning" ? "Morning" : `Afternoon · ${formatMeetingTime(trip.meeting_time)}`;
   return `${dateInfo.full} · ${period}`;
 }
 
@@ -848,13 +858,18 @@ function nextMonday(): string {
 
 const TEMPLATE_DAYS = [1, 2, 3, 4, 5];
 const MORNING_LABEL = "8:40 AM";
-const AFTERNOON_LABEL = "5:15 PM";
+const PM_EARLY_LABEL = "4:20 PM";
+const PM_LATE_LABEL = "5:15 PM";
+
+const AFTERNOON_SLOTS = ["pm_early", "pm_late"] as const;
+const ALL_SLOTS = ["am", "pm_early", "pm_late"] as const;
 
 function emptyDriveDefaults(): DefaultDrivePref[] {
   return TEMPLATE_DAYS.flatMap((day) =>
-    (["morning", "afternoon"] as const).map((direction) => ({
+    ALL_SLOTS.map((slot) => ({
       day,
-      direction,
+      direction: (slot === "am" ? "morning" : "afternoon") as "morning" | "afternoon",
+      slot,
       preference: "cannot" as const,
     })),
   );
@@ -871,14 +886,20 @@ function DrivePreferenceGrid({
   hasVehicle: boolean;
   disabled: boolean;
 }) {
-  const update = (day: number, direction: "morning" | "afternoon", pref: DrivePreference) => {
+  const update = (day: number, slot: "am" | "pm_early" | "pm_late", pref: DrivePreference) => {
     if (disabled) return;
     if (pref !== "cannot" && !hasVehicle) return;
     onChange(
       preferences.map((p) =>
-        p.day === day && p.direction === direction ? { ...p, preference: pref } : p,
+        p.day === day && p.slot === slot ? { ...p, preference: pref } : p,
       ),
     );
+  };
+
+  const slotLabels: Record<string, { short: string; time: string }> = {
+    am: { short: "AM", time: MORNING_LABEL },
+    pm_early: { short: "PM", time: PM_EARLY_LABEL },
+    pm_late: { short: "PM", time: PM_LATE_LABEL },
   };
 
   return (
@@ -886,22 +907,24 @@ function DrivePreferenceGrid({
       <div className="drive-template-header" aria-hidden="true">
         <span />
         <span className="drive-template-header-label">AM<small>{MORNING_LABEL}</small></span>
-        <span className="drive-template-header-label">PM<small>{AFTERNOON_LABEL}</small></span>
+        <span className="drive-template-header-label">PM<small>{PM_EARLY_LABEL}</small></span>
+        <span className="drive-template-header-label">PM<small>{PM_LATE_LABEL}</small></span>
       </div>
       {TEMPLATE_DAYS.map((day) => {
         const dayLabel = WEEKDAY_LABELS[day];
         return (
           <div className="drive-template-row" key={day}>
             <strong className="drive-template-day">{dayLabel}</strong>
-            {(["morning", "afternoon"] as const).map((direction) => {
-              const entry = preferences.find((p) => p.day === day && p.direction === direction);
+            {ALL_SLOTS.map((slot) => {
+              const entry = preferences.find((p) => p.day === day && p.slot === slot);
               const current = entry?.preference ?? "cannot";
+              const label = slot === "am" ? "morning" : slot === "pm_early" ? "early afternoon" : "late afternoon";
               return (
                 <div
                   className="drive-segments"
                   role="group"
-                  aria-label={`${dayLabel} ${direction === "morning" ? "morning" : "afternoon"}`}
-                  key={direction}
+                  aria-label={`${dayLabel} ${label}`}
+                  key={slot}
                 >
                   {(["prefer", "can", "cannot"] as const).map((pref) => {
                     const active = current === pref;
@@ -911,7 +934,7 @@ function DrivePreferenceGrid({
                         key={pref}
                         className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
                         disabled={disabled || blocked}
-                        onClick={() => update(day, direction, pref)}
+                        onClick={() => update(day, slot, pref)}
                         aria-pressed={active}
                         aria-label={preferenceLabel(pref)}
                         type="button"
@@ -942,58 +965,100 @@ function RideNeedsGrid({
   onChange: (next: DefaultRideNeed[]) => void;
   disabled: boolean;
 }) {
-  const toggle = (childId: string, day: number, direction: "morning" | "afternoon") => {
+  type PmState = "none" | "pm_early" | "pm_late" | "pm_either";
+
+  const toggleAm = (childId: string, day: number) => {
     if (disabled) return;
     const existing = needs.find(
-      (n) => n.child_id === childId && n.day === day && n.direction === direction,
+      (n) => n.child_id === childId && n.day === day && n.direction === "morning",
     );
     if (existing) {
       onChange(needs.map((n) => (n === existing ? { ...n, needs_ride: !n.needs_ride } : n)));
     } else {
-      onChange([...needs, { child_id: childId, day, direction, needs_ride: true }]);
+      onChange([...needs, { child_id: childId, day, direction: "morning" as const, slot: "am" as const, needs_ride: true }]);
     }
   };
+
+  const setPm = (childId: string, day: number, state: PmState) => {
+    if (disabled) return;
+    const filtered = needs.filter(
+      (n) => !(n.child_id === childId && n.day === day && n.direction === "afternoon"),
+    );
+    if (state === "none") {
+      onChange(filtered);
+    } else {
+      onChange([...filtered, { child_id: childId, day, direction: "afternoon" as const, slot: state, needs_ride: true }]);
+    }
+  };
+
+  const getPmState = (childId: string, day: number): PmState => {
+    const entry = needs.find(
+      (n) => n.child_id === childId && n.day === day && n.direction === "afternoon",
+    );
+    if (!entry || !entry.needs_ride) return "none";
+    return (entry.slot ?? "pm_late") as PmState;
+  };
+
+  const pmOptions: { value: PmState; label: string }[] = [
+    { value: "pm_early", label: "4:20" },
+    { value: "pm_late", label: "5:15" },
+    { value: "pm_either", label: "Either" },
+    { value: "none", label: "No ride" },
+  ];
 
   return (
     <div className="ride-needs-grid" data-testid="ride-needs-grid">
       <div className="ride-needs-header" aria-hidden="true">
         <span />
         <span className="drive-template-header-label">AM<small>{MORNING_LABEL}</small></span>
-        <span className="drive-template-header-label">PM<small>{AFTERNOON_LABEL}</small></span>
+        <span className="drive-template-header-label ride-needs-header-pm">Afternoon<small>{PM_EARLY_LABEL} / {PM_LATE_LABEL}</small></span>
       </div>
       {children.map((child) => (
         <div className="ride-needs-child" key={child.id}>
           <strong className="ride-needs-name">{child.first_name}</strong>
           {TEMPLATE_DAYS.map((day) => {
             const dayLabel = WEEKDAY_LABELS[day];
+            const amEntry = needs.find(
+              (n) => n.child_id === child.id && n.day === day && n.direction === "morning",
+            );
+            const amRiding = amEntry?.needs_ride ?? false;
+            const pmState = getPmState(child.id, day);
             return (
               <div className="ride-needs-row" key={day}>
                 <span className="ride-needs-day">{dayLabel}</span>
-                {(["morning", "afternoon"] as const).map((direction) => {
-                  const entry = needs.find(
-                    (n) => n.child_id === child.id && n.day === day && n.direction === direction,
-                  );
-                  const riding = entry?.needs_ride ?? false;
-                  return (
-                    <button
-                      key={direction}
-                      className={riding ? "ride-pill ride-pill--on" : "ride-pill"}
-                      disabled={disabled}
-                      onClick={() => toggle(child.id, day, direction)}
-                      aria-pressed={riding}
-                      aria-label={`${child.first_name} ${dayLabel} ${direction}`}
-                      type="button"
-                    >
-                      {direction === "morning" ? "AM" : "PM"}
-                    </button>
-                  );
-                })}
+                <button
+                  className={amRiding ? "ride-pill ride-pill--on" : "ride-pill"}
+                  disabled={disabled}
+                  onClick={() => toggleAm(child.id, day)}
+                  aria-pressed={amRiding}
+                  aria-label={`${child.first_name} ${dayLabel} morning`}
+                  type="button"
+                >
+                  AM
+                </button>
+                <div className="ride-needs-pm" role="group" aria-label={`${child.first_name} ${dayLabel} afternoon`}>
+                  {pmOptions.map((opt) => {
+                    const active = pmState === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        className={`ride-pm-segment${active ? " ride-pm-segment--active" : ""}`}
+                        disabled={disabled}
+                        onClick={() => setPm(child.id, day, opt.value)}
+                        aria-pressed={active}
+                        type="button"
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             );
           })}
         </div>
       ))}
-      <p className="drive-template-caption">Tap AM or PM for each day your child needs a ride.</p>
+      <p className="drive-template-caption">Tap AM for mornings. For afternoons, pick 4:20, 5:15, Either, or No ride.</p>
     </div>
   );
 }
@@ -1069,7 +1134,7 @@ function AssignmentRow({
   isToday?: boolean;
   onClick?: () => void;
 }) {
-  const period = trip.direction === "morning" ? "Morning" : "Afternoon";
+  const period = trip.direction === "morning" ? "Morning" : `Afternoon · ${formatMeetingTime(trip.meeting_time)}`;
   const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
   const dateInfo = formatTripDate(trip.service_date);
   const confirmed = status === "confirmed";
@@ -1761,7 +1826,7 @@ function HomeScreen({
         if (!schedulePublished || !homeSchedule || !householdId || householdChildren.length === 0) return null;
         const todaysTrips = homeSchedule.trips
           .filter(t => t.service_date === todayDate)
-          .sort((a, b) => a.direction === "morning" ? -1 : 1);
+          .sort(tripSlotSort);
         if (todaysTrips.length === 0 || isPastDriveTime) return null;
         const todayInfo = formatTripDate(todayDate);
         return (
@@ -1895,7 +1960,7 @@ function HomeScreen({
                         }
                         return (
                           <div className="today-card-ride today-card-ride--none" key={child.id}>
-                            <span>No {trip.direction === "morning" ? "morning" : "afternoon"} ride for <strong>{child.first_name}</strong></span>
+                            <span>No {trip.direction === "morning" ? "morning" : formatMeetingTime(trip.meeting_time)} ride for <strong>{child.first_name}</strong></span>
                           </div>
                         );
                       })}
@@ -2224,7 +2289,7 @@ function ReviewScreen({
 
       {myAssignments.map((entry) => {
         const dateInfo = formatTripDate(entry.trip.service_date);
-        const period = entry.trip.direction === "morning" ? "Morning" : "Afternoon";
+        const period = entry.trip.direction === "morning" ? "Morning" : `Afternoon · ${formatMeetingTime(entry.trip.meeting_time)}`;
         const status = entry.assignment.status;
         const isDeclining = decliningId === entry.assignment.id;
         const roster = entry.children.length > 0
@@ -2242,7 +2307,7 @@ function ReviewScreen({
             <div className="roster">
               <span>Passenger roster</span>
               <strong>{roster}</strong>
-              <small>Meet at {entry.trip.meeting_time} · {entry.trip.origin} → {entry.trip.destination}</small>
+              <small>Meet at {formatMeetingTime(entry.trip.meeting_time)} · {entry.trip.origin} → {entry.trip.destination}</small>
             </div>
 {status === "tentative" ? (
               isDeclining ? (
@@ -2510,6 +2575,11 @@ function PlanScreen({
     rideMap.set(`${req.trip_id}:${req.child_id}`, req.needs_ride);
   }
 
+  const prefMap = new Map<string, "specific" | "either">();
+  for (const req of checkinDetails?.rideRequests ?? []) {
+    prefMap.set(`${req.trip_id}:${req.child_id}`, req.preference);
+  }
+
   const driveMap = new Map<string, DrivePreference>();
   for (const avail of checkinDetails?.driverAvailability ?? []) {
     if (avail.driver_profile_id === driverProfileId) {
@@ -2523,6 +2593,35 @@ function PlanScreen({
     const current = rideMap.get(key) ?? false;
     try {
       await repository.upsertRideRequest(checkin.id, tripId, childId, !current, groupId);
+      onReloadCheckin();
+    } catch (error) {
+      setSubmitError(readableError(error));
+    }
+  };
+
+  type PmChoice = "none" | "pm_early" | "pm_late" | "pm_either";
+
+  const setAfternoonRide = async (
+    childId: string,
+    choice: PmChoice,
+    earlyTrip: Tables<"trips">,
+    lateTrip: Tables<"trips">,
+  ) => {
+    if (rideLocked || !checkin) return;
+    try {
+      if (choice === "pm_early") {
+        await repository.upsertRideRequest(checkin.id, earlyTrip.id, childId, true, groupId, "specific");
+        await repository.upsertRideRequest(checkin.id, lateTrip.id, childId, false, groupId, "specific");
+      } else if (choice === "pm_late") {
+        await repository.upsertRideRequest(checkin.id, earlyTrip.id, childId, false, groupId, "specific");
+        await repository.upsertRideRequest(checkin.id, lateTrip.id, childId, true, groupId, "specific");
+      } else if (choice === "pm_either") {
+        await repository.upsertRideRequest(checkin.id, earlyTrip.id, childId, true, groupId, "either");
+        await repository.upsertRideRequest(checkin.id, lateTrip.id, childId, true, groupId, "either");
+      } else {
+        await repository.upsertRideRequest(checkin.id, earlyTrip.id, childId, false, groupId, "specific");
+        await repository.upsertRideRequest(checkin.id, lateTrip.id, childId, false, groupId, "specific");
+      }
       onReloadCheckin();
     } catch (error) {
       setSubmitError(readableError(error));
@@ -2670,8 +2769,39 @@ function PlanScreen({
       {sortedDates.map((serviceDate) => {
         const dateTrips = tripsByDate.get(serviceDate) ?? [];
         const dateInfo = formatTripDate(serviceDate);
-        const morningTrip = dateTrips.find((trip) => trip.direction === "morning");
-        const afternoonTrip = dateTrips.find((trip) => trip.direction === "afternoon");
+        const morningTrip = dateTrips.find((trip) => trip.slot === "am");
+        const pmEarlyTrip = dateTrips.find((trip) => trip.slot === "pm_early");
+        const pmLateTrip = dateTrips.find((trip) => trip.slot === "pm_late");
+        const singleAfternoonTrip = !pmEarlyTrip ? pmLateTrip : null;
+
+        const renderDriveSegments = (trip: Tables<"trips">, label: string) => {
+          return (
+            <div
+              className="drive-segments"
+              role="group"
+              aria-label={`Your driving for ${label}`}
+            >
+              {(["prefer", "can", "cannot"] as const).map((pref) => {
+                const currentPref = pendingDrive[trip.id] ?? driveMap.get(trip.id) ?? "cannot";
+                const active = currentPref === pref;
+                const busy = pendingDrive[trip.id] !== undefined;
+                return (
+                  <button
+                    key={pref}
+                    className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
+                    disabled={driveLocked || busy}
+                    onClick={() => void setDrivePreference(trip.id, pref)}
+                    aria-pressed={active}
+                    aria-label={preferenceLabel(pref)}
+                    type="button"
+                  >
+                    {pref === "prefer" ? "Prefer" : pref === "can" ? "Can" : "Can't"}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        };
 
         const renderTrip = (trip: Tables<"trips"> | undefined, direction: "morning" | "afternoon") => {
           if (!trip) return null;
@@ -2681,7 +2811,7 @@ function PlanScreen({
               <div className="checkin-trip-header">
                 <PeriodIcon width="16" height="16" />
                 <span>{direction === "morning" ? "Morning" : "Afternoon"}</span>
-                <small>{trip.meeting_time} · {trip.origin} → {trip.destination}</small>
+                <small>{formatMeetingTime(trip.meeting_time)} · {trip.origin} → {trip.destination}</small>
               </div>
 
               <div className="checkin-section">
@@ -2699,6 +2829,7 @@ function PlanScreen({
                         onClick={() => void toggleRide(trip.id, child.id)}
                         aria-pressed={riding}
                         aria-label={`${child.first_name} ${riding ? "needs a ride" : "does not need a ride"}`}
+                        type="button"
                       >
                         <span>{child.first_name}</span>
                         <small>{riding ? "Needs ride" : "No ride"}</small>
@@ -2711,29 +2842,72 @@ function PlanScreen({
               <div className="checkin-section">
                 <span className="checkin-section-label">Your driving</span>
                 {submitted && !driveLocked ? <small className="drive-editable-note">Editable — adjust anytime before the week starts</small> : null}
-                <div
-                  className="drive-segments"
-                  role="group"
-                  aria-label={`Your driving for ${direction === "morning" ? "morning" : "afternoon"}`}
-                >
-                  {(["prefer", "can", "cannot"] as const).map((pref) => {
-                    const currentPref = pendingDrive[trip.id] ?? driveMap.get(trip.id) ?? "cannot";
-                    const active = currentPref === pref;
-                    const busy = pendingDrive[trip.id] !== undefined;
+                {renderDriveSegments(trip, direction === "morning" ? "morning" : "afternoon")}
+              </div>
+            </div>
+          );
+        };
+
+        const renderAfternoonPicker = (earlyTrip: Tables<"trips">, lateTrip: Tables<"trips">) => {
+          const pmOptions: { value: PmChoice; label: string }[] = [
+            { value: "pm_early", label: PM_EARLY_LABEL },
+            { value: "pm_late", label: PM_LATE_LABEL },
+            { value: "pm_either", label: "Either" },
+            { value: "none", label: "No ride" },
+          ];
+          return (
+            <div className="checkin-trip" key={`${earlyTrip.id}-${lateTrip.id}`}>
+              <div className="checkin-trip-header">
+                <MoonIcon width="16" height="16" />
+                <span>Afternoon</span>
+                <small>{PM_EARLY_LABEL} or {PM_LATE_LABEL} · {earlyTrip.origin} → {earlyTrip.destination}</small>
+              </div>
+
+              <div className="checkin-section">
+                <span className="checkin-section-label">Rides needed</span>
+                <p className="checkin-section-caption">Pick a time for each child.</p>
+                <div className="checkin-rides checkin-rides--pm">
+                  {children.map((child) => {
+                    const earlyKey = `${earlyTrip.id}:${child.id}`;
+                    const lateKey = `${lateTrip.id}:${child.id}`;
+                    const earlyRiding = rideMap.get(earlyKey) ?? false;
+                    const lateRiding = rideMap.get(lateKey) ?? false;
+                    const earlyPref = prefMap.get(earlyKey) ?? "specific";
+                    let pmState: PmChoice;
+                    if (earlyRiding && lateRiding && earlyPref === "either") pmState = "pm_either";
+                    else if (earlyRiding && !lateRiding) pmState = "pm_early";
+                    else if (!earlyRiding && lateRiding) pmState = "pm_late";
+                    else pmState = "none";
                     return (
-                      <button
-                        key={pref}
-                        className={`drive-segment drive-segment--${pref}${active ? " drive-segment--active" : ""}`}
-                        disabled={driveLocked || busy}
-                        onClick={() => void setDrivePreference(trip.id, pref)}
-                        aria-pressed={active}
-                        aria-label={preferenceLabel(pref)}
-                      >
-                        {pref === "prefer" ? "Prefer" : pref === "can" ? "Can" : "Can't"}
-                      </button>
+                      <div className="checkin-afternoon-child" key={child.id}>
+                        <span className="checkin-afternoon-name">{child.first_name}</span>
+                        <div className="checkin-pm-segments" role="group" aria-label={`${child.first_name} afternoon`}>
+                          {pmOptions.map((opt) => (
+                            <button
+                              key={opt.value}
+                              className={`ride-pm-segment${pmState === opt.value ? " ride-pm-segment--active" : ""}`}
+                              disabled={rideLocked}
+                              onClick={() => void setAfternoonRide(child.id, opt.value, earlyTrip, lateTrip)}
+                              aria-pressed={pmState === opt.value}
+                              type="button"
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
+              </div>
+
+              <div className="checkin-section">
+                <span className="checkin-section-label">Your driving · {PM_EARLY_LABEL}</span>
+                {renderDriveSegments(earlyTrip, "early afternoon")}
+              </div>
+              <div className="checkin-section">
+                <span className="checkin-section-label">Your driving · {PM_LATE_LABEL}</span>
+                {renderDriveSegments(lateTrip, "late afternoon")}
               </div>
             </div>
           );
@@ -2746,7 +2920,9 @@ function PlanScreen({
               <span>{dateInfo.short}</span>
             </div>
             {renderTrip(morningTrip, "morning")}
-            {renderTrip(afternoonTrip, "afternoon")}
+            {pmEarlyTrip && pmLateTrip
+              ? renderAfternoonPicker(pmEarlyTrip, pmLateTrip)
+              : renderTrip(singleAfternoonTrip ?? pmEarlyTrip, "afternoon")}
           </section>
         );
       })}
@@ -3081,13 +3257,13 @@ function WeekScreen({
                   (r) => r.driverAssignment.status === "declined" || r.driverAssignment.status === "released" || r.driverAssignment.status === "expired",
                 );
                 const uncovered = activeRosters.length === 0;
-                const legLabel = `${isToday ? "TODAY · " : ""}${dateInfo.weekdayFull} ${trip.direction === "morning" ? "Morning" : "Afternoon"}`;
+                const legLabel = `${isToday ? "TODAY · " : ""}${dateInfo.weekdayFull} ${trip.direction === "morning" ? "Morning" : `Afternoon · ${formatMeetingTime(trip.meeting_time)}`}`;
                 return (
                   <div className={`leg${uncovered ? " leg--alert" : ""}${isToday ? " leg--today" : ""}`} key={trip.id}>
                     <PeriodIcon />
                     <span>
                       <small>{legLabel}</small>
-                      <strong>{trip.meeting_time} · {trip.origin} → {trip.destination}</strong>
+                      <strong>{formatMeetingTime(trip.meeting_time)} · {trip.origin} → {trip.destination}</strong>
                     </span>
                     {uncovered ? (
                       <span className="mini-status mini-status--alert">No drivers</span>
@@ -3355,7 +3531,7 @@ function CoordinatorScreen({
                   const trip = scheduleTrips.find((t) => t.id === tripId);
                   if (!trip) return null;
                   const tripDate = formatTripDate(trip.service_date);
-                  const direction = trip.direction === "morning" ? "AM" : "PM";
+                  const direction = trip.direction === "morning" ? "AM" : formatMeetingTime(trip.meeting_time);
                   return (
                     <div className="triage-item triage-item--uncovered" key={tripId}>
                       <div className="triage-item-info">
@@ -3386,7 +3562,7 @@ function CoordinatorScreen({
               <div className="triage-list">
                 {adminDeclinedAlerts.map((alert) => {
                   const tripDate = formatTripDate(alert.trip.service_date);
-                  const direction = alert.trip.direction === "morning" ? "AM" : "PM";
+                  const direction = alert.trip.direction === "morning" ? "AM" : formatMeetingTime(alert.trip.meeting_time);
                   const driverName = alert.driverProfile?.full_name ?? "Unknown";
                   return (
                     <div className="triage-item triage-item--declined" key={alert.assignment.id}>
@@ -3460,7 +3636,7 @@ function CoordinatorScreen({
           <div className="week-status-detail">
             {(() => {
               const sortedTrips = week.trips.slice().sort((a, b) =>
-                a.service_date.localeCompare(b.service_date) || (a.direction === "morning" ? -1 : 1),
+                a.service_date.localeCompare(b.service_date) || tripSlotSort(a, b),
               );
               let lastDate = "";
               return sortedTrips.flatMap((trip) => {
@@ -3482,13 +3658,7 @@ function CoordinatorScreen({
                   );
                 }
                 const dirLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
-                const time = (() => {
-                  const [h, m] = trip.meeting_time.split(":");
-                  const hour = parseInt(h, 10);
-                  const ampm = hour >= 12 ? "PM" : "AM";
-                  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
-                  return `${hour12}:${m} ${ampm}`;
-                })();
+                const time = formatMeetingTime(trip.meeting_time);
                 elements.push(
                   <div key={trip.id} className="week-status-trip">
                     <div className="week-status-trip-label">{dirLabel} ({time})</div>
@@ -3571,7 +3741,7 @@ function CoordinatorScreen({
         <div className="coverage-table">
           {overview?.trips.length ? overview.trips.map((tripOverview) => {
             const tripDate = formatTripDate(tripOverview.trip.service_date);
-            const direction = tripOverview.trip.direction === "morning" ? "AM" : "PM";
+            const direction = tripOverview.trip.direction === "morning" ? "AM" : formatMeetingTime(tripOverview.trip.meeting_time);
             const covered = tripOverview.seatCount >= tripOverview.riderCount && tripOverview.riderCount > 0;
             const noRiders = tripOverview.riderCount === 0;
             return (
@@ -3680,7 +3850,7 @@ function CoordinatorScreen({
         open={adminAssignTarget !== null}
         onOpenChange={(open) => { if (!open) onCloseAssignSheet(); }}
         title="Assign a driver"
-        description={assignTrip ? `${formatTripDate(assignTrip.service_date).weekday} · ${assignTrip.direction === "morning" ? "AM" : "PM"}` : undefined}
+        description={assignTrip ? `${formatTripDate(assignTrip.service_date).weekday} · ${assignTrip.direction === "morning" ? "AM" : formatMeetingTime(assignTrip.meeting_time)}` : undefined}
       >
         {manualAssignError ? <div className="auth-error" role="alert" style={{ marginBottom: 12 }}>{manualAssignError}</div> : null}
         <div className="assign-driver-list">
@@ -4372,7 +4542,7 @@ function AccountScreen({
         <div className="section-heading-row">
           <h2 id="standard-week-heading">Standard week</h2>
         </div>
-        <p className="household-static">Set your family's defaults for a normal school week. New weeks start with these — you can still adjust any week before submitting. Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickup is 5:15 PM from Presidio.</p>
+        <p className="household-static">Set your family's defaults for a normal school week. New weeks start with these — you can still adjust any week before submitting. Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickups are 4:20 PM and 5:15 PM from Presidio — pick a time, or choose "Either" if both work.</p>
         {driveDefaultsLoading || rideNeedsLoading ? (
           <p className="household-static">Loading…</p>
         ) : (
@@ -4946,7 +5116,7 @@ function DriveDetailScreen({
     month: "short",
     day: "numeric",
   });
-  const directionLabel = trip.direction === "morning" ? "Morning" : "Afternoon";
+  const directionLabel = trip.direction === "morning" ? "Morning" : `Afternoon · ${formatMeetingTime(trip.meeting_time)}`;
   const driverName = entry.driverProfile.full_name;
   const driverAvatarUrl = entry.driverProfile.avatar_url;
   const vehicleLabel = entry.vehicle.label;

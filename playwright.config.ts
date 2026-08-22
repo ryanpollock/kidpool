@@ -14,6 +14,7 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${testPort}`,
     viewport: { width: 1100, height: 1100 },
+    video: "on",
   },
   webServer: {
     command: devCommand,

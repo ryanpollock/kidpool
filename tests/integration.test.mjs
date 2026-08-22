@@ -1446,3 +1446,347 @@ test("RPC: scheduler still works after parent cancels a ride", { skip: !SERVICE_
   deleteTestUser(driver.userId);
   deleteTestUser(rider.userId);
 });
+
+// ── Second-afternoon-trip (pm_early + pm_late) integration tests ──
+//
+// These exercise the live DB schema for the second-afternoon-trip feature:
+// the trips.slot column (am/pm_early/pm_late), ride_requests.preference
+// (specific/either), default_ride_needs/default_drive_preferences JSONB
+// fan-out, and end-to-end scheduling through the generate-schedule Edge
+// Function. They mirror the pure-algorithm A-series tests in
+// scheduling-afternoon.test.mjs but go through the real DB + Edge Function.
+
+// Week with 3 trips per weekday (am, pm_early, pm_late) and realistic meeting
+// times. Uses a different week ID / date range than setupWeekAndTrips so the
+// two helpers never collide within a single test run.
+function setupWeekAnd3Trips() {
+  const weekId = UID(910);
+  const tripIds = { am: [], pm_early: [], pm_late: [] };
+  const dates = ["2028-02-07", "2028-02-08", "2028-02-09", "2028-02-10", "2028-02-11"];
+  const slots = [
+    { key: "am", dir: "morning", mt: "08:40", dt: "08:45" },
+    { key: "pm_early", dir: "afternoon", mt: "16:20", dt: "16:25" },
+    { key: "pm_late", dir: "afternoon", mt: "17:15", dt: "17:20" },
+  ];
+  let sql = `INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${weekId}', '${GROUP_ID}', '2028-02-07', 'open') ON CONFLICT DO NOTHING;\n`;
+  for (let d = 0; d < 5; d++) {
+    for (let s = 0; s < 3; s++) {
+      const tId = UID(500 + d * 3 + s);
+      const sl = slots[s];
+      tripIds[sl.key].push(tId);
+      sql += `INSERT INTO public.trips (id, group_id, week_id, service_date, direction, slot, meeting_time, departure_time, origin, destination) VALUES ('${tId}', '${GROUP_ID}', '${weekId}', '${dates[d]}', '${sl.dir}', '${sl.key}', '${sl.mt}', '${sl.dt}', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;\n`;
+    }
+  }
+  runSql(sql);
+  return { weekId, tripIds, dates };
+}
+
+// Replicates CarpoolRepository.applyDefaultRideNeeds against the live DB:
+// reads default_ride_needs from the household, then for each trip × child
+// upserts a ride_request whose needs_ride/preference reflect the matched
+// default. A single pm_either default fans out to BOTH pm_early and pm_late
+// ride_requests (preference "either"); the am ride_request gets needs_ride
+// false and preference "specific" (no matching default).
+function applyDefaultRideNeedsViaSql(householdId, checkinId, weekId, groupId, createdBy) {
+  const household = restGet("households", { id: householdId })[0];
+  const defaults = Array.isArray(household?.default_ride_needs) ? household.default_ride_needs : [];
+  if (defaults.length === 0) return;
+  const trips = restGet("trips", { week_id: weekId });
+  const children = restGet("children", { household_id: householdId });
+  const rows = [];
+  for (const trip of trips) {
+    const tripDate = new Date(trip.service_date + "T00:00:00");
+    const isoDay = tripDate.getDay() === 0 ? 7 : tripDate.getDay();
+    for (const child of children) {
+      const match = defaults.find((d) => {
+        if (d.child_id !== child.id || d.day !== isoDay) return false;
+        const dSlot = d.slot ?? (d.direction === "morning" ? "am" : "pm_late");
+        if (dSlot === "pm_either") return trip.slot === "pm_early" || trip.slot === "pm_late";
+        return dSlot === trip.slot;
+      });
+      rows.push({
+        group_id: groupId,
+        checkin_id: checkinId,
+        trip_id: trip.id,
+        child_id: child.id,
+        needs_ride: match ? !!match.needs_ride : false,
+        created_by: createdBy,
+        preference: match && match.slot === "pm_either" ? "either" : "specific",
+      });
+    }
+  }
+  if (rows.length === 0) return;
+  const values = rows.map((r) =>
+    `('${r.group_id}', '${r.checkin_id}', '${r.trip_id}', '${r.child_id}', ${r.needs_ride ? "true" : "false"}, '${r.created_by}', '${r.preference}')`,
+  ).join(",\n    ");
+  runSql(`
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by, preference)
+    VALUES
+      ${values}
+    ON CONFLICT (trip_id, child_id) DO UPDATE SET needs_ride = EXCLUDED.needs_ride, preference = EXCLUDED.preference;
+  `);
+}
+
+// Replicates CarpoolRepository.applyDefaultDrivePreferences against the live
+// DB: reads default_drive_preferences from the profile, then for each trip
+// whose slot matches a default (via inferSlot) upserts a driver_availability
+// row. A pm_early default matches ONLY the pm_early trip — never pm_late.
+function applyDefaultDrivePreferencesViaSql(profileId, checkinId, weekId, vehicleId, groupId) {
+  const profile = restGet("profiles", { id: profileId })[0];
+  const defaults = Array.isArray(profile?.default_drive_preferences) ? profile.default_drive_preferences : [];
+  if (defaults.length === 0) return;
+  const inferSlot = (direction, slot) => {
+    if (slot === "am" || slot === "pm_early" || slot === "pm_late") return slot;
+    return direction === "morning" ? "am" : "pm_late";
+  };
+  const trips = restGet("trips", { week_id: weekId });
+  const rows = [];
+  for (const trip of trips) {
+    const tripDate = new Date(trip.service_date + "T00:00:00");
+    const isoDay = tripDate.getDay() === 0 ? 7 : tripDate.getDay();
+    const match = defaults.find((d) => d.day === isoDay && inferSlot(d.direction, d.slot) === trip.slot);
+    if (match) {
+      rows.push({
+        group_id: groupId,
+        checkin_id: checkinId,
+        trip_id: trip.id,
+        driver_profile_id: profileId,
+        vehicle_id: match.preference === "cannot" ? null : vehicleId,
+        preference: match.preference,
+      });
+    }
+  }
+  if (rows.length === 0) return;
+  const values = rows.map((r) =>
+    `('${r.group_id}', '${r.checkin_id}', '${r.trip_id}', '${r.driver_profile_id}', ${r.vehicle_id ? `'${r.vehicle_id}'` : "NULL"}, '${r.preference}')`,
+  ).join(",\n    ");
+  runSql(`
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference)
+    VALUES
+      ${values}
+    ON CONFLICT (trip_id, driver_profile_id) DO UPDATE SET vehicle_id = EXCLUDED.vehicle_id, preference = EXCLUDED.preference;
+  `);
+}
+
+test("B1: week creation produces 3 trips per weekday (am, pm_early, pm_late)", { skip: !SERVICE_KEY }, async () => {
+  const { weekId } = setupWeekAnd3Trips();
+
+  const trips = restGet("trips", { week_id: weekId });
+  assert.equal(trips.length, 15, "5 weekdays × 3 slots = 15 trips");
+
+  const byDate = new Map();
+  for (const t of trips) {
+    const arr = byDate.get(t.service_date) ?? [];
+    arr.push(t);
+    byDate.set(t.service_date, arr);
+  }
+  assert.equal(byDate.size, 5, "5 weekdays in the week");
+
+  for (const [date, dayTrips] of byDate) {
+    assert.equal(dayTrips.length, 3, `${date} has 3 trips`);
+    const slots = dayTrips.map((t) => t.slot).sort();
+    assert.deepEqual(slots, ["am", "pm_early", "pm_late"], `${date} has all 3 slots`);
+    const am = dayTrips.find((t) => t.slot === "am");
+    const early = dayTrips.find((t) => t.slot === "pm_early");
+    const late = dayTrips.find((t) => t.slot === "pm_late");
+    assert.equal(am.direction, "morning", `${date} am direction`);
+    assert.equal(early.direction, "afternoon", `${date} pm_early direction`);
+    assert.equal(late.direction, "afternoon", `${date} pm_late direction`);
+    assert.equal(String(am.meeting_time).slice(0, 5), "08:40", `${date} am meeting time`);
+    assert.equal(String(early.meeting_time).slice(0, 5), "16:20", `${date} pm_early meeting time`);
+    assert.equal(String(late.meeting_time).slice(0, 5), "17:15", `${date} pm_late meeting time`);
+  }
+
+  cleanupAllTestData();
+});
+
+test("B2: pm_either default applies to both PM ride_requests with preference=\"either\"", { skip: !SERVICE_KEY }, async () => {
+  const family = setupHousehold(62, "B2Family", "member", false);
+  const childId = UID(262);
+  const checkinId = UID(562);
+
+  const { weekId } = setupWeekAnd3Trips();
+  // 2028-02-07 is a Monday (ISO day 1). One default: child needs a ride on
+  // pm_either for Monday — should fan out to pm_early + pm_late.
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childId}', '${GROUP_ID}', '${family.householdId}', 'B2Child', 'Test', '${family.userId}') ON CONFLICT DO NOTHING;
+    UPDATE public.households SET default_ride_needs = '[{"child_id":"${childId}","day":1,"direction":"afternoon","slot":"pm_either","needs_ride":true}]'::jsonb WHERE id = '${family.householdId}';
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinId}', '${GROUP_ID}', '${weekId}', '${family.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+  `);
+
+  applyDefaultRideNeedsViaSql(family.householdId, checkinId, weekId, GROUP_ID, family.userId);
+
+  const rrs = restGet("ride_requests", { checkin_id: checkinId });
+  assert.equal(rrs.length, 15, "one ride_request per trip (15 trips × 1 child)");
+
+  const mondayTrips = restGet("trips", { week_id: weekId }).filter((t) => t.service_date === "2028-02-07");
+  const amTrip = mondayTrips.find((t) => t.slot === "am");
+  const earlyTrip = mondayTrips.find((t) => t.slot === "pm_early");
+  const lateTrip = mondayTrips.find((t) => t.slot === "pm_late");
+
+  const amRR = rrs.find((r) => r.trip_id === amTrip.id);
+  const earlyRR = rrs.find((r) => r.trip_id === earlyTrip.id);
+  const lateRR = rrs.find((r) => r.trip_id === lateTrip.id);
+
+  assert.equal(amRR.needs_ride, false, "am ride_request needs_ride=false (no default for am)");
+  assert.equal(amRR.preference, "specific", "am ride_request preference=specific");
+  assert.equal(earlyRR.needs_ride, true, "pm_early ride_request needs_ride=true");
+  assert.equal(earlyRR.preference, "either", "pm_early ride_request preference=either");
+  assert.equal(lateRR.needs_ride, true, "pm_late ride_request needs_ride=true");
+  assert.equal(lateRR.preference, "either", "pm_late ride_request preference=either");
+
+  cleanupAllTestData();
+  deleteTestUser(family.userId);
+});
+
+test("B3: pm_early drive default applies only to pm_early trip", { skip: !SERVICE_KEY }, async () => {
+  const driver = setupHousehold(64, "B3Driver", "member", false);
+  const vehicleId = UID(364);
+  const checkinId = UID(564);
+
+  const { weekId } = setupWeekAnd3Trips();
+  // Monday (ISO day 1): driver prefers to drive pm_early only.
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleId}', '${GROUP_ID}', '${driver.householdId}', 'B3Car', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    UPDATE public.profiles SET default_drive_preferences = '[{"day":1,"direction":"afternoon","slot":"pm_early","preference":"prefer"}]'::jsonb WHERE id = '${driver.userId}';
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinId}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+  `);
+
+  applyDefaultDrivePreferencesViaSql(driver.userId, checkinId, weekId, vehicleId, GROUP_ID);
+
+  const avails = restGet("driver_availability", { checkin_id: checkinId });
+  assert.equal(avails.length, 1, "only 1 driver_availability row (pm_early on Monday)");
+
+  const mondayTrips = restGet("trips", { week_id: weekId }).filter((t) => t.service_date === "2028-02-07");
+  const earlyTrip = mondayTrips.find((t) => t.slot === "pm_early");
+  const lateTrip = mondayTrips.find((t) => t.slot === "pm_late");
+
+  const earlyAvail = avails.find((a) => a.trip_id === earlyTrip.id);
+  const lateAvail = avails.find((a) => a.trip_id === lateTrip.id);
+  assert.ok(earlyAvail, "driver_availability exists on pm_early");
+  assert.equal(earlyAvail.preference, "prefer", "pm_early availability preference=prefer");
+  assert.equal(earlyAvail.vehicle_id, vehicleId, "pm_early availability has the vehicle");
+  assert.ok(!lateAvail, "no driver_availability on pm_late");
+
+  cleanupAllTestData();
+  deleteTestUser(driver.userId);
+});
+
+test("B4: schedule generation with either riders — assigned to pm_early, not pm_late", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(65, "B4Coord", "member", true);
+  const driver = setupHousehold(66, "B4Driver", "member", false);
+  const rider = setupHousehold(67, "B4Rider", "member", false);
+  const vehicleId = UID(366);
+  const driverCheckin = UID(566);
+  const riderCheckin = UID(567);
+  const driverChildId = UID(266);
+  const riderChildId = UID(267);
+
+  const { weekId, tripIds } = setupWeekAnd3Trips();
+  // Monday (index 0): driver is a natural driver on pm_early (own child needs
+  // a ride there). The rider's child is an "either" rider on both PM trips.
+  const earlyTrip = tripIds.pm_early[0];
+  const lateTrip = tripIds.pm_late[0];
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleId}', '${GROUP_ID}', '${driver.householdId}', 'B4Car', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${driverChildId}', '${GROUP_ID}', '${driver.householdId}', 'B4Drv', 'Test', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${riderChildId}', '${GROUP_ID}', '${rider.householdId}', 'B4Ride', 'Test', '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${driverCheckin}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${riderCheckin}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by, preference) VALUES ('${GROUP_ID}', '${driverCheckin}', '${earlyTrip}', '${driverChildId}', true, '${driver.userId}', 'specific') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by, preference) VALUES ('${GROUP_ID}', '${riderCheckin}', '${earlyTrip}', '${riderChildId}', true, '${rider.userId}', 'either') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by, preference) VALUES ('${GROUP_ID}', '${riderCheckin}', '${lateTrip}', '${riderChildId}', true, '${rider.userId}', 'either') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${driverCheckin}', '${earlyTrip}', '${driver.userId}', '${vehicleId}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  const coordToken = signInUser("b4coord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Schedule generation should succeed");
+
+  const versions = restGet("schedule_versions", { week_id: weekId });
+  const latest = versions.sort((a, b) => b.version_number - a.version_number)[0];
+  const riderAssignments = restGet("rider_assignments", { schedule_version_id: latest.id, child_id: riderChildId });
+  const assignedTripIds = riderAssignments.map((ra) => ra.trip_id);
+
+  assert.ok(assignedTripIds.includes(earlyTrip), "either-rider assigned to pm_early");
+  assert.ok(!assignedTripIds.includes(lateTrip), "either-rider NOT assigned to pm_late");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+  deleteTestUser(rider.userId);
+});
+
+test("B5: schedule generation with either riders — pm_early full, falls to pm_late", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(68, "B5Coord", "member", true);
+  const driverA = setupHousehold(69, "B5DriverA", "member", false);
+  const driverB = setupHousehold(70, "B5DriverB", "member", false);
+  const specificFamily = setupHousehold(71, "B5Specific", "member", false);
+  const eitherFamily = setupHousehold(72, "B5Either", "member", false);
+  const vehicleA = UID(369);
+  const vehicleB = UID(370);
+  const checkinA = UID(569);
+  const checkinB = UID(570);
+  const checkinS = UID(571);
+  const checkinE = UID(572);
+  const childA = UID(269);
+  const childB = UID(270);
+  const childS = UID(271);
+  const childE = UID(272);
+
+  const { weekId, tripIds } = setupWeekAnd3Trips();
+  // Monday: pm_early is full (driverA has 1 seat, taken by driverA's own child
+  // childA). A specific rider childS + either rider childE both want pm_early.
+  // childE can't get a seat on pm_early, so it falls to pm_late where driverB
+  // (childB needs a ride on pm_late) has capacity.
+  const earlyTrip = tripIds.pm_early[0];
+  const lateTrip = tripIds.pm_late[0];
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleA}', '${GROUP_ID}', '${driverA.householdId}', 'B5CarA', 1, true, '${driverA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleB}', '${GROUP_ID}', '${driverB.householdId}', 'B5CarB', 2, true, '${driverB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childA}', '${GROUP_ID}', '${driverA.householdId}', 'B5DrvA', 'Test', '${driverA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childB}', '${GROUP_ID}', '${driverB.householdId}', 'B5DrvB', 'Test', '${driverB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childS}', '${GROUP_ID}', '${specificFamily.householdId}', 'B5Spec', 'Test', '${specificFamily.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childE}', '${GROUP_ID}', '${eitherFamily.householdId}', 'B5Either', 'Test', '${eitherFamily.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinA}', '${GROUP_ID}', '${weekId}', '${driverA.householdId}', 'submitted', 1) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinB}', '${GROUP_ID}', '${weekId}', '${driverB.householdId}', 'submitted', 1) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinS}', '${GROUP_ID}', '${weekId}', '${specificFamily.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${checkinE}', '${GROUP_ID}', '${weekId}', '${eitherFamily.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by, preference) VALUES ('${GROUP_ID}', '${checkinA}', '${earlyTrip}', '${childA}', true, '${driverA.userId}', 'specific') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by, preference) VALUES ('${GROUP_ID}', '${checkinS}', '${earlyTrip}', '${childS}', true, '${specificFamily.userId}', 'specific') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by, preference) VALUES ('${GROUP_ID}', '${checkinE}', '${earlyTrip}', '${childE}', true, '${eitherFamily.userId}', 'either') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by, preference) VALUES ('${GROUP_ID}', '${checkinE}', '${lateTrip}', '${childE}', true, '${eitherFamily.userId}', 'either') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by, preference) VALUES ('${GROUP_ID}', '${checkinB}', '${lateTrip}', '${childB}', true, '${driverB.userId}', 'specific') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${checkinA}', '${earlyTrip}', '${driverA.userId}', '${vehicleA}', 'prefer') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${checkinB}', '${lateTrip}', '${driverB.userId}', '${vehicleB}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  const coordToken = signInUser("b5coord@test.kidpool");
+  const coordJwt = coordToken.access_token;
+  const genResult = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(genResult.success, "Schedule generation should succeed");
+
+  const versions = restGet("schedule_versions", { week_id: weekId });
+  const latest = versions.sort((a, b) => b.version_number - a.version_number)[0];
+  const eitherRiderAssignments = restGet("rider_assignments", { schedule_version_id: latest.id, child_id: childE });
+  const assignedTripIds = eitherRiderAssignments.map((ra) => ra.trip_id);
+
+  assert.ok(assignedTripIds.includes(lateTrip), "either-rider assigned to pm_late (pm_early was full)");
+  assert.ok(!assignedTripIds.includes(earlyTrip), "either-rider NOT assigned to pm_early (no seat)");
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driverA.userId);
+  deleteTestUser(driverB.userId);
+  deleteTestUser(specificFamily.userId);
+  deleteTestUser(eitherFamily.userId);
+});

@@ -21,8 +21,11 @@ async function loadGreedyModule() {
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-function makeTrip(id, date, dir) {
-  return { id, service_date: date, direction: dir };
+function makeTrip(id, date, dir, slot) {
+  if (slot === undefined) {
+    slot = dir === "morning" ? "am" : "pm_late";
+  }
+  return { id, service_date: date, direction: dir, slot };
 }
 
 function makeChild(id, hId, first, last) {
@@ -37,8 +40,8 @@ function makeProfile(id, hId, name) {
   return { id, full_name: name, household_id: hId };
 }
 
-function makeRideRequest(tripId, childId, needs = true) {
-  return { trip_id: tripId, child_id: childId, needs_ride: needs };
+function makeRideRequest(tripId, childId, needs = true, preference = "specific") {
+  return { trip_id: tripId, child_id: childId, needs_ride: needs, preference };
 }
 
 function makeAvail(tripId, driverId, vehicleId, pref = "can") {

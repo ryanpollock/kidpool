@@ -48,16 +48,16 @@ const FAMILIES = [
   { name: "Lee",     first: "James", email: "lee@seed.kidpool",      kids: [["Maya","Lee"]],                    vehicle: "Black Tesla",   seats: 5, maxDrives: 0 },
 ];
 
-// Driver availability per family (day index 1-5 = Mon-Fri, direction morning/afternoon)
+// Driver availability per family (day index 1-5 = Mon-Fri, slot am/pm_early/pm_late)
 const DRIVER_AVAIL = {
-  Chen:     [{d:1,dir:"morning",pref:"prefer"},{d:2,dir:"morning",pref:"can"},{d:3,dir:"morning",pref:"prefer"},{d:4,dir:"morning",pref:"can"},{d:5,dir:"morning",pref:"prefer"}],
-  Garcia:   [{d:2,dir:"afternoon",pref:"prefer"},{d:4,dir:"afternoon",pref:"prefer"},{d:1,dir:"afternoon",pref:"can"},{d:3,dir:"afternoon",pref:"can"},{d:5,dir:"afternoon",pref:"can"}],
-  Johnson:  [{d:1,dir:"morning",pref:"prefer"},{d:2,dir:"morning",pref:"prefer"},{d:3,dir:"morning",pref:"prefer"},{d:4,dir:"morning",pref:"prefer"},{d:5,dir:"morning",pref:"prefer"}],
+  Chen:     [{d:1,slot:"am",pref:"prefer"},{d:2,slot:"am",pref:"can"},{d:3,slot:"am",pref:"prefer"},{d:4,slot:"am",pref:"can"},{d:5,slot:"am",pref:"prefer"}],
+  Garcia:   [{d:2,slot:"pm_late",pref:"prefer"},{d:4,slot:"pm_late",pref:"prefer"},{d:1,slot:"pm_late",pref:"can"},{d:3,slot:"pm_late",pref:"can"},{d:5,slot:"pm_late",pref:"can"}],
+  Johnson:  [{d:1,slot:"am",pref:"prefer"},{d:2,slot:"am",pref:"prefer"},{d:3,slot:"am",pref:"prefer"},{d:4,slot:"am",pref:"prefer"},{d:5,slot:"am",pref:"prefer"}],
   Patel:    [],
-  Williams: [{d:3,dir:"morning",pref:"prefer"},{d:4,dir:"morning",pref:"prefer"},{d:1,dir:"afternoon",pref:"can"},{d:5,dir:"afternoon",pref:"can"}],
-  OBrien:   [{d:2,dir:"afternoon",pref:"prefer"},{d:5,dir:"afternoon",pref:"prefer"},{d:1,dir:"afternoon",pref:"can"},{d:3,dir:"afternoon",pref:"can"}],
-  Anderson: [{d:1,dir:"morning",pref:"can"},{d:3,dir:"morning",pref:"can"}],
-  Thompson: [{d:4,dir:"afternoon",pref:"prefer"}],
+  Williams: [{d:3,slot:"am",pref:"prefer"},{d:4,slot:"am",pref:"prefer"},{d:1,slot:"pm_late",pref:"can"},{d:5,slot:"pm_late",pref:"can"}],
+  OBrien:   [{d:2,slot:"pm_late",pref:"prefer"},{d:5,slot:"pm_late",pref:"prefer"},{d:1,slot:"pm_late",pref:"can"},{d:3,slot:"pm_late",pref:"can"}],
+  Anderson: [{d:1,slot:"am",pref:"can"},{d:3,slot:"am",pref:"can"}],
+  Thompson: [{d:4,slot:"pm_late",pref:"prefer"}],
   Martinez: [],
   Lee:      [],
 };
@@ -125,13 +125,14 @@ async function main() {
   if (!weekId) { console.error("  No upcoming week found."); process.exit(1); }
   console.log(`  Week: ${weekStartsOn} (${weekId})`);
 
-  // 2. Get trip IDs
-  const tripResult = runSql(`SELECT id, service_date, direction FROM public.trips WHERE week_id = '${weekId}' ORDER BY service_date, direction;`);
+  // 2. Get trip IDs — map by (day, slot) for all 3 slots
+  const tripResult = runSql(`SELECT id, service_date, direction, slot FROM public.trips WHERE week_id = '${weekId}' ORDER BY service_date, slot;`);
   const trips = tripResult.rows;
-  const tripByDayDir = new Map();
+  const tripByDaySlot = new Map();
   for (const t of trips) {
     const day = new Date(t.service_date + "T00:00:00").getDay();
-    tripByDayDir.set(`${day}:${t.direction}`, t.id);
+    const slotKey = t.slot ?? (t.direction === "morning" ? "am" : "pm_late");
+    tripByDaySlot.set(`${day}:${slotKey}`, t.id);
   }
 
   // 3. Create auth users + collect IDs
@@ -237,7 +238,7 @@ async function main() {
     const vehicleId = `a4000000-0000-4000-8000-${String(fi+1).padStart(12,"0")}`;
     const checkinId = `a5000000-0000-4000-8000-${String(fi+1).padStart(12,"0")}`;
     for (const a of avails) {
-      const tripId = tripByDayDir.get(`${a.d}:${a.dir}`);
+      const tripId = tripByDaySlot.get(`${a.d}:${a.slot}`);
       if (!tripId) continue;
       driverAvailInserts.push(`INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${checkinId}', '${tripId}', '${f.userId}', '${vehicleId}', '${a.pref}') ON CONFLICT DO NOTHING;`);
     }

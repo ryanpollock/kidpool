@@ -25,7 +25,8 @@ function toOutlookDate(dateStr: string, timeStr: string): string {
 
 function eventSummary(assignment: MyDriverAssignment): string {
   const dir = assignment.trip.direction === "morning" ? "Morning" : "Afternoon";
-  return `Carpool Crew: ${dir} drive to ${assignment.trip.destination}`;
+  const time = assignment.trip.meeting_time;
+  return `Carpool Crew: ${dir} drive (${time}) to ${assignment.trip.destination}`;
 }
 
 function eventDescription(assignment: MyDriverAssignment): string {
@@ -35,16 +36,16 @@ function eventDescription(assignment: MyDriverAssignment): string {
   return `Riders: ${riders}\\nVehicle: ${assignment.vehicle.label}\\nMeet at ${assignment.trip.meeting_time} at ${assignment.trip.origin}`;
 }
 
+function mapsUrlForOrigin(origin: string): string {
+  return `https://maps.google.com/?q=${encodeURIComponent(origin + ", San Francisco")}`;
+}
+
 function eventLocation(assignment: MyDriverAssignment): string {
-  return assignment.trip.direction === "morning"
-    ? "30th Avenue and Clement Street, San Francisco"
-    : "Presidio Middle School, San Francisco";
+  return mapsUrlForOrigin(assignment.trip.origin);
 }
 
 function eventLocationUrl(assignment: MyDriverAssignment): string {
-  return assignment.trip.direction === "morning"
-    ? "https://maps.google.com/?q=30th+Avenue+and+Clement+Street+San+Francisco"
-    : "https://maps.google.com/?q=Presidio+Middle+School+San+Francisco";
+  return mapsUrlForOrigin(assignment.trip.origin);
 }
 
 export function buildIcsEvent(assignment: MyDriverAssignment, timezone: string): string {
