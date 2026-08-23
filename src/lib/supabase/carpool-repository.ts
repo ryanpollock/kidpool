@@ -1978,6 +1978,23 @@ export class CarpoolRepository {
       coveredChildrenByTrip.set(ra.trip_id, existing);
     }
 
+    // Cross-trip "either" dedup: a child with preference='either' who is
+    // covered on pm_early should NOT be flagged as uncovered on pm_late
+    // (and vice versa). The scheduler (balanced-greedy-v2) dedupes riders
+    // across trips but leaves both ride_requests with needs_ride=true —
+    // so the alert logic must mirror the scheduler's dedup.
+    // Build: (service_date, child_id) → Set of covered slot(s)
+    const coveredSlotsByDateChild = new Map<string, Set<string>>();
+    for (const ra of riderAssignments) {
+      if (!handledDriverAssignments.has(ra.driver_assignment_id)) continue;
+      const trip = tripById.get(ra.trip_id);
+      if (!trip || !trip.slot) continue;
+      const key = `${trip.service_date}|${ra.child_id}`;
+      const existing = coveredSlotsByDateChild.get(key) ?? new Set<string>();
+      existing.add(trip.slot);
+      coveredSlotsByDateChild.set(key, existing);
+    }
+
     const alerts: UncoveredChildAlert[] = [];
     for (const rr of rideRequests) {
       if (!rr.needs_ride) continue;
@@ -1989,6 +2006,17 @@ export class CarpoolRepository {
       const trip = tripById.get(rr.trip_id);
       const child = childById.get(rr.child_id);
       if (!trip || !child) continue;
+
+      // Either-rider cross-trip dedup: if this ride request has preference='either'
+      // and the child is already covered by the sibling afternoon trip on the same
+      // date, skip — they're not actually uncovered.
+      if (rr.preference === "either" && trip.slot) {
+        const siblingSlot = trip.slot === "pm_early" ? "pm_late" : trip.slot === "pm_late" ? "pm_early" : null;
+        if (siblingSlot) {
+          const coveredSlots = coveredSlotsByDateChild.get(`${trip.service_date}|${rr.child_id}`);
+          if (coveredSlots && coveredSlots.has(siblingSlot)) continue;
+        }
+      }
 
       const existing = alerts.find((a) => a.trip.id === trip.id);
       if (existing) {
@@ -2104,6 +2132,22 @@ async getLatestScheduleVersion(
       existing.add(ra.child_id);
       coveredChildIdsByTrip.set(ra.trip_id, existing);
     }
+
+    // Cross-trip "either" dedup: same as getUncoveredChildren — a child with
+    // preference='either' covered on pm_early should not be flagged as
+    // uncovered on pm_late.
+    const tripById = new Map(trips.map((t) => [t.id, t]));
+    const coveredSlotsByDateChild = new Map<string, Set<string>>();
+    for (const ra of riderAssignments) {
+      if (!confirmedDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
+      const trip = tripById.get(ra.trip_id);
+      if (!trip || !trip.slot) continue;
+      const key = `${trip.service_date}|${ra.child_id}`;
+      const existing = coveredSlotsByDateChild.get(key) ?? new Set<string>();
+      existing.add(trip.slot);
+      coveredSlotsByDateChild.set(key, existing);
+    }
+
     const uncoveredRidersByTrip = new Map<string, Tables<"children">[]>();
     for (const rr of rideRequestsData ?? []) {
       if (!rr.needs_ride) continue;
@@ -2111,6 +2155,17 @@ async getLatestScheduleVersion(
       if (covered.has(rr.child_id)) continue;
       const child = childById.get(rr.child_id);
       if (!child) continue;
+
+      // Either-rider cross-trip dedup
+      const trip = tripById.get(rr.trip_id);
+      if (rr.preference === "either" && trip?.slot) {
+        const siblingSlot = trip.slot === "pm_early" ? "pm_late" : trip.slot === "pm_late" ? "pm_early" : null;
+        if (siblingSlot) {
+          const coveredSlots = coveredSlotsByDateChild.get(`${trip.service_date}|${rr.child_id}`);
+          if (coveredSlots && coveredSlots.has(siblingSlot)) continue;
+        }
+      }
+
       const existing = uncoveredRidersByTrip.get(rr.trip_id) ?? [];
       existing.push(child);
       uncoveredRidersByTrip.set(rr.trip_id, existing);
