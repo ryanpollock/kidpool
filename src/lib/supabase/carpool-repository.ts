@@ -2136,10 +2136,15 @@ async getLatestScheduleVersion(
     // Cross-trip "either" dedup: same as getUncoveredChildren — a child with
     // preference='either' covered on pm_early should not be flagged as
     // uncovered on pm_late.
+    // NOTE: the cross-trip map uses ALL rider_assignments (tentative + confirmed)
+    // because the scheduler has already made the placement decision — a child
+    // tentatively assigned to pm_early should NOT show as "needs a ride" on
+    // pm_late. The per-trip coverage check above stays confirmed-only (safety).
     const tripById = new Map(trips.map((t) => [t.id, t]));
+    const allAssignmentIds = new Set(driverAssignments.map((da) => da.id));
     const coveredSlotsByDateChild = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
-      if (!confirmedDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
+      if (!allAssignmentIds.has(ra.driver_assignment_id)) continue;
       const trip = tripById.get(ra.trip_id);
       if (!trip || !trip.slot) continue;
       const key = `${trip.service_date}|${ra.child_id}`;
@@ -2374,10 +2379,13 @@ async getLatestScheduleVersion(
     // Cross-trip "either" dedup: same as getUncoveredChildren and
     // getLatestScheduleVersion — a child with preference='either' covered
     // on pm_early should not be flagged as uncovered on pm_late.
+    // Uses ALL rider_assignments (tentative + confirmed) — the scheduler
+    // has already made the placement decision.
     const tripById = new Map(trips.map((t) => [t.id, t]));
+    const allAssignmentIds = new Set(driverAssignments.map((da) => da.id));
     const coveredSlotsByDateChild = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
-      if (!confirmedDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
+      if (!allAssignmentIds.has(ra.driver_assignment_id)) continue;
       const trip = tripById.get(ra.trip_id);
       if (!trip || !trip.slot) continue;
       const key = `${trip.service_date}|${ra.child_id}`;
