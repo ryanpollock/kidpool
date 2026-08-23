@@ -2118,16 +2118,18 @@ async getLatestScheduleVersion(
     }
 
     // Compute uncovered riders per trip: children who need a ride but are not
-    // assigned to any confirmed driver assignment. Tentative assignments do
-    // not count as covering — the PRD's central safety property.
-    const confirmedDriverAssignmentIds = new Set(
+    // assigned to any driver (tentative or confirmed). On draft schedules (Sunday
+    // morning), all assignments are tentative — counting only confirmed would
+    // flag every child as "needs a ride" even though they have a tentative driver.
+    // The "No drivers" indicator on the WeekScreen is separate (activeRosters.length).
+    const coveringAssignmentIds = new Set(
       driverAssignments
-        .filter((da) => da.status === "confirmed")
+        .filter((da) => da.status === "confirmed" || da.status === "tentative")
         .map((da) => da.id),
     );
     const coveredChildIdsByTrip = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
-      if (!confirmedDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
+      if (!coveringAssignmentIds.has(ra.driver_assignment_id)) continue;
       const existing = coveredChildIdsByTrip.get(ra.trip_id) ?? new Set<string>();
       existing.add(ra.child_id);
       coveredChildIdsByTrip.set(ra.trip_id, existing);
@@ -2363,14 +2365,14 @@ async getLatestScheduleVersion(
       rostersByTrip.set(assignment.trip_id, existing);
     }
 
-    const confirmedDriverAssignmentIds = new Set(
+    const coveringAssignmentIds = new Set(
       driverAssignments
-        .filter((da) => da.status === "confirmed")
+        .filter((da) => da.status === "confirmed" || da.status === "tentative")
         .map((da) => da.id),
     );
     const coveredChildIdsByTrip = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
-      if (!confirmedDriverAssignmentIds.has(ra.driver_assignment_id)) continue;
+      if (!coveringAssignmentIds.has(ra.driver_assignment_id)) continue;
       const existing = coveredChildIdsByTrip.get(ra.trip_id) ?? new Set<string>();
       existing.add(ra.child_id);
       coveredChildIdsByTrip.set(ra.trip_id, existing);
