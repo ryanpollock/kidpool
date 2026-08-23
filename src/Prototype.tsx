@@ -6636,37 +6636,34 @@ const navItems = useMemo(() => {
     }
 
     if (reassignDriveId && identity) {
-      const searchSchedule = publishedSchedule ?? homeSchedule;
-      if (searchSchedule) {
-        const found = findDriveDetail(searchSchedule, reassignDriveId);
-        if (found) {
-          return (
-            <ReassignmentPickerScreen
-              assignmentId={reassignDriveId}
-              entry={found.entry}
-              trip={found.trip}
-              serviceDate={found.serviceDate}
-              roster={reassignRoster}
-              currentProfileId={identity.profile.id}
-              currentHouseholdId={identity.membership?.household_id ?? null}
-              onBack={() => { setReassignDriveId(null); setReassignError(null); }}
-              onRequest={(aid, tpid) => void handleRequestReassignment(aid, tpid)}
-              onCancelReassignment={(rid) => void handleCancelReassignment(rid)}
-              pendingOutgoingRequest={pendingOutgoingReassignment}
-              profileById={profileByIdMap}
-              working={reassignWorking}
-              error={reassignError}
-            />
-          );
-        }
+      const found = (homeSchedule ? findDriveDetail(homeSchedule, reassignDriveId) : null)
+        ?? (publishedSchedule ? findDriveDetail(publishedSchedule, reassignDriveId) : null);
+      if (found) {
+        return (
+          <ReassignmentPickerScreen
+            assignmentId={reassignDriveId}
+            entry={found.entry}
+            trip={found.trip}
+            serviceDate={found.serviceDate}
+            roster={reassignRoster}
+            currentProfileId={identity.profile.id}
+            currentHouseholdId={identity.membership?.household_id ?? null}
+            onBack={() => { setReassignDriveId(null); setReassignError(null); }}
+            onRequest={(aid, tpid) => void handleRequestReassignment(aid, tpid)}
+            onCancelReassignment={(rid) => void handleCancelReassignment(rid)}
+            pendingOutgoingRequest={pendingOutgoingReassignment}
+            profileById={profileByIdMap}
+            working={reassignWorking}
+            error={reassignError}
+          />
+        );
       }
     }
 
     if (driveDetailId && identity) {
-      const searchSchedule = publishedSchedule ?? homeSchedule;
-      if (searchSchedule) {
-        const found = findDriveDetail(searchSchedule, driveDetailId);
-        if (found) {
+      const found = (homeSchedule ? findDriveDetail(homeSchedule, driveDetailId) : null)
+        ?? (publishedSchedule ? findDriveDetail(publishedSchedule, driveDetailId) : null);
+      if (found) {
           const isCoordinator = identity.membership?.role === "coordinator";
           const householdId = identity.membership?.household_id ?? null;
           return (
@@ -6704,7 +6701,6 @@ const navItems = useMemo(() => {
             />
           );
         }
-      }
     }
 
     if (faqOpen && identity) {
