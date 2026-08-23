@@ -271,7 +271,7 @@ Deno.serve(async (req: Request) => {
     // Volunteering for uncovered trips bypasses max_drives, so Ryan can still
     // manually volunteer beyond this if he wants to.
     const FOUNDER_EMAIL = "ryan.pollock@gmail.com";
-    const FOUNDER_MAX_DRIVES = 2;
+    const FOUNDER_MAX_DRIVES = 1;
     for (const p of (profilesRes.data ?? []) as Array<{ id: string; email: string | null }>) {
       if (p.email === FOUNDER_EMAIL) {
         const current = maxDrivesByDriver.get(p.id) ?? 10;
