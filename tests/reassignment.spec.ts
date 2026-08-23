@@ -255,16 +255,11 @@ test.describe.serial("Reassignment", () => {
     await signInWithTestAuth(page, driverEmail);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    // Navigate to This Week tab (same pattern as app-e2e tests)
-    await page.getByTestId("nav-week").click();
-    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 10000 });
+    // The drive renders as a DriveCard on the home screen with a "Drive details" button
+    const driveDetails = page.getByText("Drive details").first();
+    await expect(driveDetails).toBeVisible({ timeout: 15000 });
+    await driveDetails.click();
 
-    // Find a drive card and click it
-    const driveCard = page.locator('[data-testid^="drive-card-"]').first();
-    await expect(driveCard).toBeVisible({ timeout: 15000 });
-    await driveCard.click();
-
-    // DriveDetailScreen should show the reassign button
     await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId("reassign-drive-button")).toBeVisible({ timeout: 5000 });
   });
@@ -277,20 +272,14 @@ test.describe.serial("Reassignment", () => {
     await signInWithTestAuth(page, driverEmail);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    // Navigate to This Week tab
-    await page.getByTestId("nav-week").click();
-    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 10000 });
-
-    const driveCard = page.locator('[data-testid^="drive-card-"]').first();
-    await expect(driveCard).toBeVisible({ timeout: 15000 });
-    await driveCard.click();
+    const driveDetails = page.getByText("Drive details").first();
+    await expect(driveDetails).toBeVisible({ timeout: 15000 });
+    await driveDetails.click();
     await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 10000 });
 
-    // Tap reassign
     await page.getByTestId("reassign-drive-button").click();
     await expect(page.getByTestId("reassignment-picker")).toBeVisible({ timeout: 5000 });
 
-    // Should show the target parent
     const targetButton = page.getByTestId(/request-reassign-/).first();
     await expect(targetButton).toBeVisible({ timeout: 5000 });
   });
@@ -304,18 +293,14 @@ test.describe.serial("Reassignment", () => {
     await signInWithTestAuth(page, driverEmail);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    await page.getByTestId("nav-week").click();
-    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 10000 });
-
-    const driveCard = page.locator('[data-testid^="drive-card-"]').first();
-    await expect(driveCard).toBeVisible({ timeout: 15000 });
-    await driveCard.click();
+    const driveDetails = page.getByText("Drive details").first();
+    await expect(driveDetails).toBeVisible({ timeout: 15000 });
+    await driveDetails.click();
     await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 10000 });
 
     await page.getByTestId("reassign-drive-button").click();
     await expect(page.getByTestId("reassignment-picker")).toBeVisible({ timeout: 5000 });
 
-    // Click "Request" on the first eligible parent
     const requestButton = page.getByTestId(/request-reassign-/).first();
     await expect(requestButton).toBeVisible({ timeout: 5000 });
     await requestButton.click();
@@ -362,33 +347,35 @@ test.describe.serial("Reassignment", () => {
 
   test("R4: Decline flow — request, target declines, original keeps drive", async ({ page }) => {
     test.skip(skip || !setupReady, "Requires service key and successful setup");
-    // This test depends on R3 having run first (serial), so we need
-    // a fresh assignment. Since R3 transferred the drive, the original
-    // driver no longer has a confirmed assignment. We'll re-publish
-    // the schedule to get a fresh one.
 
-    // Re-generate and publish to get a fresh confirmed assignment for the driver
-    generateSchedule(coordEmail, weekId);
-    publishScheduleViaSql(weekId);
-
-    const freshAssignment = getAssignmentByDriver(weekId, driverUserId);
-    if (!freshAssignment || freshAssignment.status !== "confirmed") {
-      // If the driver didn't get reassigned in the fresh schedule, skip
-      test.skip(true, "Could not get fresh confirmed assignment for decline test");
-      return;
-    }
-    const freshAssignmentId = freshAssignment.id;
+    // After R3, the original assignment is 'released'. Reset it to 'confirmed'
+    // and clean up R3's side effects so we can test the decline flow.
+    runSql(`
+      DELETE FROM public.reassignment_requests WHERE assignment_id = '${driverAssignmentId}';
+      DELETE FROM public.rider_assignments WHERE driver_assignment_id IN (
+        SELECT id FROM public.driver_assignments WHERE driver_profile_id = '${targetUserId}' AND schedule_version_id IN (
+          SELECT id FROM public.schedule_versions WHERE week_id = '${weekId}'
+        )
+      );
+      DELETE FROM public.driver_assignments WHERE driver_profile_id = '${targetUserId}' AND schedule_version_id IN (
+        SELECT id FROM public.schedule_versions WHERE week_id = '${weekId}'
+      );
+      UPDATE public.driver_assignments SET status = 'confirmed' WHERE id = '${driverAssignmentId}';
+      INSERT INTO public.rider_assignments (id, group_id, schedule_version_id, trip_id, driver_assignment_id, child_id)
+      VALUES ('${UID(372)}', '${GROUP_ID}', (SELECT schedule_version_id FROM driver_assignments WHERE id = '${driverAssignmentId}'), (SELECT trip_id FROM driver_assignments WHERE id = '${driverAssignmentId}'), '${driverAssignmentId}', '${driverChildId}')
+      ON CONFLICT DO NOTHING;
+      INSERT INTO public.rider_assignments (id, group_id, schedule_version_id, trip_id, driver_assignment_id, child_id)
+      VALUES ('${UID(373)}', '${GROUP_ID}', (SELECT schedule_version_id FROM driver_assignments WHERE id = '${driverAssignmentId}'), (SELECT trip_id FROM driver_assignments WHERE id = '${driverAssignmentId}'), '${driverAssignmentId}', '${targetChildId}')
+      ON CONFLICT DO NOTHING;
+    `);
 
     // Step 1: Driver requests reassignment
     await signInWithTestAuth(page, driverEmail);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    await page.getByTestId("nav-week").click();
-    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 10000 });
-
-    const driveCard = page.locator('[data-testid^="drive-card-"]').first();
-    await expect(driveCard).toBeVisible({ timeout: 15000 });
-    await driveCard.click();
+    const driveDetails = page.getByText("Drive details").first();
+    await expect(driveDetails).toBeVisible({ timeout: 15000 });
+    await driveDetails.click();
     await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 10000 });
 
     await page.getByTestId("reassign-drive-button").click();
@@ -401,7 +388,7 @@ test.describe.serial("Reassignment", () => {
     await page.waitForTimeout(3000);
 
     // Verify request is pending
-    const req = getReassignmentRequest(freshAssignmentId);
+    const req = getReassignmentRequest(driverAssignmentId);
     assert.ok(req, "Reassignment request should exist");
     assert.equal(req.status, "pending", "Request should be pending");
 
@@ -424,7 +411,7 @@ test.describe.serial("Reassignment", () => {
     assert.equal(origAfter.status, "confirmed", "Original assignment should still be 'confirmed' after decline");
 
     // Verify request status is 'declined'
-    const reqAfter = getReassignmentRequest(freshAssignmentId);
+    const reqAfter = getReassignmentRequest(driverAssignmentId);
     assert.ok(reqAfter, "Reassignment request should still exist");
     assert.equal(reqAfter.status, "declined", "Request should be 'declined'");
   });
@@ -434,27 +421,17 @@ test.describe.serial("Reassignment", () => {
   test("R5: Cancel flow — driver cancels pending request", async ({ page }) => {
     test.skip(skip || !setupReady, "Requires service key and successful setup");
 
-    // Re-generate for a fresh assignment
-    generateSchedule(coordEmail, weekId);
-    publishScheduleViaSql(weekId);
-
-    const freshAssignment = getAssignmentByDriver(weekId, driverUserId);
-    if (!freshAssignment || freshAssignment.status !== "confirmed") {
-      test.skip(true, "Could not get fresh confirmed assignment for cancel test");
-      return;
-    }
-    const freshAssignmentId = freshAssignment.id;
+    // After R4, the original assignment is still 'confirmed'. Clean up R4's
+    // declined request so we can test the cancel flow.
+    runSql(`DELETE FROM public.reassignment_requests WHERE assignment_id = '${driverAssignmentId}';`);
 
     // Driver requests reassignment
     await signInWithTestAuth(page, driverEmail);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    await page.getByTestId("nav-week").click();
-    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 10000 });
-
-    const driveCard = page.locator('[data-testid^="drive-card-"]').first();
-    await expect(driveCard).toBeVisible({ timeout: 15000 });
-    await driveCard.click();
+    const driveDetails = page.getByText("Drive details").first();
+    await expect(driveDetails).toBeVisible({ timeout: 15000 });
+    await driveDetails.click();
     await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 10000 });
 
     await page.getByTestId("reassign-drive-button").click();
@@ -465,7 +442,7 @@ test.describe.serial("Reassignment", () => {
     await page.waitForTimeout(3000);
 
     // Verify pending
-    const req = getReassignmentRequest(freshAssignmentId);
+    const req = getReassignmentRequest(driverAssignmentId);
     assert.ok(req, "Reassignment request should exist");
     assert.equal(req.status, "pending", "Request should be pending");
 
@@ -474,23 +451,20 @@ test.describe.serial("Reassignment", () => {
     await signInWithTestAuth(page, driverEmail);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
 
-    await page.getByTestId("nav-week").click();
-    await expect(page.getByTestId("week-screen")).toBeVisible({ timeout: 10000 });
-
-    const driveCard2 = page.locator('[data-testid^="drive-card-"]').first();
-    await expect(driveCard2).toBeVisible({ timeout: 15000 });
-    await driveCard2.click();
+    const driveDetails2 = page.getByText("Drive details").first();
+    await expect(driveDetails2).toBeVisible({ timeout: 15000 });
+    await driveDetails2.click();
     await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 10000 });
 
     // Should show pending state
-    await expect(page.getByTestId("reassignment-pending")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("reassignment-pending")).toBeVisible({ timeout: 15000 });
 
     // Click cancel
     await page.getByTestId("cancel-reassignment").click();
     await page.waitForTimeout(2000);
 
     // Verify request is cancelled
-    const reqAfter = getReassignmentRequest(freshAssignmentId);
+    const reqAfter = getReassignmentRequest(driverAssignmentId);
     assert.ok(reqAfter, "Reassignment request should still exist");
     assert.equal(reqAfter.status, "cancelled", "Request should be 'cancelled'");
 

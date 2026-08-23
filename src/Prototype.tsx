@@ -6883,7 +6883,7 @@ onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); s
         onDismissIOSInstall={() => { setIOSInstallDismissed(true); localStorage.setItem("ios_install_dismissed", "true"); }}
         timezone={identity.group.timezone}
         todayDate={todayDate}
-        onOpenDrive={(id) => { void loadDriveStatuses(); setDriveDetailId(id); }}
+        onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); setDriveDetailId(id); }}
         showAvatarNudge={shouldShowAvatarNudge}
         householdId={householdId ?? null}
         householdChildren={householdId ? groupChildren.filter(c => c.household_id === householdId) : []}
