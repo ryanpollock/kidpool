@@ -466,6 +466,52 @@ Deno.serve(async (req: Request) => {
         };
       });
 
+      // ── Either-rider cross-trip dedup ──────────────────────────
+      // Surgical mode processes each trip independently, so an "either" child
+      // who's already assigned to pm_early can also be placed on pm_late.
+      // The full greedy scheduler has this dedup (balanced-greedy-v2.ts:296-308)
+      // but surgical mode doesn't. Mirror it here: build a cross-trip coverage
+      // map, then remove "either" children from the sibling afternoon trip.
+      const tripByIdSurgical = new Map(trips.map((t) => [t.id, t]));
+      const ridePrefByTripChildSurgical = new Map<string, "specific" | "either">();
+      for (const rr of rideRequests) {
+        ridePrefByTripChildSurgical.set(`${rr.trip_id}|${rr.child_id}`, rr.preference);
+      }
+      // Build: (service_date, child_id) → Set of covered slot(s)
+      const coveredSlotsByDateChildSurgical = new Map<string, Set<string>>();
+      for (const tr of tripResults) {
+        const trip = tripByIdSurgical.get(tr.trip_id);
+        if (!trip || !trip.slot) continue;
+        for (const assignment of tr.assignments) {
+          for (const childId of assignment.assigned_child_ids) {
+            const key = `${trip.service_date}|${childId}`;
+            const existing = coveredSlotsByDateChildSurgical.get(key) ?? new Set<string>();
+            existing.add(trip.slot);
+            coveredSlotsByDateChildSurgical.set(key, existing);
+          }
+        }
+      }
+      // Remove "either" children from the sibling afternoon trip
+      for (const tr of tripResults) {
+        const trip = tripByIdSurgical.get(tr.trip_id);
+        if (!trip || !trip.slot) continue;
+        const siblingSlot = trip.slot === "pm_early" ? "pm_late" : trip.slot === "pm_late" ? "pm_early" : null;
+        if (!siblingSlot) continue;
+        for (const assignment of tr.assignments) {
+          assignment.assigned_child_ids = assignment.assigned_child_ids.filter((childId) => {
+            const pref = ridePrefByTripChildSurgical.get(`${trip.id}|${childId}`);
+            if (pref !== "either") return true;
+            const coveredSlots = coveredSlotsByDateChildSurgical.get(`${trip.service_date}|${childId}`);
+            if (coveredSlots && coveredSlots.has(siblingSlot)) return false;
+            return true;
+          });
+        }
+        // Recompute uncovered count after dedup
+        const assignedCount = tr.assignments.reduce((sum, a) => sum + a.assigned_child_ids.length, 0);
+        tr.assigned_rider_count = assignedCount;
+        tr.uncovered = tr.rider_count > assignedCount;
+      }
+
       outputs = {
         trips: tripResults,
         algorithm_version: `${ALGORITHM_VERSION}-surgical`,
