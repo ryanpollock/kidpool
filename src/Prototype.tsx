@@ -5219,6 +5219,7 @@ function DriveDetailScreen({
 
   const [confirmRemoveChildId, setConfirmRemoveChildId] = useState<string | null>(null);
   const [removeWorking, setRemoveWorking] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   return (
     <div className="screen-content drive-detail-screen" data-testid="drive-detail-screen">
@@ -5276,6 +5277,7 @@ function DriveDetailScreen({
 
       <section className="drive-detail-children">
         <h2>Children on this drive ({children.length})</h2>
+        {removeError ? <div className="auth-error" role="alert">{removeError}</div> : null}
         {children.length === 0 ? (
           <p className="helper-copy">No children assigned to this drive.</p>
         ) : (
@@ -5313,11 +5315,12 @@ function DriveDetailScreen({
                           disabled={removeWorking}
                           onClick={async () => {
                             setRemoveWorking(true);
+                            setRemoveError(null);
                             try {
                               await onRemoveChild(child.id, entry.driverAssignment.id, `${child.first_name} ${child.last_name}`);
                               setConfirmRemoveChildId(null);
                             } catch (e) {
-                              console.error("[carpool] remove child from drive failed:", e);
+                              setRemoveError(e instanceof Error ? e.message : "Failed to remove child from drive");
                             } finally {
                               setRemoveWorking(false);
                             }
