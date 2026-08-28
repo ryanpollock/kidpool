@@ -104,6 +104,7 @@ function readableError(error: unknown) {
   if (/network|fetch/i.test(message)) return "We couldn't reach the carpool service. Check your connection and try again.";
   if (/can no longer be responded to/i.test(message)) return "Another parent has already taken over this drive.";
   if (/not declined/i.test(message)) return "This drive has already been re-accepted or taken over — your child is covered.";
+  if (/jwt.*future|issued at.*future/i.test(message)) return "Your session needs to refresh. Tap \"Refresh\" below.";
   return message;
 }
 
@@ -5661,6 +5662,27 @@ export default function Prototype() {
       const membership = await repository.getCurrentMembership(group.id);
       setIdentity({ profile, group, membership });
     } catch (error) {
+      // Auto-retry on "JWT issued at future" — this is a clock skew issue
+      // that resolves when the session refreshes. Sign out locally and
+      // let onAuthStateChange pick up the fresh session.
+      const msg = error instanceof Error ? error.message : "";
+      if (/jwt.*future|issued at.*future/i.test(msg)) {
+        try {
+          await supabase.auth.refreshSession();
+          const [profile, groups] = await Promise.all([
+            repository.getCurrentProfile(),
+            repository.listAvailableGroups(),
+          ]);
+          const group = groups[0];
+          if (profile && group) {
+            const membership = await repository.getCurrentMembership(group.id);
+            setIdentity({ profile, group, membership });
+            return;
+          }
+        } catch {
+          // Refresh failed — fall through to show the error
+        }
+      }
       setIdentity(null);
       setAuthError(readableError(error));
     } finally {
@@ -6927,16 +6949,20 @@ onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); s
     );
   }
 
-  if (authError && !identity) {
+if (authError && !identity) {
     return (
       <div className="prototype-shell">
         <MobileScroll className="app-screen">
           <main className="app-main" aria-label="Carpool Crew connection error">
             <div className="auth-screen auth-recovery-screen">
               <span className="auth-mark"><ExclamationTriangleIcon width="24" height="24" /></span>
-              <h1>We couldn’t finish signing you in.</h1>
+              <h1>We couldn't finish signing you in.</h1>
               <div className="auth-error" role="alert">{authError}</div>
-              <button className="primary-button" onClick={() => void loadIdentity()}>Try again</button>
+              <button className="primary-button" onClick={async () => {
+                try { await supabase.auth.refreshSession(); } catch { /* ignore */ }
+                void loadIdentity();
+              }}>Refresh session</button>
+              <button className="text-button" onClick={() => void loadIdentity()}>Try again</button>
               <button className="text-button" onClick={() => void signOut()}>Sign out</button>
             </div>
           </main>
