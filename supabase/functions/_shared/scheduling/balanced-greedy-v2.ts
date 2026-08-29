@@ -40,7 +40,7 @@ import type {
 export const ALGORITHM_VERSION = "balanced-greedy-v2";
 
 function tripSortKey(trip: SchedulingTrip): string {
-  const slotOrder = trip.slot === "am" ? "0" : trip.slot === "pm_early" ? "1" : "2";
+  const slotOrder = trip.slot === "am" ? "0" : trip.slot === "pm_late" ? "1" : "2";
   return `${trip.service_date}|${slotOrder}`;
 }
 
@@ -80,8 +80,8 @@ export function generateSchedule(inputs: SchedulingInputs): SchedulingOutputs {
 const assignmentsThisWeek = new Map<string, number>();
 
   // Track "either" riders assigned to an earlier afternoon trip, by date.
-  // When processing pm_late, these riders are removed from the rider list
-  // since they already have a seat on pm_early.
+  // pm_late processes before pm_early. When processing pm_early, these riders
+  // are removed from the rider list since they already have a seat on pm_late.
   const eitherRidersAssignedByDate = new Map<string, Set<string>>();
 
   // Build a lookup: (trip_id, child_id) → preference, for quick access.
@@ -102,9 +102,9 @@ const assignmentsThisWeek = new Map<string, number>();
       // for the known data-hygiene gap — stale rows stay in the DB.
       .sort((a, b) => childSortKey(a).localeCompare(childSortKey(b)));
 
-    // Either/or logic: when processing pm_late, remove "either" riders
-    // who were already assigned a seat on pm_earlier (pm_early) for the same date.
-    if (trip.slot === "pm_late") {
+    // Either/or logic: when processing pm_early, remove "either" riders
+    // who were already assigned a seat on pm_late (the earlier-processed trip) for the same date.
+    if (trip.slot === "pm_early") {
       const assignedEither = eitherRidersAssignedByDate.get(trip.service_date);
       if (assignedEither && assignedEither.size > 0) {
         riders = riders.filter((r) => !assignedEither.has(r.id));
@@ -293,9 +293,9 @@ const assignmentsThisWeek = new Map<string, number>();
       uncovered: remainingRiders.size > 0,
     });
 
-    // After processing pm_early, record which "either" riders got a seat.
-    // These riders will be skipped on pm_late for the same date.
-    if (trip.slot === "pm_early") {
+    // After processing pm_late, record which "either" riders got a seat.
+    // These riders will be skipped on pm_early for the same date.
+    if (trip.slot === "pm_late") {
       const assignedEither = new Set<string>();
       for (const child of riders) {
         if (remainingRiders.has(child.id)) continue; // not assigned

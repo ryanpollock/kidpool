@@ -52,15 +52,13 @@ function findTripResult(outputs, tripId) {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test("A1: sort order — am processes before pm_early, pm_early before pm_late", async () => {
+test("A1: sort order — am processes before pm_late, pm_late before pm_early", async () => {
   const { generateSchedule } = await loadGreedyModule();
   const date = "2026-08-03";
-  // Put a driver on pm_late only. If pm_late processed before pm_early,
-  // the "either" rider would be assigned to pm_late (it's the only trip
-  // with a driver). But since pm_early processes first, the "either"
-  // rider has no driver on pm_early and remains uncovered there.
-  // Then on pm_late they get assigned. So pm_late should have 1 assigned
-  // and pm_early should have 1 uncovered.
+  // Put a driver on pm_early only. Since pm_late processes first, the "either"
+  // rider has no driver on pm_late and remains uncovered there. Then on pm_early
+  // they get assigned. So pm_early should have 1 assigned and pm_late should have
+  // 1 uncovered.
   const outputs = generateSchedule({
     trips: [
       makeTrip("t_am", date, "am"),
@@ -77,7 +75,7 @@ test("A1: sort order — am processes before pm_early, pm_early before pm_late",
     ],
     availability: [
       makeAvail("t_am", "p1", "v1", "prefer"),
-      makeAvail("t_late", "p1", "v1", "can"),
+      makeAvail("t_early", "p1", "v1", "can"),
     ],
     maxDrivesByDriver: makeMaxDrives({ p1: 5 }),
     existingAssignments: [],
@@ -90,48 +88,14 @@ test("A1: sort order — am processes before pm_early, pm_early before pm_late",
   const lateResult = findTripResult(outputs, "t_late");
 
   assert.equal(amResult?.assigned_rider_count, 1, "Alice assigned to morning");
-  assert.equal(earlyResult?.uncovered_rider_count, 1, "pm_early uncovered — no driver");
-  assert.equal(lateResult?.assigned_rider_count, 1, "Alice assigned to pm_late (fallback)");
-  assert.equal(lateResult?.rider_count, 1, "pm_late rider count = 1 (either rider not filtered since pm_early had no assignment)");
+  assert.equal(lateResult?.uncovered_rider_count, 1, "pm_late uncovered — no driver");
+  assert.equal(earlyResult?.assigned_rider_count, 1, "Alice assigned to pm_early (fallback)");
+  assert.equal(earlyResult?.rider_count, 1, "pm_early rider count = 1 (either rider not filtered since pm_late had no assignment)");
 });
 
-test("A2: either rider assigned to pm_early, skipped on pm_late", async () => {
+test("A2: either rider assigned to pm_late, skipped on pm_early", async () => {
   const { generateSchedule } = await loadGreedyModule();
   const date = "2026-08-03";
-  const outputs = generateSchedule({
-    trips: [
-      makeTrip("t_early", date, "pm_early"),
-      makeTrip("t_late", date, "pm_late"),
-    ],
-    children: [makeChild("c1", "h1", "Alice")],
-    vehicles: [makeVehicle("v1", "h1", 3)],
-    profiles: [makeProfile("p1", "h1")],
-    rideRequests: [
-      makeRideRequest("t_early", "c1", "either"),
-      makeRideRequest("t_late", "c1", "either"),
-    ],
-    availability: [
-      makeAvail("t_early", "p1", "v1", "prefer"),
-    ],
-    maxDrivesByDriver: makeMaxDrives({ p1: 5 }),
-    existingAssignments: [],
-    declinedTripsByDriver: new Map(),
-    expiredTripsByDriver: new Map(),
-  });
-
-  const earlyResult = findTripResult(outputs, "t_early");
-  const lateResult = findTripResult(outputs, "t_late");
-
-  assert.equal(earlyResult?.assigned_rider_count, 1, "Alice assigned to pm_early");
-  assert.equal(lateResult?.rider_count, 0, "pm_late rider count = 0 (either rider filtered out)");
-  assert.equal(lateResult?.uncovered_rider_count, 0, "pm_late has no uncovered riders");
-});
-
-test("A3: either rider doesn't fit on pm_early, falls back to pm_late", async () => {
-  const { generateSchedule } = await loadGreedyModule();
-  const date = "2026-08-03";
-  // pm_early has no driver, so the either rider can't get a seat there.
-  // They should appear on pm_late and get assigned.
   const outputs = generateSchedule({
     trips: [
       makeTrip("t_early", date, "pm_early"),
@@ -156,9 +120,43 @@ test("A3: either rider doesn't fit on pm_early, falls back to pm_late", async ()
   const earlyResult = findTripResult(outputs, "t_early");
   const lateResult = findTripResult(outputs, "t_late");
 
-  assert.equal(earlyResult?.uncovered_rider_count, 1, "pm_early uncovered — no driver");
-  assert.equal(lateResult?.assigned_rider_count, 1, "Alice assigned to pm_late (fallback)");
-  assert.equal(lateResult?.rider_count, 1, "pm_late rider count = 1");
+  assert.equal(lateResult?.assigned_rider_count, 1, "Alice assigned to pm_late");
+  assert.equal(earlyResult?.rider_count, 0, "pm_early rider count = 0 (either rider filtered out)");
+  assert.equal(earlyResult?.uncovered_rider_count, 0, "pm_early has no uncovered riders");
+});
+
+test("A3: either rider doesn't fit on pm_late, falls back to pm_early", async () => {
+  const { generateSchedule } = await loadGreedyModule();
+  const date = "2026-08-03";
+  // pm_late has no driver, so the either rider can't get a seat there.
+  // They should appear on pm_early and get assigned.
+  const outputs = generateSchedule({
+    trips: [
+      makeTrip("t_early", date, "pm_early"),
+      makeTrip("t_late", date, "pm_late"),
+    ],
+    children: [makeChild("c1", "h1", "Alice")],
+    vehicles: [makeVehicle("v1", "h1", 3)],
+    profiles: [makeProfile("p1", "h1")],
+    rideRequests: [
+      makeRideRequest("t_early", "c1", "either"),
+      makeRideRequest("t_late", "c1", "either"),
+    ],
+    availability: [
+      makeAvail("t_early", "p1", "v1", "prefer"),
+    ],
+    maxDrivesByDriver: makeMaxDrives({ p1: 5 }),
+    existingAssignments: [],
+    declinedTripsByDriver: new Map(),
+    expiredTripsByDriver: new Map(),
+  });
+
+  const earlyResult = findTripResult(outputs, "t_early");
+  const lateResult = findTripResult(outputs, "t_late");
+
+  assert.equal(lateResult?.uncovered_rider_count, 1, "pm_late uncovered — no driver");
+  assert.equal(earlyResult?.assigned_rider_count, 1, "Alice assigned to pm_early (fallback)");
+  assert.equal(earlyResult?.rider_count, 1, "pm_early rider count = 1");
 });
 
 test("A4: either rider doesn't fit on either trip", async () => {
@@ -261,6 +259,8 @@ test("A7: mixed — some specific-early, some specific-late, some either", async
   const date = "2026-08-03";
   // 3 children: Bob wants pm_early only, Carol wants pm_late only, Alice wants either.
   // Drivers: p1 (h1, Alice's parent) on pm_early, p2 (h2, Bob+Carol's parent) on pm_late.
+  // pm_late processes first: Alice (either) gets pm_late, Carol (specific) gets pm_late.
+  // pm_early: Bob (specific) only — Alice filtered (assigned to pm_late).
   const outputs = generateSchedule({
     trips: [
       makeTrip("t_early", date, "pm_early"),
@@ -298,13 +298,15 @@ test("A7: mixed — some specific-early, some specific-late, some either", async
   const earlyResult = findTripResult(outputs, "t_early");
   const lateResult = findTripResult(outputs, "t_late");
 
-  // pm_early: Alice (either) + Bob (specific) = 2 riders, both assigned
-  assert.equal(earlyResult?.rider_count, 2, "pm_early has Alice + Bob");
-  assert.equal(earlyResult?.assigned_rider_count, 2, "both assigned on pm_early");
+  // pm_late: Alice (either) + Carol (specific) = 2 riders, both assigned
+  assert.equal(lateResult?.rider_count, 2, "pm_late has Alice + Carol");
+  assert.equal(lateResult?.assigned_rider_count, 2, "both assigned on pm_late");
 
-  // pm_late: Carol (specific) only — Alice was filtered out (assigned to pm_early)
-  assert.equal(lateResult?.rider_count, 1, "pm_late has Carol only (Alice filtered)");
-  assert.equal(lateResult?.assigned_rider_count, 1, "Carol assigned on pm_late");
+  // pm_early: Bob (specific) is the only rider — Alice filtered (assigned to pm_late).
+  // But p1 (Alice's parent, the only pm_early driver) has no own children riding
+  // pm_early, so they're not a natural driver. Bob is uncovered.
+  assert.equal(earlyResult?.rider_count, 1, "pm_early has Bob only (Alice filtered)");
+  assert.equal(earlyResult?.uncovered_rider_count, 1, "Bob uncovered on pm_early (no natural driver)");
 });
 
 test("A8: load balancing — driver on both pm trips counts as 2 drives", async () => {
@@ -468,11 +470,11 @@ test("A11: determinism — same inputs produce identical outputs", async () => {
   assert.deepEqual(outputs1, outputs2, "identical outputs on re-run");
 });
 
-test("A12: either rider with buddy on pm_early — both skipped on pm_late", async () => {
+test("A12: either rider with buddy on pm_late — both skipped on pm_early", async () => {
   const { generateSchedule } = await loadGreedyModule();
   const date = "2026-08-03";
-  // Alice (either) and Bob (either) are buddies. Both fit on pm_early.
-  // Both should be filtered from pm_late.
+  // Alice (either) and Bob (either) are buddies. Both fit on pm_late.
+  // Both should be filtered from pm_early.
   const outputs = generateSchedule({
     trips: [
       makeTrip("t_early", date, "pm_early"),
@@ -497,8 +499,8 @@ test("A12: either rider with buddy on pm_early — both skipped on pm_late", asy
       makeRideRequest("t_late", "c2", "either"),
     ],
     availability: [
-      makeAvail("t_early", "p1", "v1", "prefer"),
-      makeAvail("t_early", "p2", "v2", "can"),
+      makeAvail("t_late", "p1", "v1", "prefer"),
+      makeAvail("t_late", "p2", "v2", "can"),
     ],
     maxDrivesByDriver: makeMaxDrives({ p1: 5, p2: 5 }),
     existingAssignments: [],
@@ -509,7 +511,7 @@ test("A12: either rider with buddy on pm_early — both skipped on pm_late", asy
   const earlyResult = findTripResult(outputs, "t_early");
   const lateResult = findTripResult(outputs, "t_late");
 
-  assert.equal(earlyResult?.assigned_rider_count, 2, "both assigned to pm_early");
-  assert.equal(lateResult?.rider_count, 0, "pm_late has 0 riders (both filtered)");
-  assert.equal(lateResult?.uncovered_rider_count, 0, "pm_late has no uncovered");
+  assert.equal(lateResult?.assigned_rider_count, 2, "both assigned to pm_late");
+  assert.equal(earlyResult?.rider_count, 0, "pm_early has 0 riders (both filtered)");
+  assert.equal(earlyResult?.uncovered_rider_count, 0, "pm_early has no uncovered");
 });
