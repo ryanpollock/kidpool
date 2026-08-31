@@ -5193,6 +5193,8 @@ function DriveDetailScreen({
   pendingOutgoingRequest,
   onCancelReassignment,
   profileById,
+  adminRoster,
+  onAdminReassign,
 }: {
   entry: ScheduleRosterEntry;
   trip: Tables<"trips">;
@@ -5210,6 +5212,8 @@ function DriveDetailScreen({
   pendingOutgoingRequest?: ReassignmentRequestRow | null;
   onCancelReassignment?: (requestId: string) => void;
   profileById?: Map<string, { full_name: string }>;
+  adminRoster?: { children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null;
+  onAdminReassign?: (tripId: string, scheduleVersionId: string, driverProfileId: string, vehicleId: string) => Promise<void>;
 }) {
   const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", {
     weekday: "long",
@@ -5421,7 +5425,89 @@ function DriveDetailScreen({
           </section>
         )
       ) : null}
+
+      {isCoordinator && adminRoster && onAdminReassign && entry.driverAssignment.status !== "declined" && entry.driverAssignment.status !== "released" ? (
+        <AdminReassignSection
+          entry={entry}
+          trip={trip}
+          adminRoster={adminRoster}
+          currentDriverId={entry.driverAssignment.driver_profile_id}
+          onReassign={onAdminReassign}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function AdminReassignSection({
+  entry,
+  trip,
+  adminRoster,
+  currentDriverId,
+  onReassign,
+}: {
+  entry: ScheduleRosterEntry;
+  trip: Tables<"trips">;
+  adminRoster: { children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] };
+  currentDriverId: string;
+  onReassign: (tripId: string, scheduleVersionId: string, driverProfileId: string, vehicleId: string) => Promise<void>;
+}) {
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const riderCount = entry.children.length;
+
+  const eligibleParents = useMemo(() => {
+    return adminRoster.memberships
+      .filter((m) => m.status === "active" && m.profile_id !== currentDriverId)
+      .map((m) => {
+        const profile = adminRoster.profiles.find((p) => p.id === m.profile_id);
+        const vehicle = adminRoster.vehicles.find((v) => v.household_id === m.household_id && v.active);
+        if (!profile || !vehicle) return null;
+        if (vehicle.child_passenger_capacity < riderCount) return null;
+        return { profile, vehicle };
+      })
+      .filter((p): p is { profile: { id: string; full_name: string; avatar_url: string | null }; vehicle: Tables<"vehicles"> } => p !== null)
+      .sort((a, b) => a.profile.full_name.localeCompare(b.profile.full_name));
+  }, [adminRoster, currentDriverId, riderCount]);
+
+  const handleReassign = async (driverProfileId: string, vehicleId: string) => {
+    setWorking(true);
+    setError(null);
+    try {
+      await onReassign(trip.id, entry.driverAssignment.schedule_version_id, driverProfileId, vehicleId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to reassign drive");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <section className="admin-reassign-section" data-testid="admin-reassign-section">
+      <h2 className="admin-reassign-heading">Admin — Reassign driver</h2>
+      <p className="admin-reassign-current">Current driver: <strong>{entry.driverProfile.full_name}</strong> ({entry.vehicle.label})</p>
+      {error ? <div className="auth-error" role="alert">{error}</div> : null}
+      {eligibleParents.length === 0 ? (
+        <p className="helper-copy">No other parents with a vehicle that fits {riderCount} rider{riderCount !== 1 ? "s" : ""}.</p>
+      ) : (
+        <div className="admin-reassign-list">
+          {eligibleParents.map(({ profile, vehicle }) => (
+            <button
+              key={profile.id}
+              className="admin-reassign-target"
+              data-testid={`admin-reassign-${profile.id}`}
+              disabled={working}
+              onClick={() => void handleReassign(profile.id, vehicle.id)}
+              type="button"
+            >
+              <span className="admin-reassign-name">{profile.full_name}</span>
+              <span className="admin-reassign-vehicle">{vehicle.label} · {vehicle.child_passenger_capacity} seats</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -6731,6 +6817,14 @@ const navItems = useMemo(() => {
               pendingOutgoingRequest={pendingOutgoingReassignment}
               onCancelReassignment={(rid) => void handleCancelReassignment(rid)}
               profileById={profileByIdMap}
+              adminRoster={adminRoster}
+              onAdminReassign={async (tripId, scheduleVersionId, driverProfileId, vehicleId) => {
+                await manuallyAssignDriver(tripId, scheduleVersionId, driverProfileId, vehicleId);
+                void repository.sendPushNotification(null, scheduleVersionId, "published");
+                await loadHomeSchedule();
+                await loadPublishedSchedule();
+                setDriveDetailId(null);
+              }}
             />
           );
         }
