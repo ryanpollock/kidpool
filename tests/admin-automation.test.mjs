@@ -844,8 +844,8 @@ test("send-push: status_reminder branch sends action prompts to drivers + rider 
   assert.match(ts, /Tap "I'm on my way"/);
   assert.match(ts, /On your way soon\?/);
 
-  // Rider parent prompt (morning only): "Tap Mark ready"
-  assert.match(ts, /Tap "Mark ready"/);
+  // Rider parent prompt (morning only): "Mark ready"
+  assert.match(ts, /Mark ready/);
   assert.match(ts, /isMorning/);
 
   // Afternoon rider parents skipped (no "ready" status for afternoon)

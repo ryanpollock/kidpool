@@ -14,6 +14,7 @@
 // Run on staging: npm run test:runtime -- --grep "Toggle Drive Cycle"
 
 import { expect, test, type Page } from "@playwright/test";
+import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import {
   getSpecEnv, makeRunSql, makeAuth, truncateAll,

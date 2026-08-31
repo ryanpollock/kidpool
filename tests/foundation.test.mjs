@@ -364,7 +364,7 @@ test("Today card renders child ride info on the Home screen", async () => {
   const source = await readFile(prototypeUrl, "utf8");
   assert.match(source, /data-testid="today-card"/);
   assert.match(source, /today-card-ride/);
-  assert.match(source, /No ride scheduled/);
+  assert.match(source, /No .* ride for/);
   assert.match(source, /cancel-ride-/);
   assert.match(source, /add-ride-back-/);
 });

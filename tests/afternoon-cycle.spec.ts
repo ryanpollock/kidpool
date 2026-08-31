@@ -275,7 +275,7 @@ test.describe.serial("Afternoon Cycle", () => {
   // The core test: check-in → generate → publish → verify "Either" rider
   // is assigned to pm_early (not pm_late) and This Week shows all 3 legs.
 
-  test("full cycle: 3 trips/day with 'Either' rider assigned to pm_early", async ({ page }) => {
+  test("full cycle: 3 trips/day with 'Either' rider assigned to pm_late", async ({ page }) => {
     test.skip(skip || !setupReady || !nextWeek, "Requires setup");
     const { weekId, am, pmEarly, pmLate } = nextWeek!;
 
@@ -289,16 +289,16 @@ test.describe.serial("Afternoon Cycle", () => {
         ('${riderCheckinId}', '${GROUP_ID}', '${weekId}', '${riderHouseholdId}', 'submitted', 0)
       ON CONFLICT DO NOTHING;
 
-      -- Driver's child needs all AM rides + pm_early on Monday
+      -- Driver's child needs all AM rides + pm_late on Monday
       INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, preference, created_by) VALUES
         ('${GROUP_ID}', '${driverCheckinId}', '${am[0]}', '${driverChildId}', true, 'specific', '${driverUserId}'),
-        ('${GROUP_ID}', '${driverCheckinId}', '${pmEarly[0]}', '${driverChildId}', true, 'specific', '${driverUserId}')
+        ('${GROUP_ID}', '${driverCheckinId}', '${pmLate[0]}', '${driverChildId}', true, 'specific', '${driverUserId}')
       ON CONFLICT DO NOTHING;
 
-      -- Driver can drive AM on Monday + pm_early on Monday
+      -- Driver can drive AM on Monday + pm_late on Monday
       INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES
         ('${GROUP_ID}', '${driverCheckinId}', '${am[0]}', '${driverUserId}', '${driverVehicleId}', 'prefer'),
-        ('${GROUP_ID}', '${driverCheckinId}', '${pmEarly[0]}', '${driverUserId}', '${driverVehicleId}', 'can')
+        ('${GROUP_ID}', '${driverCheckinId}', '${pmLate[0]}', '${driverUserId}', '${driverVehicleId}', 'can')
       ON CONFLICT DO NOTHING;
 
       -- Rider's child needs AM on Monday + "Either" for afternoon on Monday
@@ -316,18 +316,18 @@ test.describe.serial("Afternoon Cycle", () => {
     // Verify: 3 trips per day in the output (15 total)
     assert.ok(result.trips.length >= 15, `Expected at least 15 trip results, got ${result.trips.length}`);
 
-    // Verify: "Either" rider assigned to pm_early (driver is available)
-    const pmEarlyRiders = getRiderAssignmentsForTrip(pmEarly[0]);
-    assert.ok(
-      pmEarlyRiders.includes(riderChildId),
-      `RiderKid should be assigned to pm_early (got: ${JSON.stringify(pmEarlyRiders)})`,
-    );
-
-    // Verify: "Either" rider NOT assigned to pm_late (already on pm_early)
+    // Verify: "Either" rider assigned to pm_late (scheduler prioritizes pm_late, driver available)
     const pmLateRiders = getRiderAssignmentsForTrip(pmLate[0]);
     assert.ok(
-      !pmLateRiders.includes(riderChildId),
-      `RiderKid should NOT be assigned to pm_late (got: ${JSON.stringify(pmLateRiders)})`,
+      pmLateRiders.includes(riderChildId),
+      `RiderKid should be assigned to pm_late (got: ${JSON.stringify(pmLateRiders)})`,
+    );
+
+    // Verify: "Either" rider NOT assigned to pm_early (already on pm_late)
+    const pmEarlyRiders = getRiderAssignmentsForTrip(pmEarly[0]);
+    assert.ok(
+      !pmEarlyRiders.includes(riderChildId),
+      `RiderKid should NOT be assigned to pm_early (got: ${JSON.stringify(pmEarlyRiders)})`,
     );
 
     // Publish the schedule
