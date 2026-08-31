@@ -799,11 +799,11 @@ test("send-push: drive_reminder branch sends push + email to confirmed drivers",
 
   // Branch handled with its own early-return (per-driver custom content)
   assert.match(ts, /type === "drive_reminder"/);
-  assert.match(ts, /90 min before/);
+  assert.match(ts, /90 min/);
 
-  // Gates to exact Pacific minute (7:10 AM for morning, 3:45 PM for afternoon)
-  assert.match(ts, /pacificHour === 7 && pacificMinute >= 10/);
-  assert.match(ts, /pacificHour === 15 && pacificMinute >= 45/);
+  // Data-driven gate: queries today's trips and computes meeting_time - 90 min
+  assert.match(ts, /addMinutes/);
+  assert.match(ts, /todayTrips/);
 
   // Only confirmed drivers (not tentative)
   assert.match(ts, /status: "eq.confirmed"/);
@@ -833,9 +833,9 @@ test("send-push: status_reminder branch sends action prompts to drivers + rider 
   assert.match(ts, /type === "status_reminder"/);
   assert.match(ts, /30-min pre-drive action prompt/);
 
-  // Gates to exact Pacific minute (8:10 AM for morning, 4:45 PM for afternoon)
-  assert.match(ts, /pacificHour === 8 && pacificMinute >= 10/);
-  assert.match(ts, /pacificHour === 16 && pacificMinute >= 45/);
+  // Data-driven gate: queries today's trips and computes meeting_time - 30 min
+  assert.match(ts, /addMinutes/);
+  assert.match(ts, /todayTrips/);
 
   // Only confirmed drivers
   assert.match(ts, /status: "eq.confirmed"/);

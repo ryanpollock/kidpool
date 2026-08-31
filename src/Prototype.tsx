@@ -597,7 +597,7 @@ function OnboardingScreen({
           <h1>Your typical week</h1>
           <p>Set your family's defaults for a normal school week. New weeks start with these — you can still adjust any week before submitting.</p>
         </header>
-        <p className="standard-week-intro">Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickups are 4:20 PM and 5:15 PM from Presidio — pick a time, or choose "Either" if both work.</p>
+        <p className="standard-week-intro">Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickups are 4:20 PM and 5:15 PM from Presidio (Wednesdays have early dismissal at 2:10 PM) — pick a time, or choose "Either" if both work.</p>
 
         {onboardingChildren.length > 0 ? (
           <div className="standard-week-subsection">
@@ -917,7 +917,7 @@ function DrivePreferenceGrid({
 
   const slotLabels: { slot: "am" | "pm_early" | "pm_late"; label: string; time: string }[] = [
     { slot: "am", label: "AM", time: MORNING_LABEL },
-    { slot: "pm_early", label: "PM", time: PM_EARLY_LABEL },
+    { slot: "pm_early", label: "PM", time: "2:10 Wed / 4:20" },
     { slot: "pm_late", label: "PM", time: PM_LATE_LABEL },
   ];
 
@@ -1015,7 +1015,7 @@ function RideNeedsGrid({
   };
 
   const pmOptions: { value: PmState; label: string }[] = [
-    { value: "pm_early", label: "4:20" },
+    { value: "pm_early", label: "2:10 Wed / 4:20" },
     { value: "pm_late", label: "5:15" },
     { value: "pm_either", label: "Either" },
     { value: "none", label: "No ride" },
@@ -1073,7 +1073,7 @@ function RideNeedsGrid({
           })}
         </div>
       ))}
-      <p className="drive-template-caption">Tap AM for mornings. For afternoons, pick 4:20, 5:15, Either, or No ride.</p>
+      <p className="drive-template-caption">Tap AM for mornings. For afternoons, pick 4:20 (2:10 Wed), 5:15, Either, or No ride.</p>
     </div>
   );
 }
@@ -2933,9 +2933,11 @@ function PlanScreen({
         };
 
         const renderAfternoonPicker = (earlyTrip: Tables<"trips">, lateTrip: Tables<"trips">) => {
+          const earlyLabel = formatMeetingTime(earlyTrip.meeting_time);
+          const lateLabel = formatMeetingTime(lateTrip.meeting_time);
           const pmOptions: { value: PmChoice; label: string }[] = [
-            { value: "pm_early", label: PM_EARLY_LABEL },
-            { value: "pm_late", label: PM_LATE_LABEL },
+            { value: "pm_early", label: earlyLabel },
+            { value: "pm_late", label: lateLabel },
             { value: "pm_either", label: "Either" },
             { value: "none", label: "No ride" },
           ];
@@ -2944,7 +2946,7 @@ function PlanScreen({
               <div className="checkin-trip-header">
                 <MoonIcon width="16" height="16" />
                 <span>Afternoon</span>
-                <small>{PM_EARLY_LABEL} or {PM_LATE_LABEL} · {earlyTrip.origin} → {earlyTrip.destination}</small>
+                <small>{earlyLabel} or {lateLabel} · {earlyTrip.origin} → {earlyTrip.destination}</small>
               </div>
 
               <div className="checkin-section">
@@ -2986,11 +2988,11 @@ function PlanScreen({
               </div>
 
               <div className="checkin-section">
-                <span className="checkin-section-label">Your driving · {PM_EARLY_LABEL}</span>
+                <span className="checkin-section-label">Your driving · {earlyLabel}</span>
                 {renderDriveSegments(earlyTrip, "early afternoon")}
               </div>
               <div className="checkin-section">
-                <span className="checkin-section-label">Your driving · {PM_LATE_LABEL}</span>
+                <span className="checkin-section-label">Your driving · {lateLabel}</span>
                 {renderDriveSegments(lateTrip, "late afternoon")}
               </div>
             </div>
@@ -4626,7 +4628,7 @@ function AccountScreen({
         <div className="section-heading-row">
           <h2 id="standard-week-heading">Standard week</h2>
         </div>
-        <p className="household-static">Set your family's defaults for a normal school week. New weeks start with these — you can still adjust any week before submitting. Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickups are 4:20 PM and 5:15 PM from Presidio — pick a time, or choose "Either" if both work.</p>
+        <p className="household-static">Set your family's defaults for a normal school week. New weeks start with these — you can still adjust any week before submitting. Morning pickup is 8:40 AM from Midtown Terrace. Afternoon pickups are 4:20 PM and 5:15 PM from Presidio (Wednesdays have early dismissal at 2:10 PM) — pick a time, or choose "Either" if both work.</p>
         {driveDefaultsLoading || rideNeedsLoading ? (
           <p className="household-static">Loading…</p>
         ) : (

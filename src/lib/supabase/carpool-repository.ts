@@ -892,6 +892,11 @@ export class CarpoolRepository {
 
       if (isNoSchoolDay(serviceDate)) continue;
 
+      // Wednesday early dismissal: pm_early pickup is 2:10 PM instead of 4:20 PM
+      const isWednesday = date.getDay() === 3;
+      const pmEarlyTime = isWednesday ? "14:10" : "16:20";
+      const pmEarlyDeparture = isWednesday ? "14:15" : "16:25";
+
       tripInserts.push({
         group_id: groupId,
         week_id: week.id,
@@ -909,8 +914,8 @@ export class CarpoolRepository {
         service_date: serviceDate,
         direction: "afternoon",
         slot: "pm_early",
-        meeting_time: "16:20",
-        departure_time: "16:25",
+        meeting_time: pmEarlyTime,
+        departure_time: pmEarlyDeparture,
         origin: schoolName,
         destination: meetingPoint,
       });

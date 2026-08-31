@@ -1280,8 +1280,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
           const sheetLinesText: string[] = [];
           const slotOrder: { key: string; label: string }[] = [
             { key: "am", label: "MORNING" },
-            { key: "pm_early", label: "AFTERNOON (4:20 PM)" },
-            { key: "pm_late", label: "AFTERNOON (5:15 PM)" },
+            { key: "pm_early", label: "AFTERNOON" },
+            { key: "pm_late", label: "AFTERNOON" },
           ];
           for (const { key, label } of slotOrder) {
             const tripInfo = info[key];
@@ -1377,44 +1377,36 @@ Questions? Reply to this email or check the FAQ in the app.`;
       return jsonResponse({ sent: 0, failed: 0, email_sent: emailSent, email_failed: emailFailed, reason: "backpack_sheet" });
     }
 
-    // ── drive_reminder: 75-min pre-drive email + push to confirmed drivers ─
-    // Triggered by pg_cron at :00 and :25 every hour. Self-gates to the exact
-    // Pacific minute that is 75 minutes before morning (8:40 AM) and afternoon
-    // (5:15 PM) drive times. Each confirmed driver gets a personalized push +
-    // email listing the kids in their car. Idempotency key is per-trip-per-driver.
+    // ── drive_reminder: 90-min pre-drive email + push to confirmed drivers ─
+    // Triggered by pg_cron at :00, :25, and :40 every hour. Data-driven:
+    // queries today's trips, computes meeting_time - 90 min, and fires
+    // when "now" matches that window. Works for any meeting time on any day
+    // (including Wednesday 2:10 PM early dismissal).
     if (type === "drive_reminder") {
       const now = new Date();
       const parts = pacificParts(now, true);
       const pacificHour = parseInt(parts.hour, 10) % 24;
       const pacificMinute = parseInt(parts.minute, 10);
-
-      // 90 min before 8:40 AM = 7:10 AM -> am
-      // 90 min before 4:20 PM = 2:50 PM -> pm_early
-      // 90 min before 5:15 PM = 3:45 PM -> pm_late
-      let slot: "am" | "pm_early" | "pm_late" | null = null;
-      if (pacificHour === 7 && pacificMinute >= 10 && pacificMinute < 15) {
-        slot = "am";
-      } else if (pacificHour === 14 && pacificMinute >= 50 && pacificMinute < 55) {
-        slot = "pm_early";
-      } else if (pacificHour === 15 && pacificMinute >= 45 && pacificMinute < 50) {
-        slot = "pm_late";
-      }
-      if (!slot) {
-        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "outside_window" });
-      }
-
-      // Today's Pacific date
       const today = `${parts.year}-${parts.month}-${parts.day}`;
 
-      // Find today's trip in the given slot
-      const trips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", {
+      // Query today's trips and find which one has a reminder window matching now
+      const todayTrips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", {
         service_date: `eq.${today}`,
-        slot: `eq.${slot}`,
       });
-      if (trips.length === 0) {
-        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_trip_today" });
+      let slot: "am" | "pm_early" | "pm_late" | null = null;
+      let trip: any = null;
+      for (const t of todayTrips) {
+        const reminderTime = addMinutes(t.meeting_time, -90);
+        const [rh, rm] = reminderTime.split(":").map((n: string) => parseInt(n, 10));
+        if (pacificHour === rh && pacificMinute >= rm && pacificMinute < rm + 5) {
+          slot = t.slot;
+          trip = t;
+          break;
+        }
       }
-      const trip = trips[0];
+      if (!slot || !trip) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "outside_window" });
+      }
       const groupId = trip.group_id;
 
       // Find the published schedule version for this week
@@ -1567,31 +1559,26 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const parts = pacificParts(now, true);
       const pacificHour = parseInt(parts.hour, 10) % 24;
       const pacificMinute = parseInt(parts.minute, 10);
+      const today = `${parts.year}-${parts.month}-${parts.day}`;
 
-      // 30 min before 8:40 AM = 8:10 AM -> am
-      // 30 min before 4:20 PM = 3:50 PM -> pm_early
-      // 30 min before 5:15 PM = 4:45 PM -> pm_late
+      // Data-driven: query today's trips, compute meeting_time - 30 min
+      const todayTrips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", {
+        service_date: `eq.${today}`,
+      });
       let slot: "am" | "pm_early" | "pm_late" | null = null;
-      if (pacificHour === 8 && pacificMinute >= 10 && pacificMinute < 15) {
-        slot = "am";
-      } else if (pacificHour === 15 && pacificMinute >= 50 && pacificMinute < 55) {
-        slot = "pm_early";
-      } else if (pacificHour === 16 && pacificMinute >= 45 && pacificMinute < 50) {
-        slot = "pm_late";
+      let trip: any = null;
+      for (const t of todayTrips) {
+        const reminderTime = addMinutes(t.meeting_time, -30);
+        const [rh, rm] = reminderTime.split(":").map((n: string) => parseInt(n, 10));
+        if (pacificHour === rh && pacificMinute >= rm && pacificMinute < rm + 5) {
+          slot = t.slot;
+          trip = t;
+          break;
+        }
       }
-      if (!slot) {
+      if (!slot || !trip) {
         return jsonResponse({ sent: 0, failed: 0, reason: "outside_window" });
       }
-
-      const today = `${parts.year}-${parts.month}-${parts.day}`;
-      const trips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", {
-        service_date: `eq.${today}`,
-        slot: `eq.${slot}`,
-      });
-      if (trips.length === 0) {
-        return jsonResponse({ sent: 0, failed: 0, reason: "no_trip_today" });
-      }
-      const trip = trips[0];
       const groupId = trip.group_id;
 
       const versions = await supaFetch("schedule_versions", "id", {
