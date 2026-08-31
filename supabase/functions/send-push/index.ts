@@ -933,14 +933,14 @@ Questions? Reply to this email or check the FAQ in the app.`;
         arr.push(kidName);
         tripRidersByDriver.set(ra.driver_assignment_id, arr);
       }
-      const tripDriversMap = new Map<string, { driverName: string; vehicleLabel: string; kids: string[] }[]>();
+      const tripDriversMap = new Map<string, { driverName: string; vehicleLabel: string; kids: string[]; isTentative: boolean }[]>();
       for (const da of allDriverAssignments) {
         const trip = tripsById.get(da.trip_id);
         if (!trip) continue;
         const driver = driverProfileMap.get(da.driver_profile_id);
         const vehicle = vehicleMap.get(da.vehicle_id);
         const kids = tripRidersByDriver.get(da.id) ?? [];
-        const entry = { driverName: driver?.full_name ?? "A driver", vehicleLabel: vehicle?.label ?? "", kids };
+        const entry = { driverName: driver?.full_name ?? "A driver", vehicleLabel: vehicle?.label ?? "", kids, isTentative: da.status === "tentative" };
         const arr = tripDriversMap.get(da.trip_id) ?? [];
         arr.push(entry);
         tripDriversMap.set(da.trip_id, arr);
@@ -958,7 +958,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
         const driverLines = drivers.map((d) => {
           const kidsStr = d.kids.length > 0 ? ` — ${d.kids.join(", ")}` : "";
           const vehicleStr = d.vehicleLabel ? ` (${d.vehicleLabel})` : "";
-          return `${d.driverName}${vehicleStr}${kidsStr}`;
+          const tentativeStr = d.isTentative ? " (tentative)" : "";
+          return `${d.driverName}${tentativeStr}${vehicleStr}${kidsStr}`;
         });
         rosterLines.push(`${label} (${time} from ${origin}): ${driverLines.join("; ")}`);
       }
@@ -1212,6 +1213,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
           kidsWithPhones,
           meetingTime: trip.meeting_time,
           origin: trip.origin,
+          isTentative: da.status === "tentative",
         };
         const riders = allRiderAssignments.filter((ra: any) => ra.driver_assignment_id === da.id);
         for (const ra of riders) {
@@ -1296,15 +1298,16 @@ Questions? Reply to this email or check the FAQ in the app.`;
             const carmatesStr = carmates.length > 0
               ? carmates.map((k: { name: string; phone: string | null }) => k.phone ? `${k.name} (${formatPhone(k.phone)})` : `${k.name} (no phone)`).join(", ")
               : "Riding alone";
+            const tentativeStr = tripInfo.isTentative ? " (tentative)" : "";
             sheetLinesHtml.push(
               `<div style="margin:0 0 12px;padding:12px;background:#f8fafc;border-radius:8px;">` +
               `<p style="font-size:14px;margin:0 0 4px;font-weight:600;color:#118b8c;">${label} (${time} from ${escapeHtml(tripInfo.origin)})</p>` +
-              `<p style="font-size:14px;margin:0 0 2px;">Driver: <strong>${escapeHtml(tripInfo.driverName)}</strong> — ${escapeHtml(phoneStr)}</p>` +
+              `<p style="font-size:14px;margin:0 0 2px;">Driver: <strong>${escapeHtml(tripInfo.driverName)}${escapeHtml(tentativeStr)}</strong> — ${escapeHtml(phoneStr)}</p>` +
               `<p style="font-size:14px;margin:0 0 2px;color:#475569;">Car: ${escapeHtml(tripInfo.vehicleLabel) || "—"}</p>` +
               `<p style="font-size:14px;margin:0;color:#475569;">Riding with: ${escapeHtml(carmatesStr)}</p>` +
               `</div>`,
             );
-            sheetLinesText.push(`${label} (${time} from ${tripInfo.origin})\n  Driver: ${tripInfo.driverName} — ${phoneStr}\n  Car: ${tripInfo.vehicleLabel || "—"}\n  Riding with: ${carmatesStr}`);
+            sheetLinesText.push(`${label} (${time} from ${tripInfo.origin})\n  Driver: ${tripInfo.driverName}${tentativeStr} — ${phoneStr}\n  Car: ${tripInfo.vehicleLabel || "—"}\n  Riding with: ${carmatesStr}`);
           }
 
           childSheetsHtml.push(
