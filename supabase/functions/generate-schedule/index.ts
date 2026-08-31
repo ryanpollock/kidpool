@@ -267,15 +267,18 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Cap the founder at 2 algorithmic drives/week (preferential treatment).
-    // Volunteering for uncovered trips bypasses max_drives, so Ryan can still
-    // manually volunteer beyond this if he wants to.
-    const FOUNDER_EMAIL = "ryan.pollock@gmail.com";
-    const FOUNDER_MAX_DRIVES = 1;
+    // Cap specific drivers at a max number of algorithmic drives/week.
+    // Volunteering for uncovered trips bypasses max_drives, so these drivers
+    // can still manually volunteer beyond the cap if they want to.
+    const DRIVER_CAPS: Record<string, number> = {
+      "ryan.pollock@gmail.com": 1,
+      "nosilla.rellim@gmail.com": 2,
+    };
     for (const p of (profilesRes.data ?? []) as Array<{ id: string; email: string | null }>) {
-      if (p.email === FOUNDER_EMAIL) {
+      const cap = DRIVER_CAPS[p.email ?? ""];
+      if (cap !== undefined) {
         const current = maxDrivesByDriver.get(p.id) ?? 10;
-        maxDrivesByDriver.set(p.id, Math.min(current, FOUNDER_MAX_DRIVES));
+        maxDrivesByDriver.set(p.id, Math.min(current, cap));
       }
     }
 
