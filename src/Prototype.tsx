@@ -917,7 +917,7 @@ function DrivePreferenceGrid({
 
   const slotLabels: { slot: "am" | "pm_early" | "pm_late"; label: string; time: string }[] = [
     { slot: "am", label: "AM", time: MORNING_LABEL },
-    { slot: "pm_early", label: "PM", time: "2:10 Wed / 4:20" },
+    { slot: "pm_early", label: "PM", time: PM_EARLY_LABEL },
     { slot: "pm_late", label: "PM", time: PM_LATE_LABEL },
   ];
 
@@ -925,6 +925,7 @@ function DrivePreferenceGrid({
     <div className="drive-template-grid" data-testid="drive-preference-grid">
       {TEMPLATE_DAYS.map((day) => {
         const dayLabel = WEEKDAY_LABELS[day];
+        const isWednesday = day === 3;
         return (
           <div className="drive-template-day-group" key={day}>
             <strong className="drive-template-day">{dayLabel}</strong>
@@ -932,9 +933,10 @@ function DrivePreferenceGrid({
               const entry = preferences.find((p) => p.day === day && inferSlotFromPref(p) === slot);
               const current = entry?.preference ?? "cannot";
               const ariaLabel = slot === "am" ? "morning" : slot === "pm_early" ? "early afternoon" : "late afternoon";
+              const displayTime = slot === "pm_early" && isWednesday ? "2:10 PM" : time;
               return (
                 <div className="drive-template-slot-row" key={slot}>
-                  <span className="drive-template-slot-label">{label}<small>{time}</small></span>
+                  <span className="drive-template-slot-label">{label}<small>{displayTime}</small></span>
                   <div
                     className="drive-segments"
                     role="group"
@@ -1015,8 +1017,8 @@ function RideNeedsGrid({
   };
 
   const pmOptions: { value: PmState; label: string }[] = [
-    { value: "pm_early", label: "2:10 Wed / 4:20" },
-    { value: "pm_late", label: "5:15" },
+    { value: "pm_early", label: PM_EARLY_LABEL.replace(" PM", "") },
+    { value: "pm_late", label: PM_LATE_LABEL.replace(" PM", "") },
     { value: "pm_either", label: "Either" },
     { value: "none", label: "No ride" },
   ];
@@ -1033,6 +1035,10 @@ function RideNeedsGrid({
           <strong className="ride-needs-name">{child.first_name}</strong>
           {TEMPLATE_DAYS.map((day) => {
             const dayLabel = WEEKDAY_LABELS[day];
+            const isWednesday = day === 3;
+            const dayPmOptions = isWednesday
+              ? pmOptions.map((o) => o.value === "pm_early" ? { ...o, label: "2:10" } : o)
+              : pmOptions;
             const amEntry = needs.find(
               (n) => n.child_id === child.id && n.day === day && n.direction === "morning",
             );
@@ -1052,7 +1058,7 @@ function RideNeedsGrid({
                   AM
                 </button>
                 <div className="ride-needs-pm" role="group" aria-label={`${child.first_name} ${dayLabel} afternoon`}>
-                  {pmOptions.map((opt) => {
+                  {dayPmOptions.map((opt) => {
                     const active = pmState === opt.value;
                     return (
                       <button
