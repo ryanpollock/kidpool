@@ -6893,7 +6893,7 @@ const navItems = useMemo(() => {
           weekStartsOn={weekScreenWeek?.week.starts_on ?? null}
           avatarUrl={identity.profile.avatar_url}
           onAccount={() => setAccountOpen(true)}
-onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); setDriveDetailId(id); }}
+onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); void loadAdminRoster(); setDriveDetailId(id); }}
           onCheckIn={() => navigate("plan")}
           todayDate={todayDate}
         />
@@ -7006,7 +7006,7 @@ onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); s
         onDismissIOSInstall={() => { setIOSInstallDismissed(true); localStorage.setItem("ios_install_dismissed", "true"); }}
         timezone={identity.group.timezone}
         todayDate={todayDate}
-        onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); setDriveDetailId(id); }}
+        onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); void loadAdminRoster(); setDriveDetailId(id); }}
         showAvatarNudge={shouldShowAvatarNudge}
         householdId={householdId ?? null}
         householdChildren={householdId ? groupChildren.filter(c => c.household_id === householdId) : []}
