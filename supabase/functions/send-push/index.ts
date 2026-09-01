@@ -2259,6 +2259,64 @@ ${cta}
     let groupId: string | null = null;
     let emailBodyHtml: string | null = null;
 
+    // ── rider_switched_old: notify old driver that a child was moved ──
+    if (type === "rider_switched_old" && assignment_id) {
+      const childId: string | undefined = body.child_id;
+      if (!childId) return jsonError("Missing child_id for rider_switched_old", 400);
+
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,trip_id,group_id", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,slot,meeting_time", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const childData = await supaFetch("children", "first_name,last_name", { id: `eq.${childId}` });
+      if (childData.length === 0) return jsonError("Child not found", 404);
+      const child = childData[0];
+      const childName = `${child.first_name} ${child.last_name}`.trim();
+
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      const timeLabel = formatTime(trip.meeting_time);
+      const notifTitle = `${childName} was moved from your drive`;
+      const notifBody = `${childName} was moved from your ${period} drive (${timeLabel}) to the other afternoon drive time. Open the app for details.`;
+      const idempotencyKey = `carpool-rider-switched-old-${assignment_id}-${childId}`;
+      const pushTag = `rider-switched-old-${assignment_id}-${childId}`;
+
+      await sendEmailAndPush(da.driver_profile_id, notifTitle, notifBody, idempotencyKey, pushTag);
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    }
+
+    // ── rider_switched_new: notify new driver that a child was added ──
+    if (type === "rider_switched_new" && assignment_id) {
+      const childId: string | undefined = body.child_id;
+      if (!childId) return jsonError("Missing child_id for rider_switched_new", 400);
+
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,trip_id,group_id", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,slot,meeting_time", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const childData = await supaFetch("children", "first_name,last_name", { id: `eq.${childId}` });
+      if (childData.length === 0) return jsonError("Child not found", 404);
+      const child = childData[0];
+      const childName = `${child.first_name} ${child.last_name}`.trim();
+
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      const timeLabel = formatTime(trip.meeting_time);
+      const notifTitle = `${childName} was added to your drive`;
+      const notifBody = `${childName} was added to your ${period} drive (${timeLabel}) by their parent. Open the app for details.`;
+      const idempotencyKey = `carpool-rider-switched-new-${assignment_id}-${childId}`;
+      const pushTag = `rider-switched-new-${assignment_id}-${childId}`;
+
+      await sendEmailAndPush(da.driver_profile_id, notifTitle, notifBody, idempotencyKey, pushTag);
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    }
+
     if (type === "declined" && assignment_id) {
       const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: `eq.${assignment_id}` });
       const childIds = riderAssignments.map((ra: any) => ra.child_id);

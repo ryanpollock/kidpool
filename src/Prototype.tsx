@@ -2461,9 +2461,9 @@ function ReviewScreen({
             ) : (
               <>
                 <div className="declined-notice"><Cross2Icon /><span><strong>Reassigned</strong><small>Another driver has taken this drive.</small></span></div>
-              </>
+</>
             )}
-          </div>
+                </div>
         );
       })}
     </div>
@@ -5195,6 +5195,9 @@ function DriveDetailScreen({
   profileById,
   adminRoster,
   onAdminReassign,
+  onSwitchAfternoonTrip,
+  siblingTripLabel,
+  siblingTripAvailable,
 }: {
   entry: ScheduleRosterEntry;
   trip: Tables<"trips">;
@@ -5214,6 +5217,9 @@ function DriveDetailScreen({
   profileById?: Map<string, { full_name: string }>;
   adminRoster?: { children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null;
   onAdminReassign?: (tripId: string, scheduleVersionId: string, driverProfileId: string, vehicleId: string) => Promise<void>;
+  onSwitchAfternoonTrip?: (childId: string, driverAssignmentId: string) => Promise<void>;
+  siblingTripLabel?: string;
+  siblingTripAvailable?: boolean;
 }) {
   const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", {
     weekday: "long",
@@ -5233,6 +5239,7 @@ function DriveDetailScreen({
   const [confirmRemoveChildId, setConfirmRemoveChildId] = useState<string | null>(null);
   const [removeWorking, setRemoveWorking] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [switchWorking, setSwitchWorking] = useState(false);
 
   return (
     <div className="screen-content drive-detail-screen" data-testid="drive-detail-screen">
@@ -5388,6 +5395,27 @@ function DriveDetailScreen({
                       </div>
                     </>
                   )}
+                  {isMyChild && trip.direction === "afternoon" && onSwitchAfternoonTrip && siblingTripLabel ? (
+                    <button
+                      className="secondary-button child-switch-button"
+                      data-testid={`switch-afternoon-${child.id}`}
+                      disabled={switchWorking || !siblingTripAvailable}
+                      onClick={async () => {
+                        setSwitchWorking(true);
+                        setRemoveError(null);
+                        try {
+                          await onSwitchAfternoonTrip(child.id, entry.driverAssignment.id);
+                        } catch (e) {
+                          setRemoveError(e instanceof Error ? e.message : "Failed to switch drive time");
+                        } finally {
+                          setSwitchWorking(false);
+                        }
+                      }}
+                      type="button"
+                    >
+                      {switchWorking ? "Switching…" : siblingTripAvailable ? `Switch to ${siblingTripLabel}` : `${siblingTripLabel} cars are full`}
+                    </button>
+                  ) : null}
                 </div>
               );
             })}
@@ -6785,6 +6813,33 @@ const navItems = useMemo(() => {
       if (found) {
           const isCoordinator = identity.membership?.role === "coordinator";
           const householdId = identity.membership?.household_id ?? null;
+
+          // Compute sibling afternoon trip info for the switch button
+          const searchSchedule2 = homeSchedule ?? publishedSchedule;
+          let siblingTripLabel: string | undefined;
+          let siblingTripAvailable = false;
+          if (found.trip.direction === "afternoon" && searchSchedule2) {
+            const siblingSlot = found.trip.slot === "pm_early" ? "pm_late" : "pm_early";
+            for (const t of searchSchedule2.trips) {
+              if (t.service_date === found.trip.service_date && t.slot === siblingSlot && t.direction === "afternoon") {
+                siblingTripLabel = formatMeetingTime(t.meeting_time);
+                // Check if any driver assignment on the sibling trip has capacity
+                const siblingRosters = searchSchedule2.rostersByTrip.get(t.id) ?? [];
+                for (const roster of siblingRosters) {
+                  if (roster.driverAssignment.status === "tentative" || roster.driverAssignment.status === "confirmed") {
+                    const capacity = roster.driverAssignment.child_passenger_capacity;
+                    const riderCount = roster.children.length;
+                    if (riderCount < capacity) {
+                      siblingTripAvailable = true;
+                      break;
+                    }
+                  }
+                }
+                break;
+              }
+            }
+          }
+
           return (
             <DriveDetailScreen
               entry={found.entry}
@@ -6825,6 +6880,18 @@ const navItems = useMemo(() => {
                 await loadPublishedSchedule();
                 setDriveDetailId(null);
               }}
+              onSwitchAfternoonTrip={async (childId, driverAssignmentId) => {
+                const result = await repository.switchChildAfternoonTrip(childId, driverAssignmentId);
+                void repository.sendRiderSwitchedNotification(
+                  result.old_driver_assignment_id,
+                  result.new_driver_assignment_id,
+                  childId,
+                );
+                await loadHomeSchedule();
+                await loadPublishedSchedule();
+              }}
+              siblingTripLabel={siblingTripLabel}
+              siblingTripAvailable={siblingTripAvailable}
             />
           );
         }

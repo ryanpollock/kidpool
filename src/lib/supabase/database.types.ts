@@ -655,6 +655,13 @@ export type Database = {
         };
         Returns: ReassignmentRequestRow;
       };
+      switch_child_afternoon_trip: {
+        Args: {
+          p_child_id: string;
+          p_driver_assignment_id: string;
+        };
+        Returns: Record<string, unknown>;
+      };
     };
     Enums: {
       app_role: AppRole;

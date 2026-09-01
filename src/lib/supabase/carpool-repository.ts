@@ -1384,6 +1384,50 @@ export class CarpoolRepository {
     }
   }
 
+  async switchChildAfternoonTrip(
+    childId: string,
+    driverAssignmentId: string,
+  ): Promise<{
+    new_driver_assignment_id: string;
+    new_trip_id: string;
+    old_driver_assignment_id: string;
+    old_trip_id: string;
+    child_id: string;
+  }> {
+    const result = unwrapRequired(
+      await this.client.rpc("switch_child_afternoon_trip", {
+        p_child_id: childId,
+        p_driver_assignment_id: driverAssignmentId,
+      }),
+    );
+    return result as unknown as {
+      new_driver_assignment_id: string;
+      new_trip_id: string;
+      old_driver_assignment_id: string;
+      old_trip_id: string;
+      child_id: string;
+    };
+  }
+
+  async sendRiderSwitchedNotification(
+    oldAssignmentId: string,
+    newAssignmentId: string,
+    childId: string,
+  ): Promise<void> {
+    try {
+      await Promise.all([
+        this.client.functions.invoke("send-push", {
+          body: { assignment_id: oldAssignmentId, child_id: childId, type: "rider_switched_old" },
+        }),
+        this.client.functions.invoke("send-push", {
+          body: { assignment_id: newAssignmentId, child_id: childId, type: "rider_switched_new" },
+        }),
+      ]);
+    } catch (err) {
+      console.error("[carpool] send-push rider_switched invocation failed:", err);
+    }
+  }
+
   async getDeclinedWithoutVolunteer(
     scheduleVersionId: string,
     groupId: string,

@@ -1447,3 +1447,65 @@ test("send-push: request_id parsed from request body", async () => {
   const ts = await readFile(sendPushUrl, "utf8");
   assert.match(ts, /request_id/);
 });
+
+// ─── Parent-initiated afternoon drive-time switch ─────────────
+
+const switchMigrationUrl = new URL(
+  "../supabase/migrations/202609010003_switch_afternoon_trip.sql",
+  import.meta.url,
+);
+
+test("switch_afternoon_trip: RPC exists with security definer", async () => {
+  const sql = await readFile(switchMigrationUrl, "utf8");
+  assert.match(sql, /create or replace function public\.switch_child_afternoon_trip/);
+  assert.match(sql, /security definer/);
+  assert.match(sql, /revoke all on function public\.switch_child_afternoon_trip/);
+  assert.match(sql, /grant execute on function public\.switch_child_afternoon_trip/);
+});
+
+test("switch_afternoon_trip: verifies household membership", async () => {
+  const sql = await readFile(switchMigrationUrl, "utf8");
+  assert.match(sql, /is_household_member/);
+});
+
+test("switch_afternoon_trip: only allows afternoon trips", async () => {
+  const sql = await readFile(switchMigrationUrl, "utf8");
+  assert.match(sql, /direction <> 'afternoon'/);
+});
+
+test("switch_afternoon_trip: finds sibling trip by slot", async () => {
+  const sql = await readFile(switchMigrationUrl, "utf8");
+  assert.match(sql, /pm_early.*pm_late|pm_late.*pm_early/);
+});
+
+test("switch_afternoon_trip: checks capacity before insert", async () => {
+  const sql = await readFile(switchMigrationUrl, "utf8");
+  assert.match(sql, /child_passenger_capacity/);
+  assert.match(sql, /cars are full/);
+});
+
+test("switch_afternoon_trip: updates ride_requests", async () => {
+  const sql = await readFile(switchMigrationUrl, "utf8");
+  assert.match(sql, /needs_ride = false/);
+  assert.match(sql, /needs_ride = true/);
+});
+
+test("switch_afternoon_trip: writes audit event", async () => {
+  const sql = await readFile(switchMigrationUrl, "utf8");
+  assert.match(sql, /child_switched_afternoon_trip/);
+  assert.match(sql, /audit_events/);
+});
+
+test("send-push: rider_switched_old notifies old driver", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+  assert.match(ts, /type === "rider_switched_old"/);
+  assert.match(ts, /carpool-rider-switched-old/);
+  assert.match(ts, /was moved from your drive/);
+});
+
+test("send-push: rider_switched_new notifies new driver", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+  assert.match(ts, /type === "rider_switched_new"/);
+  assert.match(ts, /carpool-rider-switched-new/);
+  assert.match(ts, /was added to your drive/);
+});
