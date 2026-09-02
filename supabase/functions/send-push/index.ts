@@ -1167,6 +1167,30 @@ Questions? Reply to this email or check the FAQ in the app.`;
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_confirmed_drivers" });
       }
 
+      // Fetch ride_requests for today's trips so we can distinguish slots the
+      // child actually needs from slots they don't (e.g., "either" afternoon
+      // preference means only one of pm_early/pm_late is needed; needs_ride=false
+      // means the slot should be skipped entirely).
+      const allTripIds = trips.map((t: any) => t.id);
+      const rideRequestsData = allTripIds.length > 0
+        ? await supaFetch("ride_requests", "child_id,trip_id,needs_ride,preference", { trip_id: `in.(${allTripIds.join(",")})` })
+        : [];
+
+      // childId -> Map<trip_id, { needs_ride, preference }>
+      const childRideRequests = new Map<string, Map<string, { needs_ride: boolean; preference: string }>>();
+      for (const rr of rideRequestsData) {
+        let tripMap = childRideRequests.get(rr.child_id);
+        if (!tripMap) { tripMap = new Map(); childRideRequests.set(rr.child_id, tripMap); }
+        tripMap.set(rr.trip_id, { needs_ride: rr.needs_ride, preference: rr.preference ?? "specific" });
+      }
+
+      // slot -> trip (for time/origin on uncovered sections)
+      const slotToTrip = new Map<string, any>();
+      for (const t of trips) {
+        const slot = t.slot ?? (t.direction === "morning" ? "am" : "pm_late");
+        slotToTrip.set(slot, t);
+      }
+
       // Fetch children (with phone for carmate contact), driver profiles (with phone), vehicles
       const childIds = [...new Set(allRiderAssignments.map((ra: any) => ra.child_id))];
       const children = childIds.length > 0 ? await supaFetch("children", "id,first_name,last_name,household_id,phone", { id: `in.(${childIds.join(",")})` }) : [];
@@ -1278,16 +1302,66 @@ Questions? Reply to this email or check the FAQ in the app.`;
 
           const sheetLinesHtml: string[] = [];
           const sheetLinesText: string[] = [];
+
+          // Determine which slots this child actually needs, based on
+          // ride_requests. This avoids false "No driver assigned" warnings
+          // for slots the child doesn't need (e.g., the other half of an
+          // "either" afternoon preference, or a slot marked needs_ride=false).
+          const rrMap = childRideRequests.get(child.id);
+          const neededSlots = new Set<string>();
+
+          // Always include slots the child is placed on (rider_assignment exists)
+          for (const slot of ["am", "pm_early", "pm_late"]) {
+            if (info[slot]) neededSlots.add(slot);
+          }
+
+          if (rrMap && rrMap.size > 0) {
+            const amTripId = slotToTrip.get("am")?.id;
+            const pmEarlyTripId = slotToTrip.get("pm_early")?.id;
+            const pmLateTripId = slotToTrip.get("pm_late")?.id;
+            const amRR = amTripId ? rrMap.get(amTripId) : undefined;
+            const pmEarlyRR = pmEarlyTripId ? rrMap.get(pmEarlyTripId) : undefined;
+            const pmLateRR = pmLateTripId ? rrMap.get(pmLateTripId) : undefined;
+
+            // AM: needed if needs_ride is true
+            if (amRR?.needs_ride) neededSlots.add("am");
+
+            // Afternoon "either" handling: if the child's preference is
+            // "either" for afternoon, they only need ONE of pm_early/pm_late.
+            // If placed on one, skip the other. If placed on neither, show
+            // one warning (pm_early, the earliest).
+            const eitherAfternoon = pmEarlyRR?.preference === "either" || pmLateRR?.preference === "either";
+            if (eitherAfternoon) {
+              if (info["pm_early"]) {
+                neededSlots.add("pm_early");
+              } else if (info["pm_late"]) {
+                neededSlots.add("pm_late");
+              } else {
+                neededSlots.add("pm_early");
+              }
+            } else {
+              if (pmEarlyRR?.needs_ride) neededSlots.add("pm_early");
+              if (pmLateRR?.needs_ride) neededSlots.add("pm_late");
+            }
+          }
+
           const slotOrder: { key: string; label: string }[] = [
             { key: "am", label: "MORNING" },
-            { key: "pm_early", label: "AFTERNOON" },
-            { key: "pm_late", label: "AFTERNOON" },
+            { key: "pm_early", label: "AFTERNOON · EARLY" },
+            { key: "pm_late", label: "AFTERNOON · LATE" },
           ];
           for (const { key, label } of slotOrder) {
+            if (!neededSlots.has(key)) continue;
+
             const tripInfo = info[key];
             if (!tripInfo) {
-              sheetLinesHtml.push(`<p style="font-size:14px;margin:0 0 12px;padding:8px 12px;background:#fef2f2;border-radius:6px;color:#b91c1c;"><strong>${label}</strong> — ⚠️ No driver assigned — check with coordinator</p>`);
-              sheetLinesText.push(`${label}: ⚠️ No driver assigned — check with coordinator`);
+              // Uncovered slot — look up the trip for time/origin
+              const uncoveredTrip = slotToTrip.get(key);
+              const uncTime = uncoveredTrip ? formatTime(uncoveredTrip.meeting_time) : "";
+              const uncOrigin = uncoveredTrip?.origin ?? "";
+              const timeOriginStr = uncTime ? ` (${uncTime} from ${uncOrigin})` : "";
+              sheetLinesHtml.push(`<p style="font-size:14px;margin:0 0 12px;padding:8px 12px;background:#fef2f2;border-radius:6px;color:#b91c1c;"><strong>${label}</strong>${escapeHtml(timeOriginStr)} — ⚠️ No driver assigned — check with coordinator</p>`);
+              sheetLinesText.push(`${label}${timeOriginStr}: ⚠️ No driver assigned — check with coordinator`);
               continue;
             }
             const time = formatTime(tripInfo.meetingTime);
