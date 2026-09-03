@@ -946,24 +946,46 @@ Questions? Reply to this email or check the FAQ in the app.`;
         tripDriversMap.set(da.trip_id, arr);
       }
 
-      // Build roster text — iterate all trips sorted by slot
+      // Build roster text + structured HTML — iterate trips sorted by slot
       const sortedTrips = trips.slice().sort((a, b) => slotOrder(a.slot) - slotOrder(b.slot));
       const rosterLines: string[] = [];
+      const rosterHtmlBlocks: string[] = [];
       for (const trip of sortedTrips) {
         const drivers = tripDriversMap.get(trip.id) ?? [];
         if (drivers.length === 0) continue;
-        const label = trip.direction === "morning" ? "Morning" : "Afternoon";
+        const isMorning = trip.direction === "morning";
         const time = formatTime(trip.meeting_time);
         const origin = trip.origin;
-        const driverLines = drivers.map((d) => {
+        const slotLabel = trip.slot === "pm_early" ? "Afternoon · Early"
+          : trip.slot === "pm_late" ? "Afternoon · Late"
+          : isMorning ? "Morning" : "Afternoon";
+        const emoji = isMorning ? "🌅" : "🌇";
+
+        // Text version
+        rosterLines.push(`${emoji} ${slotLabel} (${time} from ${origin})`);
+        for (const d of drivers) {
           const kidsStr = d.kids.length > 0 ? ` — ${d.kids.join(", ")}` : "";
           const vehicleStr = d.vehicleLabel ? ` (${d.vehicleLabel})` : "";
           const tentativeStr = d.isTentative ? " (tentative)" : "";
-          return `${d.driverName}${tentativeStr}${vehicleStr}${kidsStr}`;
-        });
-        rosterLines.push(`${label} (${time} from ${origin}): ${driverLines.join("; ")}`);
+          rosterLines.push(`  • ${d.driverName}${tentativeStr}${vehicleStr}${kidsStr}`);
+        }
+
+        // HTML version — card per trip, mirroring the backpack sheet style
+        const driverHtml = drivers.map((d) => {
+          const kidsStr = d.kids.length > 0 ? ` — ${d.kids.join(", ")}` : "";
+          const vehicleStr = d.vehicleLabel ? ` (${escapeHtml(d.vehicleLabel)})` : "";
+          const tentativeStr = d.isTentative ? " (tentative)" : "";
+          return `<p style="font-size:14px;margin:0 0 4px;"><strong>${escapeHtml(d.driverName)}${escapeHtml(tentativeStr)}</strong>${vehicleStr}<span style="color:#475569;">${escapeHtml(kidsStr)}</span></p>`;
+        }).join("");
+        rosterHtmlBlocks.push(
+          `<div style="margin:0 0 12px;padding:12px;background:#f8fafc;border-radius:8px;">` +
+          `<p style="font-size:14px;margin:0 0 6px;font-weight:600;color:#118b8c;">${emoji} ${escapeHtml(slotLabel)} (${escapeHtml(time)} from ${escapeHtml(origin)})</p>` +
+          driverHtml +
+          `</div>`,
+        );
       }
       const rosterText = rosterLines.join("\n");
+      const rosterHtml = rosterHtmlBlocks.join("");
 
       // Recipients: families with a child riding tomorrow
       const ridingHouseholdIds = new Set<string>();
@@ -1020,30 +1042,39 @@ Questions? Reply to this email or check the FAQ in the app.`;
         const myDrives = driverProfileToTrips.get(profile.id) ?? [];
 
         let personalSection: string;
+        let personalSectionHtml: string;
         if (myDrives.length > 0) {
           personalSection = myDrives.map((d) => {
             const dirLabel = d.direction === "morning" ? "morning" : "afternoon";
             const time = formatTime(d.meetingTime);
             const kidsStr = d.kids.length > 0 ? ` Kids in your car: ${d.kids.join(", ")}.` : "";
-            return `You're driving tomorrow ${dirLabel} — ${time} from ${d.origin}.${kidsStr}`;
+            return `🚗 You're driving tomorrow ${dirLabel} — ${time} from ${d.origin}.${kidsStr}`;
           }).join("\n");
+          personalSectionHtml = myDrives.map((d) => {
+            const dirLabel = d.direction === "morning" ? "morning" : "afternoon";
+            const time = formatTime(d.meetingTime);
+            const kidsStr = d.kids.length > 0 ? ` Kids in your car: ${d.kids.join(", ")}.` : "";
+            return `🚗 You're driving tomorrow ${dirLabel} — ${time} from ${escapeHtml(d.origin)}.${escapeHtml(kidsStr)}`;
+          }).join("<br>");
+          personalSectionHtml = `<div style="margin:0 0 20px;padding:12px 16px;background:#f0fdfa;border-left:4px solid #118b8c;border-radius:8px;font-size:15px;line-height:1.6;">${personalSectionHtml}</div>`;
         } else {
-          personalSection = "You're not driving tomorrow.";
+          personalSection = "📋 You're not driving tomorrow.";
+          personalSectionHtml = `<div style="margin:0 0 20px;padding:12px 16px;background:#f8fafc;border-radius:8px;font-size:15px;line-height:1.6;">📋 You're not driving tomorrow.</div>`;
         }
 
         const htmlBody =
           `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
-          `<h1 style="font-size:22px;margin:0 0 16px;">Tomorrow's carpool, ${escapeHtml(firstName)}</h1>` +
-          `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;white-space:pre-line;">${escapeHtml(personalSection)}</p>` +
-          `<h2 style="font-size:16px;margin:24px 0 8px;">Tomorrow's drivers</h2>` +
-          `<p style="font-size:15px;line-height:1.6;margin:0 0 16px;white-space:pre-line;">${escapeHtml(rosterText)}</p>` +
+          `<h1 style="font-size:22px;margin:0 0 16px;">🚗 Tomorrow's carpool, ${escapeHtml(firstName)}</h1>` +
+          personalSectionHtml +
+          `<h2 style="font-size:16px;margin:24px 0 8px;">📋 Tomorrow's drivers</h2>` +
+          rosterHtml +
           `<p style="margin-top:24px;">${cta}</p>` +
           `</body></html>`;
 
         const textBody =
-          `Tomorrow's carpool, ${firstName}\n\n` +
+          `🚗 Tomorrow's carpool, ${firstName}\n\n` +
           `${personalSection}\n\n` +
-          `Tomorrow's drivers\n${rosterText}\n`;
+          `📋 Tomorrow's drivers\n${rosterText}\n`;
 
         const idempotencyKey = `night-before-${tomorrow}-${profile.id}`;
         try {
@@ -1058,7 +1089,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
               from: RESEND_FROM_EMAIL,
               to: profile.email,
               reply_to: RESEND_REPLY_TO,
-              subject: "Tomorrow's carpool",
+              subject: "🚗 Tomorrow's carpool",
               html: htmlBody,
               text: textBody,
               tags: [
@@ -1083,7 +1114,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
         if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
           const pushTag = `night-before-${tomorrow}-${profile.id}`;
           const pushPayload = JSON.stringify({
-            title: "Tomorrow's carpool",
+            title: "🚗 Tomorrow's carpool",
             body: personalSection,
             tag: pushTag,
             url: "/",
