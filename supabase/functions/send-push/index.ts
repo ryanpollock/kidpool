@@ -1038,6 +1038,10 @@ Questions? Reply to this email or check the FAQ in the app.`;
         if (!profile.email) continue;
         if (isTestEmail(profile.email)) continue;
 
+        // Test override: filter to a single email (for manual testing only)
+        const testFilterEmail = body.test_filter_email;
+        if (testFilterEmail && profile.email !== testFilterEmail) continue;
+
         const firstName = (profile.full_name ?? "there").split(" ")[0];
         const myDrives = driverProfileToTrips.get(profile.id) ?? [];
 
@@ -1076,7 +1080,8 @@ Questions? Reply to this email or check the FAQ in the app.`;
           `${personalSection}\n\n` +
           `📋 Tomorrow's drivers\n${rosterText}\n`;
 
-        const idempotencyKey = `night-before-${tomorrow}-${profile.id}`;
+        const idempotencySuffix = nonce ? `-${nonce}` : "";
+        const idempotencyKey = `night-before-${tomorrow}-${profile.id}${idempotencySuffix}`;
         try {
           const res = await fetch("https://api.resend.com/emails", {
             method: "POST",
