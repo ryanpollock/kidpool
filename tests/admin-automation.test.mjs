@@ -14,6 +14,10 @@ const manualAssignMigrationUrl = new URL(
   "../supabase/migrations/202608070002_manually_assign_driver.sql",
   import.meta.url,
 );
+const reassignDriverMigrationUrl = new URL(
+  "../supabase/migrations/202609030001_reassign_driver.sql",
+  import.meta.url,
+);
 const deadlineCronMigrationUrl = new URL(
   "../supabase/migrations/202608070003_reenable_deadline_cron.sql",
   import.meta.url,
@@ -421,6 +425,66 @@ test("manually_assign_driver: coordinator-only, no availability check", async ()
 
   // Must grant to authenticated (coordinator check is inside the function)
   assert.match(sql, /grant execute on function public\.manually_assign_driver\(uuid, uuid, uuid, uuid\) to authenticated/);
+});
+
+// ─── reassign_driver RPC (admin reassign from DriveDetailScreen) ──
+
+test("reassign_driver: coordinator-only, moves riders, releases old assignment", async () => {
+  const sql = await readFile(reassignDriverMigrationUrl, "utf8");
+
+  assert.match(sql, /create or replace function public\.reassign_driver\(/);
+  assert.match(sql, /p_assignment_id uuid,/);
+  assert.match(sql, /p_new_driver_profile_id uuid,/);
+  assert.match(sql, /p_vehicle_id uuid/);
+  assert.match(sql, /security definer/);
+
+  // Must check caller is coordinator
+  assert.match(sql, /role = 'coordinator'/);
+  assert.match(sql, /Only coordinators can reassign drivers/);
+
+  // Must only reassign active drives
+  assert.match(sql, /Can only reassign an active \(tentative or confirmed\) drive/);
+
+  // New driver guards: differs from outgoing, active member, not already on the trip
+  assert.match(sql, /New driver is the same as the current driver/);
+  assert.match(sql, /New driver is not an active member of this group/);
+  assert.match(sql, /New driver is already assigned to this trip/);
+
+  // Must enforce vehicle capacity up front (don't strand riders)
+  assert.match(sql, /Vehicle too small for current riders/);
+
+  // Must create confirmed assignment
+  assert.match(sql, /'confirmed'/);
+
+  // THE FIX: must move ALL riders from the old assignment, not just uncovered ones
+  assert.match(sql, /update public\.rider_assignments\s+set driver_assignment_id = new_assignment\.id\s+where driver_assignment_id = v_old\.id/);
+
+  // Must release the outgoing assignment (app renders: "Another driver took this drive")
+  assert.match(sql, /set status = 'released', updated_at = now\(\)\s+where id = v_old\.id/);
+
+  // Must audit
+  assert.match(sql, /'driver_reassigned'/);
+  assert.match(sql, /'riders_moved'/);
+
+  // Must grant to authenticated (coordinator check is inside the function)
+  assert.match(sql, /grant execute on function public\.reassign_driver\(uuid, uuid, uuid\) to authenticated/);
+});
+
+test("reassign_driver: UI uses it from DriveDetailScreen admin section (not manually_assign_driver)", async () => {
+  const repo = await readFile(new URL("../src/lib/supabase/carpool-repository.ts", import.meta.url), "utf8");
+
+  // Repository method calls the reassign_driver RPC
+  assert.match(repo, /reassign_driver/);
+
+  // RPC is typed in database.types.ts
+  const types = await readFile(new URL("../src/lib/supabase/database.types.ts", import.meta.url), "utf8");
+  assert.match(types, /reassign_driver: \{/);
+  assert.match(types, /p_assignment_id: string;/);
+
+  // Prototype wires the admin reassign to the new callback with the old assignment id
+  const tsx = await readFile(new URL("../src/Prototype.tsx", import.meta.url), "utf8");
+  assert.match(tsx, /reassignDriver\(assignmentId, driverProfileId, vehicleId\)/);
+  assert.match(tsx, /onReassign\(entry\.driverAssignment\.id, driverProfileId, vehicleId\)/);
 });
 
 // ─── generate-schedule Edge Function ────────────────────────

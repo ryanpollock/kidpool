@@ -5216,7 +5216,7 @@ function DriveDetailScreen({
   onCancelReassignment?: (requestId: string) => void;
   profileById?: Map<string, { full_name: string }>;
   adminRoster?: { children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null;
-  onAdminReassign?: (tripId: string, scheduleVersionId: string, driverProfileId: string, vehicleId: string) => Promise<void>;
+  onAdminReassign?: (assignmentId: string, driverProfileId: string, vehicleId: string) => Promise<void>;
   onSwitchAfternoonTrip?: (childId: string, driverAssignmentId: string) => Promise<void>;
   siblingTripLabel?: string;
   siblingTripAvailable?: boolean;
@@ -5457,7 +5457,6 @@ function DriveDetailScreen({
       {isCoordinator && adminRoster && onAdminReassign && entry.driverAssignment.status !== "declined" && entry.driverAssignment.status !== "released" ? (
         <AdminReassignSection
           entry={entry}
-          trip={trip}
           adminRoster={adminRoster}
           currentDriverId={entry.driverAssignment.driver_profile_id}
           onReassign={onAdminReassign}
@@ -5469,16 +5468,14 @@ function DriveDetailScreen({
 
 function AdminReassignSection({
   entry,
-  trip,
   adminRoster,
   currentDriverId,
   onReassign,
 }: {
   entry: ScheduleRosterEntry;
-  trip: Tables<"trips">;
   adminRoster: { children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] };
   currentDriverId: string;
-  onReassign: (tripId: string, scheduleVersionId: string, driverProfileId: string, vehicleId: string) => Promise<void>;
+  onReassign: (assignmentId: string, driverProfileId: string, vehicleId: string) => Promise<void>;
 }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -5503,7 +5500,7 @@ function AdminReassignSection({
     setWorking(true);
     setError(null);
     try {
-      await onReassign(trip.id, entry.driverAssignment.schedule_version_id, driverProfileId, vehicleId);
+      await onReassign(entry.driverAssignment.id, driverProfileId, vehicleId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to reassign drive");
     } finally {
@@ -6153,6 +6150,33 @@ export default function Prototype() {
       await loadAdminAlerts();
     } catch (error) {
       setManualAssignError(readableError(error));
+    } finally {
+      setManualAssignWorking(false);
+    }
+  }, [repository, loadSchedule, loadHomeSchedule, loadPublishedSchedule, loadAdminAlerts]);
+
+  const reassignDriver = useCallback(async (
+    assignmentId: string,
+    driverProfileId: string,
+    vehicleId: string,
+  ) => {
+    setManualAssignWorking(true);
+    setManualAssignError(null);
+    try {
+      const newAssignment = await repository.reassignDriver(
+        assignmentId, driverProfileId, vehicleId,
+      );
+      if (newAssignment) {
+        void repository.sendPushNotification(newAssignment.id, null, "manually_assigned");
+        void repository.sendPushNotification(newAssignment.id, null, "drive_confirmed");
+      }
+      await loadSchedule();
+      await loadHomeSchedule();
+      await loadPublishedSchedule();
+      await loadAdminAlerts();
+    } catch (error) {
+      setManualAssignError(readableError(error));
+      throw error;
     } finally {
       setManualAssignWorking(false);
     }
@@ -6873,9 +6897,9 @@ const navItems = useMemo(() => {
               onCancelReassignment={(rid) => void handleCancelReassignment(rid)}
               profileById={profileByIdMap}
               adminRoster={adminRoster}
-              onAdminReassign={async (tripId, scheduleVersionId, driverProfileId, vehicleId) => {
-                await manuallyAssignDriver(tripId, scheduleVersionId, driverProfileId, vehicleId);
-                void repository.sendPushNotification(null, scheduleVersionId, "published");
+              onAdminReassign={async (assignmentId, driverProfileId, vehicleId) => {
+                await reassignDriver(assignmentId, driverProfileId, vehicleId);
+                void repository.sendPushNotification(null, found.entry.driverAssignment.schedule_version_id, "published");
                 await loadHomeSchedule();
                 await loadPublishedSchedule();
                 setDriveDetailId(null);
