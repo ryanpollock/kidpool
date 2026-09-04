@@ -1581,3 +1581,39 @@ test("send-push: rider_switched_new notifies new driver", async () => {
   assert.match(ts, /carpool-rider-switched-new/);
   assert.match(ts, /was added to your drive/);
 });
+
+// ─── switch_afternoon_trip version scoping (Sep 3 production bug) ──
+
+const switchVersionScopeMigrationUrl = new URL(
+  "../supabase/migrations/202609030002_switch_trip_version_scope.sql",
+  import.meta.url,
+);
+
+test("switch_afternoon_trip: destination assignment scoped to the old assignment's schedule version", async () => {
+  const sql = await readFile(switchVersionScopeMigrationUrl, "utf8");
+
+  // Rewrites the RPC
+  assert.match(sql, /create or replace function public\.switch_child_afternoon_trip/);
+  assert.match(sql, /security definer/);
+
+  // THE FIX: the destination search must filter by the outgoing assignment's
+  // schedule_version_id. The weekly draft version coexists with the published
+  // version with identically-shaped assignments; the unscoped search picked
+  // the DRAFT assignment and the rider-assignment scope trigger rejected the
+  // cross-version insert ('Rider assignment does not match its driver
+  // assignment').
+  assert.match(sql, /and schedule_version_id = v_old_assignment\.schedule_version_id/);
+
+  // The filter must be inside the destination-assignment loop, before the
+  // status filter
+  assert.match(
+    sql,
+    /where trip_id = v_new_trip\.id\s+and group_id = v_group_id\s+and schedule_version_id = v_old_assignment\.schedule_version_id\s+and status in \('tentative', 'confirmed'\)/,
+  );
+
+  // Unchanged guards still present
+  assert.match(sql, /is_household_member/);
+  assert.match(sql, /cars are full/);
+  assert.match(sql, /child_switched_afternoon_trip/);
+  assert.match(sql, /revoke all on function public\.switch_child_afternoon_trip\(uuid, uuid\) from public/);
+});
