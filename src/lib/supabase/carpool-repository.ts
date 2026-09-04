@@ -1442,6 +1442,19 @@ export class CarpoolRepository {
     }
   }
 
+  async sendDriveReassignedNotification(
+    oldAssignmentId: string,
+    newAssignmentId: string,
+  ): Promise<void> {
+    try {
+      await this.client.functions.invoke("send-push", {
+        body: { assignment_id: oldAssignmentId, new_assignment_id: newAssignmentId, type: "drive_reassigned" },
+      });
+    } catch (err) {
+      console.error("[carpool] send-push drive_reassigned invocation failed:", err);
+    }
+  }
+
   async getDeclinedWithoutVolunteer(
     scheduleVersionId: string,
     groupId: string,
