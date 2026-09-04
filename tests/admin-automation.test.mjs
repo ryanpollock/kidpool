@@ -485,6 +485,14 @@ test("reassign_driver: UI uses it from DriveDetailScreen admin section (not manu
   const tsx = await readFile(new URL("../src/Prototype.tsx", import.meta.url), "utf8");
   assert.match(tsx, /reassignDriver\(assignmentId, driverProfileId, vehicleId\)/);
   assert.match(tsx, /onReassign\(entry\.driverAssignment\.id, driverProfileId, vehicleId\)/);
+
+  // Outgoing driver gets a "You're no longer driving" notification
+  assert.match(tsx, /sendDriveReassignedNotification\(assignmentId, newAssignment\.id\)/);
+  const edge = await readFile(new URL("../supabase/functions/send-push/index.ts", import.meta.url), "utf8");
+  assert.match(edge, /type === "drive_reassigned" && assignment_id/);
+  assert.match(edge, /new_assignment_id/);
+  assert.match(edge, /You're no longer driving/);
+  assert.match(edge, /is now driving the \$\{period\} trip on/);
 });
 
 // ─── generate-schedule Edge Function ────────────────────────

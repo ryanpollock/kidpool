@@ -6169,6 +6169,7 @@ export default function Prototype() {
       if (newAssignment) {
         void repository.sendPushNotification(newAssignment.id, null, "manually_assigned");
         void repository.sendPushNotification(newAssignment.id, null, "drive_confirmed");
+        void repository.sendDriveReassignedNotification(assignmentId, newAssignment.id);
       }
       await loadSchedule();
       await loadHomeSchedule();

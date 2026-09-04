@@ -241,7 +241,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { type, assignment_id, version_id, displaced_drivers, nonce, test_date, test_status, request_id } = body;
+    const { type, assignment_id, version_id, displaced_drivers, nonce, test_date, test_status, request_id, new_assignment_id } = body;
 
     if (!SERVICE_ROLE_KEY) return jsonError("Service role key not configured", 500);
     if (!type) return jsonError("Missing notification type", 400);
@@ -3120,6 +3120,41 @@ ${cta}
         title = "You've been assigned";
         bodyText = `The coordinator assigned you to drive the ${period} trip on ${t.service_date}. Open the app to confirm.`;
         tag = `manually-assigned-${assignment_id}`;
+      }
+    } else if (type === "drive_reassigned" && assignment_id) {
+      // Coordinator reassigned this drive to someone else → notify the
+      // outgoing driver they're off the hook. assignment_id is the OLD
+      // (released) assignment; new_assignment_id names the replacement
+      // driver so the message can say who took over.
+      const assignment = await supaFetch("driver_assignments", "*", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+      groupId = da.group_id;
+
+      // Notify the outgoing driver only
+      recipientProfileIds = [da.driver_profile_id];
+
+      const trip = await supaFetch("trips", "*", { id: `eq.${da.trip_id}` });
+      if (trip.length > 0) {
+        const t = trip[0];
+        const period = t.direction === "morning" ? "morning" : "afternoon";
+        const timeLabel = formatTime(t.meeting_time);
+
+        // Look up the replacement driver's first name
+        let newDriverFirst = "another driver";
+        if (new_assignment_id) {
+          const newDa = await supaFetch("driver_assignments", "driver_profile_id", { id: `eq.${new_assignment_id}` });
+          if (newDa.length > 0) {
+            const newDriverProfile = await supaFetch("profiles", "full_name", { id: `eq.${newDa[0].driver_profile_id}` });
+            if (newDriverProfile.length > 0 && newDriverProfile[0].full_name) {
+              newDriverFirst = newDriverProfile[0].full_name.split(" ")[0];
+            }
+          }
+        }
+
+        title = "You're no longer driving";
+        bodyText = `${newDriverFirst} is now driving the ${period} trip on ${t.service_date} (${timeLabel} pickup). You're off the hook.`;
+        tag = `drive-reassigned-${assignment_id}`;
       }
     } else if (type === "admin_escalation" && version_id) {
       const versionData = await supaFetch("schedule_versions", "group_id", { id: `eq.${version_id}` });
