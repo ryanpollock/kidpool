@@ -1315,6 +1315,20 @@ export class CarpoolRepository {
     );
   }
 
+  async reassignDriver(
+    assignmentId: string,
+    newDriverProfileId: string,
+    vehicleId: string,
+  ) {
+    return unwrap(
+      await this.client.rpc("reassign_driver", {
+        p_assignment_id: assignmentId,
+        p_new_driver_profile_id: newDriverProfileId,
+        p_vehicle_id: vehicleId,
+      }),
+    );
+  }
+
   async requestDriveReassignment(
     assignmentId: string,
     targetProfileId: string,

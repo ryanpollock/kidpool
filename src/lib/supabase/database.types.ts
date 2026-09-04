@@ -635,6 +635,14 @@ export type Database = {
         };
         Returns: DriverAssignmentRow;
       };
+      reassign_driver: {
+        Args: {
+          p_assignment_id: string;
+          p_new_driver_profile_id: string;
+          p_vehicle_id: string;
+        };
+        Returns: DriverAssignmentRow;
+      };
       request_drive_reassignment: {
         Args: {
           p_assignment_id: string;
