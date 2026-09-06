@@ -495,6 +495,42 @@ test("reassign_driver: UI uses it from DriveDetailScreen admin section (not manu
   assert.match(edge, /is now driving the \$\{period\} trip on/);
 });
 
+// ─── respond_to_driver_assignment: confirm must not merge other cars' riders ──
+
+const confirmTransferMigrationUrl = new URL(
+  "../supabase/migrations/202609060001_fix_confirm_rider_transfer.sql",
+  import.meta.url,
+);
+
+test("respond_to_driver_assignment: rider transfer gated on prior released status", async () => {
+  const sql = await readFile(confirmTransferMigrationUrl, "utf8");
+
+  assert.match(sql, /create or replace function public\.respond_to_driver_assignment\(/);
+  assert.match(sql, /security definer/);
+
+  // THE FIX: prior status captured BEFORE the update...returning overwrites
+  // the variable — the old gate read assignment.status AFTER the update and
+  // was true on every confirm, merging declined siblings' riders into the
+  // confirming driver's car (capacity trigger abort on full cars).
+  assert.match(sql, /v_prior_status public\.assignment_status;/);
+  assert.match(sql, /v_prior_status := assignment\.status;/);
+
+  // ...and the transfer gate must check the PRIOR status, not the post-update one
+  assert.match(sql, /if driver_response = 'confirmed' and v_prior_status = 'released' and assignment\.status = 'confirmed' then/);
+
+  // Past-trip guard carried forward from the staging live hotfix
+  assert.match(sql, /This trip has already happened/);
+
+  // Released re-accept behavior preserved (202608140002)
+  assert.match(sql, /'tentative', 'confirmed', 'declined', 'expired', 'released'/);
+  assert.match(sql, /riders_transferred/);
+  assert.match(sql, /released re-accept: riders moved back to original driver/);
+
+  // Standard revoke/grant
+  assert.match(sql, /revoke all on function public\.respond_to_driver_assignment\(uuid, public\.confirmation_response, text\) from public/);
+  assert.match(sql, /grant execute on function public\.respond_to_driver_assignment\(uuid, public\.confirmation_response, text\) to authenticated/);
+});
+
 // ─── generate-schedule Edge Function ────────────────────────
 
 test("generate-schedule: accepts cron/service-role auth and auto-publishes at deadline", async () => {
