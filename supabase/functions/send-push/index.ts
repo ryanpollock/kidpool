@@ -3402,7 +3402,11 @@ ${cta}
       for (const profile of profiles) {
         if (!profile.email) continue;
         if (isTestEmail(profile.email)) continue;
-        const idempotencyKey = `carpool-${tag}-${profile.id}`;
+        // Nonce suffix lets the same notification type be re-sent legitimately
+        // (e.g. the published roster email after mid-week admin edits —
+        // otherwise Resend 409s on same-key-different-body).
+        const idempotencySuffix = nonce ? `-${nonce}` : "";
+        const idempotencyKey = `carpool-${tag}-${profile.id}${idempotencySuffix}`;
         try {
           const res = await fetch("https://api.resend.com/emails", {
             method: "POST",
