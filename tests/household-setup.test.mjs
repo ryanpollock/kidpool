@@ -15,7 +15,12 @@ test("Exchange 3 repository exposes household write methods for children and veh
   assert.match(source, /async addChild\(/);
   assert.match(source, /async updateChild\(/);
   assert.match(source, /async deactivateChild\(/);
-  assert.match(source, /async upsertVehicle\(/);
+  // Multi-vehicle households: separate add/update methods (replaces the
+  // single-record upsertVehicle — a maybeSingle upsert cannot represent
+  // two cars in one household).
+  assert.match(source, /async addVehicle\(/);
+  assert.match(source, /async updateVehicle\(/);
+  assert.doesNotMatch(source, /async upsertVehicle\(/);
   assert.match(source, /async getHouseholdSetup\(/);
   assert.match(source, /from\("children"\)/);
   assert.match(source, /from\("vehicles"\)/);
@@ -66,7 +71,9 @@ test("Exchange 3 plan screen reflects real household data with safe fallbacks", 
   assert.match(source, /No vehicle/);
   assert.match(source, /Add one in your account/);
   assert.match(source, /setup\?\.children/);
-  assert.match(source, /setup\?\.vehicles\.find/);
+  // Vehicle data flows from setup through the per-parent resolver
+  // (multi-vehicle households: each parent sees their own car).
+  assert.match(source, /resolveDriverVehicle\(setup\?\.vehicles \?\? \[\], driverProfileId\)/);
 });
 
 test("Exchange 3 introduces no service-role or secret browser values", async () => {

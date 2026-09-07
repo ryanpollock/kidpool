@@ -1653,3 +1653,102 @@ test("switch_afternoon_trip: destination assignment scoped to the old assignment
   assert.match(sql, /child_switched_afternoon_trip/);
   assert.match(sql, /revoke all on function public\.switch_child_afternoon_trip\(uuid, uuid\) from public/);
 });
+
+// ─── Multi-vehicle households ("each parent drives their car") ──
+
+const multiVehicleMigrationUrl = new URL(
+  "../supabase/migrations/202609060002_volunteer_rpcs_per_parent_vehicle.sql",
+  import.meta.url,
+);
+
+test("multi-vehicle: resolveDriverVehicle rule — tagged car, else single, else smallest", async () => {
+  const source = await readFile(new URL("../src/lib/supabase/carpool-repository.ts", import.meta.url), "utf8");
+
+  assert.match(source, /export function resolveDriverVehicle\(/);
+
+  // Rule 1: the parent's tagged car wins
+  assert.match(source, /v\.default_driver_id === driverProfileId/);
+
+  // Rule 2: a single active vehicle is returned as-is (single-car households unchanged)
+  assert.match(source, /if \(active\.length === 1\) return active\[0\];/);
+
+  // Rule 3: untagged multi-car fallback is the SMALLEST capacity (never overstates a car)
+  assert.match(source, /a\.child_passenger_capacity - b\.child_passenger_capacity/);
+
+  // Re-exported through the barrel (Prototype imports it from ./lib/supabase)
+  const barrel = await readFile(new URL("../src/lib/supabase/index.ts", import.meta.url), "utf8");
+  assert.match(barrel, /resolveDriverVehicle/);
+});
+
+test("multi-vehicle: check-in resolves the parent's own car for drive offers", async () => {
+  const tsx = await readFile(new URL("../src/Prototype.tsx", import.meta.url), "utf8");
+
+  // Check-in: per-parent resolution replaces the household find()
+  assert.match(tsx, /const myVehicle = resolveDriverVehicle\(setup\?\.vehicles \?\? \[\], driverProfileId\);/);
+  assert.match(tsx, /myVehicle\?\.id \?\? null, pref, groupId,/);
+
+  // Default drive preferences bootstrap also uses the parent's car
+  assert.match(tsx, /const myDefaultVehicle = resolveDriverVehicle\(householdSetup\?\.vehicles \?\? \[\], identity\.profile\.id\);/);
+
+  // Onboarding adds (not upserts) the first vehicle, tagged to the adder
+  assert.match(tsx, /repository\.addVehicle\(householdId, identity\.group\.id,/);
+  assert.doesNotMatch(tsx, /repository\.upsertVehicle\(/);
+});
+
+test("multi-vehicle: Account lists household vehicles with add/edit/remove + driver tag", async () => {
+  const tsx = await readFile(new URL("../src/Prototype.tsx", import.meta.url), "utf8");
+
+  // Vehicle list with per-row edit/remove
+  assert.match(tsx, /data-testid="vehicle-list"/);
+  assert.match(tsx, /openEditVehicleForm\(vehicle\)/);
+  assert.match(tsx, /void removeVehicle\(vehicle\.id\)/);
+
+  // Add + edit go through the new repository methods with the driver tag
+  assert.match(tsx, /repository\.updateVehicle\(editingVehicleId, householdId, groupId, fields, driverTag\)/);
+  assert.match(tsx, /repository\.addVehicle\(householdId, groupId, fields, driverTag \?\? profile\.id\)/);
+
+  // "Who drives this car?" picker shown for multi-car households
+  assert.match(tsx, /Who drives this car\?/);
+  assert.match(tsx, /householdVehicles\.length >= 2 \|\| \(!editingVehicleId && householdVehicles\.length >= 1\)/);
+});
+
+test("multi-vehicle: both admin flows resolve the target parent's car", async () => {
+  const tsx = await readFile(new URL("../src/Prototype.tsx", import.meta.url), "utf8");
+
+  // AdminReassignSection AND the assign-driver sheet use per-parent resolution
+  const uses = tsx.match(/resolveDriverVehicle\(\s*adminRoster\.vehicles\.filter\(\(v\) => v\.household_id === m\.household_id\),\s*m\.profile_id,\s*\)/g) ?? [];
+  assert.ok(uses.length === 2, `expected 2 admin-flow resolutions, found ${uses.length}`);
+});
+
+test("multi-vehicle: volunteer capacity is the caller's car, not the household max", async () => {
+  const source = await readFile(new URL("../src/lib/supabase/carpool-repository.ts", import.meta.url), "utf8");
+
+  // The old household Math.max pattern must be gone
+  assert.doesNotMatch(source, /Math\.max\(\.\.\.volunteerVehicles\.map/);
+
+  // Both alert paths resolve the caller's car
+  const uses = source.match(/resolveDriverVehicle\(\s*vehicles\.filter\(\(v\) => householdIds\.has\(v\.household_id\)\),\s*profileId,\s*\)/g) ?? [];
+  assert.ok(uses.length === 2, `expected 2 volunteer-capacity resolutions, found ${uses.length}`);
+});
+
+test("multi-vehicle: volunteer RPCs pick the caller's tagged car", async () => {
+  const sql = await readFile(multiVehicleMigrationUrl, "utf8");
+
+  // Both RPCs rewritten
+  assert.match(sql, /create or replace function public\.volunteer_for_declined_drive\(/);
+  assert.match(sql, /create or replace function public\.volunteer_for_uncovered_trip\(/);
+
+  // Per-parent selection in both (coalesce guards DESC's NULLS FIRST)
+  const orders = sql.match(/order by coalesce\(default_driver_id = auth\.uid\(\), false\) desc, child_passenger_capacity asc, label asc/g) ?? [];
+  assert.ok(orders.length === 2, `expected 2 per-parent orderings, found ${orders.length}`);
+
+  // No longer picks the household's biggest vehicle
+  assert.doesNotMatch(sql, /order by child_passenger_capacity desc, created_at asc/);
+
+  // Past-trip guard carried to production (staging live hotfix reconciliation)
+  assert.match(sql, /This trip has already happened/);
+
+  // Grants preserved
+  assert.match(sql, /grant execute on function public\.volunteer_for_declined_drive\(uuid\) to authenticated/);
+  assert.match(sql, /grant execute on function public\.volunteer_for_uncovered_trip\(uuid, uuid\) to authenticated/);
+});

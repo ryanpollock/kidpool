@@ -30,6 +30,7 @@ import { KeyboardInput, MobileScroll, BottomSheet, useScreenPortal } from "./mob
 import {
   CarpoolRepository,
   getSupabaseClient,
+  resolveDriverVehicle,
   type CheckinDetails,
   type DeclinedDriveAlert,
   type DriveStatusEntry,
@@ -394,11 +395,11 @@ function OnboardingScreen({
     setVehicleWorking(true);
     setVehicleError(null);
     try {
-      const vehicle = await repository.upsertVehicle(householdId, identity.group.id, {
+      const vehicle = await repository.addVehicle(householdId, identity.group.id, {
         label: vehicleLabel,
         childPassengerCapacity: capacity,
         notes: vehicleNotes || undefined,
-      });
+      }, identity.profile.id);
       setVehicleId(vehicle.id);
     } catch (nextError) {
       setVehicleError(readableError(nextError));
@@ -2526,7 +2527,7 @@ function PlanScreen({
   const rideLocked = submitted || weekPublished || weekStarted;
   const driveLocked = weekPublished || weekStarted;
   const children = setup?.children ?? [];
-  const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
+  const myVehicle = resolveDriverVehicle(setup?.vehicles ?? [], driverProfileId);
 
   const planHeading = (() => {
     if (!week) return "Plan ahead";
@@ -2720,7 +2721,7 @@ function PlanScreen({
 
   const setDrivePreference = async (tripId: string, pref: DrivePreference) => {
     if (driveLocked || !checkin) return;
-    if (pref !== "cannot" && !activeVehicle) {
+    if (pref !== "cannot" && !myVehicle) {
       setSubmitError("Add a vehicle in your account before volunteering to drive.");
       return;
     }
@@ -2728,7 +2729,7 @@ function PlanScreen({
     try {
       await repository.upsertDriverAvailability(
         checkin.id, tripId, driverProfileId,
-        activeVehicle?.id ?? null, pref, groupId,
+        myVehicle?.id ?? null, pref, groupId,
       );
       await onReloadCheckin();
     } catch (error) {
@@ -3022,8 +3023,8 @@ function PlanScreen({
       <div className="vehicle-summary">
         <span><DashboardIcon /></span>
         <span>
-          <strong>{activeVehicle ? `${activeVehicle.label} · ${activeVehicle.child_passenger_capacity} seats` : "No vehicle"}</strong>
-          <small>{activeVehicle ? "Includes your children when riding" : "Add one in your account to drive"}</small>
+          <strong>{myVehicle ? `${myVehicle.label} · ${myVehicle.child_passenger_capacity} seats` : "No vehicle"}</strong>
+          <small>{myVehicle ? "Your car when you drive. Includes your children when riding" : "Add one in your account to drive"}</small>
         </span>
       </div>
 
@@ -3579,7 +3580,10 @@ function CoordinatorScreen({
     .filter((m) => m.status === "active")
     .map((m) => {
       const profile = adminRoster.profiles.find((p) => p.id === m.profile_id);
-      const vehicle = adminRoster.vehicles.find((v) => v.household_id === m.household_id && v.active);
+      const vehicle = resolveDriverVehicle(
+        adminRoster.vehicles.filter((v) => v.household_id === m.household_id),
+        m.profile_id,
+      );
       return { membership: m, profile, vehicle };
     })
     .filter((d) => d.profile && d.vehicle) : [];
@@ -4034,6 +4038,9 @@ function AccountScreen({
   const [vehicleNotes, setVehicleNotes] = useState("");
   const [vehicleWorking, setVehicleWorking] = useState(false);
   const [vehicleError, setVehicleError] = useState<string | null>(null);
+  const [vehicleFormOpen, setVehicleFormOpen] = useState(false);
+  const [editingVehicleId, setEditingVehicleId] = useState<string | null>(null);
+  const [vehicleDriverTag, setVehicleDriverTag] = useState<string>("");
 
   const [joinCode, setJoinCode] = useState<string | null>(null);
   const [codeWorking, setCodeWorking] = useState(false);
@@ -4050,15 +4057,36 @@ function AccountScreen({
   const [standardWeekSaving, setStandardWeekSaving] = useState(false);
   const [standardWeekError, setStandardWeekError] = useState<string | null>(null);
 
-  const activeVehicle = setup?.vehicles.find((vehicle) => vehicle.active) ?? null;
+  const householdVehicles = (setup?.vehicles ?? []).filter((v) => v.active);
+  const driverNameById = new Map(
+    (setup?.adults ?? []).map(({ profile: adult }) => [adult.id, adult.full_name]),
+  );
 
-  useEffect(() => {
-    if (activeVehicle) {
-      setVehicleLabel(activeVehicle.label);
-      setVehicleCapacity(String(activeVehicle.child_passenger_capacity));
-      setVehicleNotes(activeVehicle.notes ?? "");
-    }
-  }, [activeVehicle]);
+  const openAddVehicleForm = () => {
+    setEditingVehicleId(null);
+    setVehicleLabel("");
+    setVehicleCapacity("4");
+    setVehicleNotes("");
+    setVehicleDriverTag(profile.id);
+    setVehicleError(null);
+    setVehicleFormOpen(true);
+  };
+
+  const openEditVehicleForm = (vehicle: Tables<"vehicles">) => {
+    setEditingVehicleId(vehicle.id);
+    setVehicleLabel(vehicle.label);
+    setVehicleCapacity(String(vehicle.child_passenger_capacity));
+    setVehicleNotes(vehicle.notes ?? "");
+    setVehicleDriverTag(vehicle.default_driver_id ?? "");
+    setVehicleError(null);
+    setVehicleFormOpen(true);
+  };
+
+  const closeVehicleForm = () => {
+    setVehicleFormOpen(false);
+    setEditingVehicleId(null);
+    setVehicleError(null);
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -4270,13 +4298,11 @@ function AccountScreen({
     }
   };
 
-  const removeVehicle = async () => {
-    const activeVehicle = setup?.vehicles.find((v) => v.active) ?? null;
-    if (!activeVehicle) return;
+  const removeVehicle = async (vehicleId: string) => {
     setVehicleWorking(true);
     setVehicleError(null);
     try {
-      await repository.deactivateVehicle(activeVehicle.id, groupId);
+      await repository.deactivateVehicle(vehicleId, groupId);
       await onReloadHousehold();
     } catch (nextError) {
       setVehicleError(readableError(nextError));
@@ -4294,11 +4320,19 @@ function AccountScreen({
     setVehicleWorking(true);
     setVehicleError(null);
     try {
-      await repository.upsertVehicle(householdId, groupId, {
+      const fields = {
         label: vehicleLabel,
         childPassengerCapacity: capacity,
         notes: vehicleNotes || undefined,
-      });
+      };
+      const driverTag = vehicleDriverTag || null;
+      if (editingVehicleId) {
+        await repository.updateVehicle(editingVehicleId, householdId, groupId, fields, driverTag);
+      } else {
+        await repository.addVehicle(householdId, groupId, fields, driverTag ?? profile.id);
+      }
+      setVehicleFormOpen(false);
+      setEditingVehicleId(null);
       await onReloadHousehold();
     } catch (nextError) {
       setVehicleError(readableError(nextError));
@@ -4306,6 +4340,63 @@ function AccountScreen({
       setVehicleWorking(false);
     }
   };
+
+  const showDriverPicker = householdVehicles.length >= 2 || (!editingVehicleId && householdVehicles.length >= 1);
+  const vehicleForm = (
+    <div className="household-form" data-testid="vehicle-form" style={{ flex: 1 }}>
+      <label className="auth-field">
+        <span>Vehicle label</span>
+        <KeyboardInput
+          value={vehicleLabel}
+          onChange={(event) => setVehicleLabel(event.target.value)}
+          placeholder="For example, Blue Subaru"
+          autoComplete="off"
+        />
+      </label>
+      <label className="auth-field">
+        <span>Passenger seats</span>
+        <KeyboardInput
+          value={vehicleCapacity}
+          onChange={(event) => setVehicleCapacity(event.target.value.replace(/[^0-9]/g, ""))}
+          inputMode="numeric"
+          placeholder="1 to 12"
+          autoComplete="off"
+        />
+        <small>Total child-passenger capacity. Includes your own children when riding.</small>
+      </label>
+      <label className="auth-field">
+        <span>Notes (optional)</span>
+        <KeyboardInput
+          value={vehicleNotes}
+          onChange={(event) => setVehicleNotes(event.target.value)}
+          placeholder="Anything drivers need to know"
+          autoComplete="off"
+        />
+      </label>
+      {showDriverPicker ? (
+        <label className="buddy-picker">
+          <span>Who drives this car?</span>
+          <select
+            value={vehicleDriverTag}
+            onChange={(event) => setVehicleDriverTag(event.target.value)}
+            aria-label="Who drives this car"
+          >
+            {(setup?.adults ?? []).map(({ profile: adult }) => (
+              <option key={adult.id} value={adult.id}>{adult.full_name}</option>
+            ))}
+          </select>
+          <small>Used automatically when this parent offers to drive.</small>
+        </label>
+      ) : null}
+      {vehicleError ? <div className="auth-error" role="alert">{vehicleError}</div> : null}
+      <div className="household-row-actions">
+        <button className="primary-button" disabled={vehicleWorking} onClick={() => void saveVehicle()}>
+          {vehicleWorking ? "Saving…" : editingVehicleId ? "Save vehicle" : "Add vehicle"}
+        </button>
+        <button className="text-button" disabled={vehicleWorking} onClick={closeVehicleForm}>Cancel</button>
+      </div>
+    </div>
+  );
 
   const regenerateCode = async () => {
     setCodeWorking(true);
@@ -4586,48 +4677,58 @@ function AccountScreen({
 
       <section className="household-section" aria-labelledby="vehicle-section-heading">
         <div className="section-heading-row">
-          <h2 id="vehicle-section-heading">Vehicle</h2>
-        </div>
-        <div className="household-form" data-testid="vehicle-form">
-          <label className="auth-field">
-            <span>Vehicle label</span>
-            <KeyboardInput
-              value={vehicleLabel}
-              onChange={(event) => setVehicleLabel(event.target.value)}
-              placeholder="For example, Blue Subaru"
-              autoComplete="off"
-            />
-          </label>
-          <label className="auth-field">
-            <span>Passenger seats</span>
-            <KeyboardInput
-              value={vehicleCapacity}
-              onChange={(event) => setVehicleCapacity(event.target.value.replace(/[^0-9]/g, ""))}
-              inputMode="numeric"
-              placeholder="1 to 12"
-              autoComplete="off"
-            />
-            <small>Total child-passenger capacity. Includes your own children when riding.</small>
-          </label>
-          <label className="auth-field">
-            <span>Notes (optional)</span>
-            <KeyboardInput
-              value={vehicleNotes}
-              onChange={(event) => setVehicleNotes(event.target.value)}
-              placeholder="Anything drivers need to know"
-              autoComplete="off"
-            />
-          </label>
-          {vehicleError ? <div className="auth-error" role="alert">{vehicleError}</div> : null}
-          <button className="primary-button" disabled={vehicleWorking} onClick={() => void saveVehicle()}>
-            {vehicleWorking ? "Saving…" : activeVehicle ? "Update vehicle" : "Add vehicle"}
-          </button>
-          {activeVehicle ? (
-            <button className="text-button household-remove" disabled={vehicleWorking} onClick={() => void removeVehicle()}>
-              Remove vehicle
+          <h2 id="vehicle-section-heading">Vehicles</h2>
+          {!vehicleFormOpen ? (
+            <button className="inline-action" disabled={vehicleWorking} onClick={openAddVehicleForm}>
+              Add vehicle
             </button>
           ) : null}
         </div>
+        <ul className="household-list" data-testid="vehicle-list">
+          {householdVehicles.length === 0 && !vehicleFormOpen ? (
+            <li className="household-list-row">
+              <span className="household-empty">No vehicle yet. Add one if you plan to drive.</span>
+            </li>
+          ) : null}
+          {householdVehicles.map((vehicle) => (
+            <li key={vehicle.id} className="household-list-row">
+              {editingVehicleId === vehicle.id && vehicleFormOpen ? (
+                vehicleForm
+              ) : (
+                <div className="child-row-content">
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <strong>{vehicle.label}</strong>
+                    <span className="helper-copy">· {vehicle.child_passenger_capacity} seats</span>
+                    <div className="household-row-actions" style={{ marginLeft: "auto" }}>
+                      <button
+                        className="inline-action"
+                        disabled={vehicleWorking}
+                        onClick={() => openEditVehicleForm(vehicle)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="text-button household-remove"
+                        disabled={vehicleWorking}
+                        onClick={() => void removeVehicle(vehicle.id)}
+                        aria-label={`Remove ${vehicle.label}`}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                  {vehicle.notes ? <small className="helper-copy">{vehicle.notes}</small> : null}
+                  {vehicle.default_driver_id && driverNameById.has(vehicle.default_driver_id) ? (
+                    <small className="helper-copy">Driven by {driverNameById.get(vehicle.default_driver_id)}</small>
+                  ) : null}
+                </div>
+              )}
+            </li>
+          ))}
+          {vehicleFormOpen && !editingVehicleId ? (
+            <li className="household-list-row">{vehicleForm}</li>
+          ) : null}
+        </ul>
       </section>
 
       <section className="household-section" aria-labelledby="standard-week-heading">
@@ -4658,10 +4759,10 @@ function AccountScreen({
               <DrivePreferenceGrid
                 preferences={driveDefaults}
                 onChange={setDriveDefaults}
-                hasVehicle={!!activeVehicle}
+                hasVehicle={householdVehicles.length > 0}
                 disabled={standardWeekSaving}
               />
-              {!activeVehicle ? (
+              {householdVehicles.length === 0 ? (
                 <p className="helper-copy">Add a vehicle above to unlock driving preferences.</p>
               ) : null}
             </div>
@@ -5487,7 +5588,10 @@ function AdminReassignSection({
       .filter((m) => m.status === "active" && m.profile_id !== currentDriverId)
       .map((m) => {
         const profile = adminRoster.profiles.find((p) => p.id === m.profile_id);
-        const vehicle = adminRoster.vehicles.find((v) => v.household_id === m.household_id && v.active);
+        const vehicle = resolveDriverVehicle(
+        adminRoster.vehicles.filter((v) => v.household_id === m.household_id),
+        m.profile_id,
+      );
         if (!profile || !vehicle) return null;
         if (vehicle.child_passenger_capacity < riderCount) return null;
         return { profile, vehicle };
@@ -5909,10 +6013,10 @@ export default function Prototype() {
         (a) => a.driver_profile_id === identity.profile.id,
       );
       if (myDriveAvail.length === 0) {
-        const activeVehicle = householdSetup?.vehicles.find((v) => v.active) ?? null;
+        const myDefaultVehicle = resolveDriverVehicle(householdSetup?.vehicles ?? [], identity.profile.id);
         await repository.applyDefaultDrivePreferences(
           checkinRow.id, identity.profile.id, activePlanWeek.trips,
-          activeVehicle?.id ?? null, identity.group.id,
+          myDefaultVehicle?.id ?? null, identity.group.id,
         );
         needsReload = true;
       }

@@ -25,6 +25,32 @@ export type HouseholdSetup = {
   vehicles: Tables<"vehicles">[];
 };
 
+// Resolve the car a given parent drives, for households that may have more
+// than one active vehicle. Rule (mirrored in the volunteer RPCs):
+//   1. The active household vehicle tagged to this parent (default_driver_id),
+//      first by label if several are tagged to the same person.
+//   2. If the household has exactly one active vehicle, that one —
+//      single-car households behave exactly as before.
+//   3. Otherwise the smallest-capacity active vehicle (never overstates a
+//      car; ties broken by label for determinism).
+export function resolveDriverVehicle(
+  vehicles: Tables<"vehicles">[],
+  driverProfileId: string | null | undefined,
+): Tables<"vehicles"> | null {
+  const active = vehicles.filter((v) => v.active);
+  if (active.length === 0) return null;
+  const tagged = active
+    .filter((v) => driverProfileId != null && v.default_driver_id === driverProfileId)
+    .sort((a, b) => a.label.localeCompare(b.label));
+  if (tagged.length > 0) return tagged[0];
+  if (active.length === 1) return active[0];
+  return [...active].sort(
+    (a, b) =>
+      a.child_passenger_capacity - b.child_passenger_capacity
+      || a.label.localeCompare(b.label),
+  )[0];
+}
+
 export type WeekWithTrips = {
   week: Tables<"weeks">;
   trips: Tables<"trips">[];
@@ -671,15 +697,9 @@ export class CarpoolRepository {
     );
   }
 
-  async upsertVehicle(
-    householdId: string,
-    groupId: string,
+  private validateVehicleFields(
     fields: { label: string; childPassengerCapacity: number; notes?: string },
-  ) {
-    const userResult = await this.client.auth.getUser();
-    if (userResult.error) throw new Error(userResult.error.message);
-    if (!userResult.data.user) throw new Error("Sign in again to continue.");
-
+  ): { label: string; childPassengerCapacity: number; notes: string | null } {
     const trimmedLabel = fields.label.trim();
     if (!trimmedLabel) throw new Error("Enter a vehicle label.");
     if (fields.childPassengerCapacity < 1 || fields.childPassengerCapacity > 12) {
@@ -689,49 +709,31 @@ export class CarpoolRepository {
     if (trimmedNotes && trimmedNotes.length > 500) {
       throw new Error("Vehicle notes must be 500 characters or fewer.");
     }
+    return { label: trimmedLabel, childPassengerCapacity: fields.childPassengerCapacity, notes: trimmedNotes };
+  }
 
-    const existing = unwrap(
-      await this.client
-        .from("vehicles")
-        .select("*")
-        .eq("household_id", householdId)
-        .eq("active", true)
-        .order("label")
-        .maybeSingle(),
-    );
+  async addVehicle(
+    householdId: string,
+    groupId: string,
+    fields: { label: string; childPassengerCapacity: number; notes?: string },
+    defaultDriverId?: string | null,
+  ) {
+    const userResult = await this.client.auth.getUser();
+    if (userResult.error) throw new Error(userResult.error.message);
+    if (!userResult.data.user) throw new Error("Sign in again to continue.");
 
-    const payload = {
-      label: trimmedLabel,
-      child_passenger_capacity: fields.childPassengerCapacity,
-      notes: trimmedNotes || null,
-    };
-
-    if (existing) {
-      const updated = unwrapRequired<Tables<"vehicles">>(
-        await this.client
-          .from("vehicles")
-          .update(payload)
-          .eq("id", existing.id)
-          .select("*")
-          .single(),
-      );
-      await this.recordAudit(
-        groupId,
-        "vehicle_updated",
-        "vehicle",
-        updated.id,
-        { label: trimmedLabel, child_passenger_capacity: fields.childPassengerCapacity },
-      );
-      return updated;
-    }
+    const valid = this.validateVehicleFields(fields);
 
     const created = unwrapRequired<Tables<"vehicles">>(
       await this.client
         .from("vehicles")
         .insert({
-          ...payload,
           group_id: groupId,
           household_id: householdId,
+          label: valid.label,
+          child_passenger_capacity: valid.childPassengerCapacity,
+          notes: valid.notes,
+          default_driver_id: defaultDriverId ?? null,
           created_by: userResult.data.user.id,
         })
         .select("*")
@@ -742,9 +744,45 @@ export class CarpoolRepository {
       "vehicle_added",
       "vehicle",
       created.id,
-      { household_id: householdId, label: trimmedLabel, child_passenger_capacity: fields.childPassengerCapacity },
+      { household_id: householdId, label: valid.label, child_passenger_capacity: valid.childPassengerCapacity, default_driver_id: defaultDriverId ?? null },
     );
     return created;
+  }
+
+  async updateVehicle(
+    vehicleId: string,
+    householdId: string,
+    groupId: string,
+    fields: { label: string; childPassengerCapacity: number; notes?: string },
+    defaultDriverId?: string | null,
+  ) {
+    const userResult = await this.client.auth.getUser();
+    if (userResult.error) throw new Error(userResult.error.message);
+    if (!userResult.data.user) throw new Error("Sign in again to continue.");
+
+    const valid = this.validateVehicleFields(fields);
+
+    const updated = unwrapRequired<Tables<"vehicles">>(
+      await this.client
+        .from("vehicles")
+        .update({
+          label: valid.label,
+          child_passenger_capacity: valid.childPassengerCapacity,
+          notes: valid.notes,
+          default_driver_id: defaultDriverId ?? null,
+        })
+        .eq("id", vehicleId)
+        .select("*")
+        .single(),
+    );
+    await this.recordAudit(
+      groupId,
+      "vehicle_updated",
+      "vehicle",
+      updated.id,
+      { label: valid.label, child_passenger_capacity: valid.childPassengerCapacity, default_driver_id: defaultDriverId ?? null },
+    );
+    return updated;
   }
 
   async deactivateVehicle(vehicleId: string, groupId: string) {
@@ -1637,10 +1675,11 @@ export class CarpoolRepository {
       householdIds.add(m.household_id);
     }
 
-    const volunteerVehicles = vehicles.filter((v) => householdIds.has(v.household_id));
-    const volunteerVehicleCapacity = volunteerVehicles.length
-      ? Math.max(...volunteerVehicles.map((v) => v.child_passenger_capacity))
-      : null;
+    const volunteerVehicle = resolveDriverVehicle(
+      vehicles.filter((v) => householdIds.has(v.household_id)),
+      profileId,
+    );
+    const volunteerVehicleCapacity = volunteerVehicle?.child_passenger_capacity ?? null;
 
     const ridersByAssignment = new Map<string, Tables<"children">[]>();
     for (const ra of riderAssignments) {
@@ -2021,10 +2060,11 @@ export class CarpoolRepository {
     const childById = new Map(children.map((c) => [c.id, c]));
     const tripById = new Map(trips.map((t) => [t.id, t]));
 
-    const volunteerVehicles = vehicles.filter((v) => householdIds.has(v.household_id));
-    const volunteerVehicleCapacity = volunteerVehicles.length
-      ? Math.max(...volunteerVehicles.map((v) => v.child_passenger_capacity))
-      : null;
+    const volunteerVehicle = resolveDriverVehicle(
+      vehicles.filter((v) => householdIds.has(v.household_id)),
+      profileId,
+    );
+    const volunteerVehicleCapacity = volunteerVehicle?.child_passenger_capacity ?? null;
 
     // A child is "handled" (not surfaced as uncovered) if they have a
     // rider_assignment on:
