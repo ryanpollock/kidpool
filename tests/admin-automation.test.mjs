@@ -1656,6 +1656,17 @@ test("switch_afternoon_trip: destination assignment scoped to the old assignment
 
 // ─── Multi-vehicle households ("each parent drives their car") ──
 
+test("generic send loop: nonce suffix enables legitimate re-sends", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // The generic email loop's idempotency key takes an optional nonce suffix —
+  // without it, re-firing the published roster email after mid-week admin
+  // edits 409s on Resend's same-key-different-body rule (seen in production
+  // Sep 6: auto-publish email_failed=19 after an admin reassign re-fired
+  // 'published' for the same version earlier in the day).
+  assert.match(ts, /const idempotencySuffix = nonce \? `-\$\{nonce\}` : "";\s*\n\s*const idempotencyKey = `carpool-\$\{tag\}-\$\{profile\.id\}\$\{idempotencySuffix\}`;/);
+});
+
 const multiVehicleMigrationUrl = new URL(
   "../supabase/migrations/202609060002_volunteer_rpcs_per_parent_vehicle.sql",
   import.meta.url,
