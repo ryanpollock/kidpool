@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useMemo, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Session } from "@supabase/supabase-js";
 import * as Sentry from "@sentry/react";
@@ -5988,6 +5988,53 @@ export default function Prototype() {
     if (!chatThreadId) setChatInboxKey((k) => k + 1);
   }, [chatThreadId]);
 
+  // The Chat tab's unread badge is an app-level concern: it must show at
+  // sign-in (before the tab is ever opened) and update live from any tab.
+  // Single source: list_chat_threads, muted threads excluded.
+  const refreshChatUnread = useCallback(async () => {
+    try {
+      const rows = await repository.listChatThreads();
+      setChatUnreadCount(rows.reduce((sum, t) => sum + (t.notifications_muted ? 0 : t.unread_count), 0));
+    } catch {
+      // best-effort — the inbox load also updates the badge
+    }
+  }, [repository]);
+
+  const handleChatThreadOpened = useCallback(async () => {
+    await refreshChatUnread();
+  }, [refreshChatUnread]);
+
+  // Count once identity resolves so the badge is present immediately.
+  useEffect(() => {
+    if (!identity?.membership) return;
+    void refreshChatUnread();
+  }, [identity?.membership, refreshChatUnread]);
+
+  // Live badge from any tab: every message bumps chat_threads.last_message_at,
+  // so one nav-level subscription covers arrivals across all threads. Delivery
+  // is RLS-enforced (a parent only hears threads they can read). Debounced so
+  // bursts cost one re-count.
+  const chatNavReloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!identity?.membership) return;
+    const client = getSupabaseClient();
+    const channel = client
+      .channel(`chat-threads-nav:${identity.group.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "chat_threads", filter: `group_id=eq.${identity.group.id}` },
+        () => {
+          if (chatNavReloadTimer.current) clearTimeout(chatNavReloadTimer.current);
+          chatNavReloadTimer.current = setTimeout(() => void refreshChatUnread(), 1500);
+        },
+      )
+      .subscribe();
+    return () => {
+      if (chatNavReloadTimer.current) clearTimeout(chatNavReloadTimer.current);
+      client.removeChannel(channel);
+    };
+  }, [identity?.group.id, identity?.membership, refreshChatUnread]);
+
   const loadIdentity = useCallback(async () => {
     setIdentityLoading(true);
     setAuthError(null);
@@ -6974,17 +7021,6 @@ const navItems = useMemo(() => {
     setChatThreadId(null);
     setActiveTab(tab);
   };
-
-  // Refresh the nav badge when a thread screen reports the read cursor
-  // advanced (or a realtime event landed) — cheap single RPC.
-  const handleChatThreadOpened = useCallback(async () => {
-    try {
-      const rows = await repository.listChatThreads();
-      setChatUnreadCount(rows.reduce((sum, t) => sum + (t.notifications_muted ? 0 : t.unread_count), 0));
-    } catch {
-      // best-effort — the inbox reload also updates the badge
-    }
-  }, [repository]);
 
   // Open (or create) the DM with another parent. Entry points
   // (ParentDetailScreen, DriveDetailScreen) wrap this in their own

@@ -276,6 +276,28 @@ test("Prototype integrates the chat tab, thread layer, and entry points", async 
   assert.match(source, /!reviewOpen && !accountOpen && !directoryOpen && !directoryParentId && !driveDetailId && !faqOpen && !chatThreadId/);
 });
 
+test("nav badge is fed at the app level, not only from the inbox", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+
+  // Unread count refreshes once identity resolves, so the badge is present
+  // at sign-in before the Chat tab is ever opened.
+  assert.match(source, /refreshChatUnread/);
+  assert.match(source, /if \(!identity\?\.membership\) return;\s*void refreshChatUnread\(\);/);
+
+  // Nav-level realtime channel: every message bumps chat_threads.last_message_at,
+  // so one subscription covers badge updates from any tab. Delivery is
+  // RLS-enforced; bursts are debounced into a single re-count.
+  assert.match(source, /channel\(`chat-threads-nav:\$\{identity\.group\.id\}`\)/);
+  assert.match(source, /table: "chat_threads", filter: `group_id=eq\.\$\{identity\.group\.id\}`/);
+  assert.match(source, /setTimeout\(\(\) => void refreshChatUnread\(\), 1500\)/);
+  assert.match(source, /client\.removeChannel\(channel\)/);
+
+  // Muted threads never contribute to the badge total, and thread opens
+  // re-sync the count.
+  assert.match(source, /t\.notifications_muted \? 0 : t\.unread_count/);
+  assert.match(source, /handleChatThreadOpened = useCallback\(async \(\) => \{\s*await refreshChatUnread\(\);/);
+});
+
 test("test data cleanup truncates chat tables in FK-safe order", async () => {
   const dbSource = await readFile(dbTruncateUrl, "utf8");
 
