@@ -90,6 +90,25 @@ test("Chat: everyone thread exists with disclosure; parents can send messages", 
     // Disclosure system note mentions Crew AI
     await expect(page.getByTestId("chat-system-note").first()).toContainText("Crew AI");
 
+    // Geometry guard: the first message must sit fully below the thread
+    // header. Regression: prototype.css's .subpage-header collision wrapped
+    // the mute bell onto a second grid row, overlaying the message list.
+    await page.locator(".chat-system-note").first().waitFor({ timeout: 10_000 });
+    const geometry = await page.evaluate(() => {
+      const header = document.querySelector(".chat-thread-header")?.getBoundingClientRect();
+      const note = document.querySelector(".chat-system-note")?.getBoundingClientRect();
+      const bell = document.querySelector('[data-testid="chat-mute-button"]')?.getBoundingClientRect();
+      return { headerBottom: header?.bottom ?? 0, noteTop: note?.top ?? 0, bellBottom: bell?.bottom ?? 0, headerBottomEdge: header?.bottom ?? 0 };
+    });
+    assert.ok(
+      geometry.noteTop >= geometry.headerBottom + 8,
+      `First message must clear the header by 8px+ (note top ${geometry.noteTop.toFixed(1)}, header bottom ${geometry.headerBottom.toFixed(1)})`,
+    );
+    assert.ok(
+      geometry.bellBottom <= geometry.headerBottom + 1,
+      `Bell must stay inside the header row (bell bottom ${geometry.bellBottom.toFixed(1)}, header bottom ${geometry.headerBottom.toFixed(1)})`,
+    );
+
     // Send a message
     await page.getByTestId("chat-composer-input").fill("Testing the group chat");
     await page.getByTestId("chat-send-button").click();
@@ -372,6 +391,40 @@ test("Chat: badge updates live while sitting on another tab", async ({ browser }
   } finally {
     await contextA.close();
     await contextB.close();
+    cleanupChatData();
+  }
+});
+test("Chat: bell toggle visibly mutes and unmutes a thread", async ({ page }) => {
+  test.skip(skip, "No service key available");
+  test.setTimeout(90_000);
+
+  cleanupChatData();
+  const alpha = setupHousehold(16, "Sigma")!;
+  assert.ok(alpha);
+
+  try {
+    await signInWithTestAuth(page, alpha.email);
+    await expect(page.getByTestId("nav-chat")).toBeVisible({ timeout: 20_000 });
+    await openChatTab(page);
+    await openThreadByTitle(page, "Everyone");
+
+    const bell = page.getByTestId("chat-mute-button");
+    await expect(page.locator(".chat-muted-flag")).toHaveCount(0);
+
+    // Mute: the slash wrapper renders (HTML span, not SVG), the pinned
+    // "Muted" flag appears in the subtitle, and the aria-label flips.
+    await bell.click();
+    await expect(page.locator(".chat-muted-flag")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".chat-muted-flag")).toHaveText("Muted");
+    assert.equal(await page.locator(".chat-mute-icon--muted").count(), 1, "Muted slash wrapper must render");
+    assert.equal(await bell.getAttribute("aria-label"), "Unmute notifications");
+
+    // Unmute: every visible trace clears.
+    await bell.click();
+    await expect(page.locator(".chat-muted-flag")).toHaveCount(0, { timeout: 15_000 });
+    assert.equal(await page.locator(".chat-mute-icon--muted").count(), 0);
+    assert.equal(await bell.getAttribute("aria-label"), "Mute notifications");
+  } finally {
     cleanupChatData();
   }
 });

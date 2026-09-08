@@ -36,6 +36,24 @@ import "./chat.css";
 
 const CHAT_PAGE_SIZE = 60;
 
+// Merge a message into the chronological list, deduped by id and ordered by
+// created_at. Realtime delivery can lag (a sender's own message appears via
+// the local append while other parents' events are still in flight), so
+// blind appends would misorder the thread — insert at the created_at position.
+function mergeMessageChronological(
+  current: ChatMessageRow[],
+  incoming: ChatMessageRow,
+): ChatMessageRow[] {
+  if (current.some((m) => m.id === incoming.id)) return current;
+  const at = new Date(incoming.created_at).getTime();
+  let index = current.length;
+  for (let i = current.length - 1; i >= 0; i--) {
+    if (new Date(current[i].created_at).getTime() <= at) break;
+    index = i;
+  }
+  return [...current.slice(0, index), incoming, ...current.slice(index)];
+}
+
 function readableChatError(error: unknown): string {
   const message = error instanceof Error ? error.message : "Something went wrong.";
   if (/do not have access/i.test(message)) return "You don't have access to this conversation.";
@@ -567,7 +585,11 @@ export function ChatInboxScreen({
         <span className="chat-thread-info">
           <span className="chat-thread-name">
             {threadTitle(thread, myProfileId)}
-            {thread.notifications_muted ? <BellIcon className="chat-mute-icon--muted" width="13" height="13" /> : null}
+            {thread.notifications_muted ? (
+              <span className="chat-mute-icon chat-mute-icon--muted">
+                <BellIcon width="13" height="13" />
+              </span>
+            ) : null}
             {thread.kind === "everyone" ? <span className="chat-thread-badge">All parents</span> : null}
           </span>
           <span className="chat-thread-preview">{inboxPreview(thread)}</span>
@@ -726,10 +748,7 @@ export function ChatThreadScreen({
         { event: "INSERT", schema: "public", table: "chat_messages", filter: `thread_id=eq.${threadId}` },
         (payload) => {
           const incoming = payload.new as ChatMessageRow;
-          setMessages((current) => {
-            if (current.some((m) => m.id === incoming.id)) return current;
-            return [...current, incoming];
-          });
+          setMessages((current) => mergeMessageChronological(current, incoming));
           void markRead();
         },
       )
@@ -776,10 +795,7 @@ export function ChatThreadScreen({
     try {
       const sent = await repository.sendChatMessage(threadId, body);
       setDraft("");
-      setMessages((current) => {
-        if (current.some((m) => m.id === sent.id)) return current;
-        return [...current, sent];
-      });
+      setMessages((current) => mergeMessageChronological(current, sent));
       setThread((current) =>
         current
           ? {
@@ -842,7 +858,23 @@ export function ChatThreadScreen({
   };
 
   const proposalById = useMemo(() => new Map(proposals.map((p) => [p.id, p])), [proposals]);
+  const firstMessageByProposal = useMemo(() => {
+    const first = new Map<string, string>();
+    for (const message of messages) {
+      if (!message.proposal_id) continue;
+      if (!first.has(message.proposal_id)) first.set(message.proposal_id, message.id);
+    }
+    return first;
+  }, [messages]);
   const isGroupish = thread ? thread.kind !== "dm" : false;
+
+  // Composer auto-grow: textareas do not size to content, so the height set
+  // in onChange is cleared whenever the draft empties (send or manual delete).
+  useEffect(() => {
+    if (draft !== "") return;
+    const el = document.querySelector<HTMLTextAreaElement>('textarea[data-testid="chat-composer-input"]');
+    if (el) el.style.height = "";
+  }, [draft]);
 
   return (
     <div className="chat-thread-screen" data-testid="chat-thread-screen">
@@ -864,9 +896,12 @@ export function ChatThreadScreen({
           <div>
             <h1>{thread ? threadTitle(thread, myProfileId) : "Conversation"}</h1>
             <small>
-              {thread ? threadSubtitle(thread, myProfileId) : ""}
-              {thread?.kind === "everyone" ? " · Crew AI is in this chat" : ""}
-              {thread?.kind !== "everyone" && thread ? " · Crew AI will join to help" : ""}
+              <span className="chat-header-sub">
+                {thread ? threadSubtitle(thread, myProfileId) : ""}
+                {thread?.kind === "everyone" ? " · Crew AI is in this chat" : ""}
+                {thread?.kind !== "everyone" && thread ? " · Crew AI will join to help" : ""}
+              </span>
+              {thread?.notifications_muted ? <span className="chat-muted-flag">Muted</span> : null}
             </small>
           </div>
         </div>
@@ -877,7 +912,9 @@ export function ChatThreadScreen({
           aria-label={thread?.notifications_muted ? "Unmute notifications" : "Mute notifications"}
           data-testid="chat-mute-button"
         >
-          {thread?.notifications_muted ? <BellIcon className="chat-mute-icon--muted" /> : <BellIcon />}
+          <span className={thread?.notifications_muted ? "chat-mute-icon chat-mute-icon--muted" : "chat-mute-icon"}>
+            <BellIcon />
+          </span>
         </button>
       </header>
 
@@ -902,14 +939,20 @@ export function ChatThreadScreen({
                 </button>
               ) : null}
               {messages.map((message) => {
+                // A proposal can be referenced by several messages (the
+                // agent's offer + its post-confirm "Done" note) — render the
+                // card only on the proposal's first message so it never
+                // appears twice in one thread.
                 const proposal = message.proposal_id ? proposalById.get(message.proposal_id) ?? null : null;
+                const firstProposalMessageId = proposal ? firstMessageByProposal.get(proposal.id) : undefined;
+                const renderProposal = proposal && firstProposalMessageId === message.id ? proposal : null;
                 return (
                   <MessageBubble
                     key={message.id}
                     message={message}
                     mine={message.sender_profile_id === myProfileId && message.sender_kind === "parent"}
                     showName={isGroupish}
-                    proposal={proposal}
+                    proposal={renderProposal}
                     myProfileId={myProfileId}
                     proposalWorking={proposalWorking}
                     proposalError={
@@ -935,12 +978,26 @@ export function ChatThreadScreen({
         className="chat-composer"
         style={{ paddingBottom: `calc(${bottomInset}px + 10px)` }}
       >
+        {/* Enter sends, Shift+Enter inserts a newline (product decision).
+            The isComposing guard keeps IME/emoji-picker confirmation
+            presses from sending mid-composition. */}
         <KeyboardTextarea
           placeholder="Message…"
           value={draft}
           maxLength={4000}
           rows={1}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            const el = e.target;
+            el.style.height = "auto";
+            el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              void send();
+            }
+          }}
           data-testid="chat-composer-input"
         />
         <button

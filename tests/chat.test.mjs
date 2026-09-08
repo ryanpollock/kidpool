@@ -10,6 +10,7 @@ const typesUrl = new URL("../src/lib/supabase/database.types.ts", import.meta.ur
 const repoUrl = new URL("../src/lib/supabase/carpool-repository.ts", import.meta.url);
 const prototypeUrl = new URL("../src/Prototype.tsx", import.meta.url);
 const chatScreensUrl = new URL("../src/ChatScreens.tsx", import.meta.url);
+const chatCssUrl = new URL("../src/chat.css", import.meta.url);
 const sendPushUrl = new URL("../supabase/functions/send-push/index.ts", import.meta.url);
 const dbTruncateUrl = new URL("../tests/lib/db.ts", import.meta.url);
 
@@ -225,6 +226,50 @@ test("send-push chat_message branch is push-only, mutes-aware, and deep-links", 
   );
   assert.doesNotMatch(branch, /api\.resend\.com/, "chat_message must be push-only");
   assert.doesNotMatch(branch, /RESEND_API_KEY/, "chat_message must not read email config");
+});
+
+test("composer: Enter sends, Shift+Enter is a newline, IME is respected", async () => {
+  const source = await readFile(chatScreensUrl, "utf8");
+
+  // Product decision: Enter submits, Shift+Enter forces a newline
+  assert.match(source, /e\.key === "Enter" && !e\.shiftKey/);
+  assert.match(source, /e\.nativeEvent\.isComposing/, "IME composition Enter must not send");
+  assert.match(source, /e\.preventDefault\(\);\s*void send\(\);/);
+
+  // Composer grows with content and resets when the draft empties
+  assert.match(source, /Math\.min\(el\.scrollHeight, 96\)/);
+  assert.match(source, /el\.style\.height = "";/);
+});
+
+test("mute control: slash renders on an HTML wrapper with a visible Muted flag", async () => {
+  const source = await readFile(chatScreensUrl, "utf8");
+
+  // Pseudo-elements don't render on SVG — the muted slash must live on a
+  // span wrapper, never on the BellIcon itself (the original dead-looking
+  // toggle). A visible "Muted" flag pins the state next to the subtitle.
+  assert.match(source, /<span className=\{thread\?\.notifications_muted \? "chat-mute-icon chat-mute-icon--muted" : "chat-mute-icon"\}>/);
+  assert.match(source, /chat-muted-flag/);
+  assert.doesNotMatch(source, /<BellIcon className="chat-mute-icon--muted"/);
+
+  const css = await readFile(chatCssUrl, "utf8");
+  assert.match(css, /\.chat-mute-icon--muted::after/);
+  assert.match(css, /\.chat-muted-flag \{/);
+});
+
+test("thread header beats prototype.css subpage-header collisions by specificity", async () => {
+  const css = await readFile(chatCssUrl, "utf8");
+
+  // prototype.css's `.subpage-header { grid-template-columns: 36px 1fr }`
+  // and `.subpage-header h1 { font-size: 34px; Georgia }` are same-or-higher
+  // specificity with load-order-dependent winners. Without the boost the
+  // bell wraps onto a second grid row and overlays the message list, and
+  // the title renders at 34px (the production overlap report). Never rely
+  // on CSS load order across files.
+  assert.match(css, /\.subpage-header\.chat-thread-header \{/);
+  assert.match(css, /\.subpage-header\.chat-thread-header \.chat-thread-header-info h1 \{/);
+  assert.match(css, /grid-template-columns: 36px 1fr 36px;/);
+  assert.match(css, /font-family: inherit;/);
+  assert.match(css, /\.chat-header-sub \{/);
 });
 
 test("ChatScreens follows the mobile runtime contract", async () => {

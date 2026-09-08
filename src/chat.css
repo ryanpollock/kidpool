@@ -119,23 +119,6 @@
   color: var(--ink-soft);
 }
 
-.chat-mute-icon--muted {
-  position: relative;
-  opacity: 0.55;
-}
-
-.chat-mute-icon--muted::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: -3px;
-  left: -3px;
-  height: 2px;
-  border-radius: 2px;
-  background: currentColor;
-  transform: rotate(-45deg);
-}
-
 .chat-thread-badge {
   padding: 1px 7px;
   border-radius: 999px;
@@ -204,7 +187,14 @@
 /* MobileScroll (mobile-page) is absolutely positioned inset:0 by the
    runtime, so the header and composer overlay it with z-index and the
    scrolling content pads to clear them (same pattern as the bottom nav
-   over the app's tab pages). */
+   over the app's tab pages).
+   The header intentionally composes with prototype.css's .subpage-header,
+   so its selectors are SPECIFICITY-BOOSTED (.subpage-header.chat-…):
+   prototype.css's `.subpage-header { grid-template-columns: 36px 1fr }`
+   and `.subpage-header h1 { font-size: 34px; Georgia }` are same-or-higher
+   specificity with load-order-dependent winners — without the boost the
+   bell wraps to a second grid row and covers the message list (the
+   production overlap report). Never rely on CSS load order across files. */
 
 .chat-thread-layer {
   position: absolute;
@@ -221,7 +211,7 @@
   background: var(--paper);
 }
 
-.chat-thread-header {
+.subpage-header.chat-thread-header {
   position: absolute;
   z-index: 2;
   top: 0;
@@ -241,21 +231,45 @@
   min-width: 0;
 }
 
-.chat-thread-header-info h1 {
+.subpage-header.chat-thread-header .chat-thread-header-info h1 {
   overflow: hidden;
   margin: 0;
+  font-family: inherit;
   font-size: 17px;
+  font-weight: 700;
+  letter-spacing: normal;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.chat-thread-header-info small {
-  display: block;
+/* The subtitle is a flex row: the descriptive text ellipsizes, while the
+   Muted flag (from the bell toggle) is pinned at the tail and never cut. */
+.subpage-header.chat-thread-header .chat-thread-header-info small {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
   color: var(--ink-soft);
   font-size: 11px;
+}
+
+.chat-header-sub {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chat-muted-flag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--amber-pale);
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .chat-avatar--group {
@@ -270,6 +284,30 @@
 
 .chat-mute-button[aria-label="Mute notifications"] {
   color: var(--ink-soft);
+}
+
+/* The mute icon is wrapped in an HTML span so the "muted" slash (::after)
+   actually renders — pseudo-elements don't render on SVG elements, and the
+   bell directly on the icon was invisible when muted (production report). */
+.chat-mute-icon {
+  position: relative;
+  display: inline-flex;
+}
+
+.chat-mute-icon--muted {
+  color: var(--amber);
+}
+
+.chat-mute-icon--muted::after {
+  content: "";
+  position: absolute;
+  top: 52%;
+  right: -4px;
+  left: -4px;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  transform: rotate(-45deg);
 }
 
 .chat-thread-error {
