@@ -274,3 +274,104 @@ test("Chat: proposal card renders, confirm is gated, and decline posts a note", 
     cleanupChatData();
   }
 });
+
+test("Chat: unread badge shows on sign-in without opening the Chat tab", async ({ browser }) => {
+  test.skip(skip, "No service key available");
+  test.setTimeout(90_000);
+
+  cleanupChatData();
+  const alpha = setupHousehold(12, "Mu")!;
+  const beta = setupHousehold(13, "Nu")!;
+  assert.ok(alpha && beta);
+
+  // Alpha ensures the everyone thread exists (enrolling both) and sends
+  // two messages Beta has never read.
+  const contextA = await browser.newContext();
+  const pageA = await contextA.newPage();
+  try {
+    await signInWithTestAuth(pageA, alpha.email);
+    await expect(pageA.getByTestId("nav-chat")).toBeVisible({ timeout: 20_000 });
+    await openChatTab(pageA);
+    await openThreadByTitle(pageA, "Everyone");
+    await pageA.getByTestId("chat-composer-input").fill("Badge one");
+    await pageA.getByTestId("chat-send-button").click();
+    await expect(pageA.locator(".chat-bubble-body", { hasText: "Badge one" }).first()).toBeVisible();
+    await pageA.getByTestId("chat-composer-input").fill("Badge two");
+    await pageA.getByTestId("chat-send-button").click();
+    await expect(pageA.locator(".chat-bubble-body", { hasText: "Badge two" }).first()).toBeVisible();
+  } finally {
+    await contextA.close();
+  }
+
+  // Beta signs in fresh and lands on Home — the Chat tab badge must already
+  // show 2 without the tab ever being opened (counted at identity load).
+  const contextB = await browser.newContext();
+  const pageB = await contextB.newPage();
+  try {
+    await signInWithTestAuth(pageB, beta.email);
+    await expect(pageB.getByTestId("home-screen")).toBeVisible({ timeout: 20_000 });
+    const badge = pageB.getByTestId("nav-chat").locator(".nav-badge");
+    await expect(badge).toBeVisible({ timeout: 15_000 });
+    await expect(badge).toHaveText("2");
+
+    // Opening Chat shows the per-thread unread; reading the thread clears
+    // the badge entirely. A real reader sees the messages before leaving:
+    // assert the bubbles rendered (and the app-level refresh that follows
+    // markRead) BEFORE backing out — otherwise the test races the thread
+    // screen's async initial load and the unread state is legitimately kept.
+    await openChatTab(pageB);
+    const everyoneRow = pageB.locator(".chat-thread-row", { hasText: "Everyone" }).first();
+    await expect(everyoneRow.getByTestId("chat-unread-badge")).toHaveText("2");
+    await everyoneRow.click();
+    await expect(pageB.getByTestId("chat-thread-screen")).toBeVisible();
+    await expect(pageB.locator(".chat-bubble-body", { hasText: "Badge one" }).first()).toBeVisible();
+    await expect(pageB.locator(".chat-bubble-body", { hasText: "Badge two" }).first()).toBeVisible();
+    await expect(pageB.getByTestId("nav-chat").locator(".nav-badge")).toHaveCount(0, { timeout: 10_000 });
+    await pageB.getByTestId("chat-thread-back").click();
+    await expect(pageB.getByTestId("nav-chat").locator(".nav-badge")).toHaveCount(0);
+  } finally {
+    await contextB.close();
+    cleanupChatData();
+  }
+});
+
+test("Chat: badge updates live while sitting on another tab", async ({ browser }) => {
+  test.skip(skip, "No service key available");
+  test.setTimeout(90_000);
+
+  cleanupChatData();
+  const alpha = setupHousehold(14, "Xi")!;
+  const beta = setupHousehold(15, "Omicron")!;
+  assert.ok(alpha && beta);
+
+  const contextA = await browser.newContext();
+  const contextB = await browser.newContext();
+  const pageA = await contextA.newPage();
+  const pageB = await contextB.newPage();
+
+  try {
+    // Alpha ensures the everyone thread and waits inside it.
+    await signInWithTestAuth(pageA, alpha.email);
+    await expect(pageA.getByTestId("nav-chat")).toBeVisible({ timeout: 20_000 });
+    await openChatTab(pageA);
+    await openThreadByTitle(pageA, "Everyone");
+
+    // Beta signs in and stays on Home — no badge yet (nothing unread).
+    await signInWithTestAuth(pageB, beta.email);
+    await expect(pageB.getByTestId("home-screen")).toBeVisible({ timeout: 20_000 });
+    await expect(pageB.getByTestId("nav-chat").locator(".nav-badge")).toHaveCount(0);
+
+    // Alpha sends; Beta's badge lights up on Home without any navigation.
+    await pageA.getByTestId("chat-composer-input").fill("Live badge");
+    await pageA.getByTestId("chat-send-button").click();
+    await expect(pageA.locator(".chat-bubble-body", { hasText: "Live badge" }).first()).toBeVisible();
+
+    const badge = pageB.getByTestId("nav-chat").locator(".nav-badge");
+    await expect(badge).toBeVisible({ timeout: 15_000 });
+    await expect(badge).toHaveText("1");
+  } finally {
+    await contextA.close();
+    await contextB.close();
+    cleanupChatData();
+  }
+});
