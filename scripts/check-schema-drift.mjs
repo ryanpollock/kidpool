@@ -85,6 +85,10 @@ const tableToRowType = {
   rider_assignments: "RiderAssignmentRow",
   driver_confirmations: "DriverConfirmationRow",
   audit_events: "AuditEventRow",
+  chat_threads: "ChatThreadRow",
+  chat_participants: "ChatParticipantRow",
+  chat_messages: "ChatMessageRow",
+  chat_proposals: "ChatProposalRow",
 };
 
 async function main() {

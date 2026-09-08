@@ -5,7 +5,6 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { getTestEnv, type TestEnv } from "./env.ts";
 
 export const PILOT_GROUP_ID = "c1000000-0000-4000-8000-000000000001";
 export const TEST_PASSWORD = "TestPass123!";
@@ -31,11 +30,16 @@ export interface SpecEnv {
 
 /** Resolve spec env. Call once at module load (not inside tests). */
 export function getSpecEnv(): SpecEnv {
-  const env = getTestEnv();
-  if (env.target === "local") {
+  // Spec target must match the dev server playwright.config starts
+  // (dev:test only when TEST_DB_TARGET=local; dev:staging otherwise).
+  // Defaulting to local here mismatched the staging dev server and made
+  // every helper-based spec (reassignment, chat, …) fail with "Invalid
+  // login credentials" under plain `npm run test:runtime`, while the
+  // legacy specs hardcoded staging and failed under test:runtime:local.
+  if (process.env.TEST_DB_TARGET === "local") {
     return {
       target: "local",
-      supabaseUrl: env.supabaseUrl,
+      supabaseUrl: "http://127.0.0.1:54321",
       serviceKey: LOCAL_SERVICE_KEY,
       anonKey: LOCAL_ANON_KEY,
       groupId: PILOT_GROUP_ID,
@@ -203,7 +207,7 @@ export function makeAuth(env: SpecEnv) {
  *  Staging mode falls back to the spec's own cleanup function. */
 export function truncateAll(runSql: (sql: string) => { rows?: unknown[]; error?: { message: string } }, groupId: string) {
   runSql(`
-    TRUNCATE public.drive_status, public.rider_assignments, public.driver_confirmations, public.driver_assignments, public.reassignment_requests, public.schedule_versions, public.ride_requests, public.driver_availability, public.weekly_checkins, public.trips, public.weeks, public.audit_events, public.vehicles, public.children, public.household_join_codes, public.memberships, public.households, public.push_subscriptions, public.profiles RESTART IDENTITY;
+    TRUNCATE public.chat_messages, public.chat_proposals, public.chat_participants, public.chat_threads, public.drive_status, public.rider_assignments, public.driver_confirmations, public.driver_assignments, public.reassignment_requests, public.schedule_versions, public.ride_requests, public.driver_availability, public.weekly_checkins, public.trips, public.weeks, public.audit_events, public.vehicles, public.children, public.household_join_codes, public.memberships, public.households, public.push_subscriptions, public.profiles RESTART IDENTITY;
     DELETE FROM auth.users WHERE email LIKE '%@test.kidpool' OR email LIKE '%@e2e.kidpool' OR email LIKE '%@pilot.kidpool' OR email LIKE '%@lib.test.kidpool';
     INSERT INTO public.groups (id, name, slug, timezone, meeting_point, school_name) VALUES ('${groupId}', 'Midtown Terrace–Presidio Carpool', 'midtown-presidio', 'America/Los_Angeles', 'Midtown Terrace Playground', 'Presidio Middle School') ON CONFLICT (id) DO UPDATE SET name = excluded.name, slug = excluded.slug, timezone = excluded.timezone, meeting_point = excluded.meeting_point, school_name = excluded.school_name;
   `);

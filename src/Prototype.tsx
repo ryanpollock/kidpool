@@ -7,6 +7,7 @@ import {
   BackpackIcon,
   BellIcon,
   CalendarIcon,
+  ChatBubbleIcon,
   CheckCircledIcon,
   CheckIcon,
   ChevronLeftIcon,
@@ -27,6 +28,7 @@ import {
   SunIcon,
 } from "@radix-ui/react-icons";
 import { KeyboardInput, MobileScroll, BottomSheet, useScreenPortal } from "./mobile";
+import { ChatInboxScreen, ChatThreadScreen } from "./ChatScreens";
 import {
   CarpoolRepository,
   getSupabaseClient,
@@ -46,7 +48,7 @@ import {
 import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference, ReassignmentRequestRow } from "./lib/supabase/database.types";
 import { getNoSchoolReason, todayInTimezone, dateInTimezone, isWithinStatusWindow } from "./lib/school-calendar";
 
-type AppTab = "home" | "plan" | "week" | "coordinate";
+type AppTab = "home" | "plan" | "week" | "chat" | "coordinate";
 
 // Staging detection: the Supabase URL is baked at build time. On staging
 // builds it contains the staging project ref; on production it doesn't.
@@ -4940,12 +4942,14 @@ function ParentDetailWrapper({
   groupChildren,
   repository,
   onBack,
+  onMessage,
 }: {
   parentId: string;
   groupId: string;
   groupChildren: Tables<"children">[];
   repository: CarpoolRepository;
   onBack: () => void;
+  onMessage: (profileId: string) => Promise<void>;
 }) {
   const [entry, setEntry] = useState<DirectoryEntry | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4996,6 +5000,7 @@ function ParentDetailWrapper({
       entry={entry}
       children={householdChildren}
       onBack={onBack}
+      onMessage={onMessage}
     />
   );
 }
@@ -5004,11 +5009,29 @@ function ParentDetailScreen({
   entry,
   children,
   onBack,
+  onMessage,
 }: {
   entry: DirectoryEntry;
   children: Tables<"children">[];
   onBack: () => void;
+  onMessage: (profileId: string) => Promise<void>;
 }) {
+  const [messageWorking, setMessageWorking] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
+
+  const handleMessage = async () => {
+    if (messageWorking) return;
+    setMessageWorking(true);
+    setMessageError(null);
+    try {
+      await onMessage(entry.id);
+    } catch (e) {
+      setMessageError(e instanceof Error ? e.message : "Couldn't open the conversation.");
+    } finally {
+      setMessageWorking(false);
+    }
+  };
+
   return (
     <div className="screen-content parent-detail-screen" data-testid="parent-detail-screen">
       <header className="subpage-header">
@@ -5039,6 +5062,17 @@ function ParentDetailScreen({
           )}
         </div>
       </section>
+
+      <button
+        className="primary-button parent-detail-message"
+        onClick={() => void handleMessage()}
+        disabled={messageWorking}
+        data-testid="parent-detail-message"
+      >
+        <ChatBubbleIcon width="15" height="15" />
+        {messageWorking ? "Opening…" : `Message ${entry.full_name.split(" ")[0]}`}
+      </button>
+      {messageError ? <div className="auth-error" role="alert">{messageError}</div> : null}
 
       <section className="drive-detail-children">
         <h2>Children ({children.length})</h2>
@@ -5188,6 +5222,31 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     ],
   },
   {
+    title: "Chat and Crew AI",
+    items: [
+      {
+        q: "How does the Chat tab work?",
+        a: "The Chat tab is for messaging other parents. The \"Everyone\" conversation includes every parent in the carpool. You can also start a private conversation from the parent directory, or create a group chat with a selection of parents using the + button.",
+      },
+      {
+        q: "Who can see my conversations?",
+        a: "Only the parents in a conversation can see it. The carpool coordinator can currently view and post in all conversations to help with coordination — this oversight can be turned off for the group later.",
+      },
+      {
+        q: "What is Crew AI?",
+        a: "Crew AI is the carpool assistant inside every conversation. It can answer schedule questions (\"who drives Wednesday?\") and propose changes when plans shift — like cancelling a ride, switching pickup times, or finding coverage for a drive.",
+      },
+      {
+        q: "Can Crew AI change the schedule on its own?",
+        a: "No. Crew AI only makes proposals — a card appears in the chat with a Confirm button. Nothing changes on the schedule unless a parent confirms it. The required parent is always the one the change affects.",
+      },
+      {
+        q: "How do I stop chat notifications?",
+        a: "Open a conversation and tap the bell icon in its header to mute it. Muted conversations still show unread counts in your inbox but won't send push notifications.",
+      },
+    ],
+  },
+  {
     title: "This Week tab",
     items: [
       {
@@ -5299,6 +5358,7 @@ function DriveDetailScreen({
   onSwitchAfternoonTrip,
   siblingTripLabel,
   siblingTripAvailable,
+  onMessageDriver,
 }: {
   entry: ScheduleRosterEntry;
   trip: Tables<"trips">;
@@ -5321,6 +5381,7 @@ function DriveDetailScreen({
   onSwitchAfternoonTrip?: (childId: string, driverAssignmentId: string) => Promise<void>;
   siblingTripLabel?: string;
   siblingTripAvailable?: boolean;
+  onMessageDriver?: (driverProfileId: string) => Promise<void>;
 }) {
   const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", {
     weekday: "long",
@@ -5341,6 +5402,21 @@ function DriveDetailScreen({
   const [removeWorking, setRemoveWorking] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [switchWorking, setSwitchWorking] = useState(false);
+  const [messageWorking, setMessageWorking] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
+
+  const handleMessageDriver = async () => {
+    if (!onMessageDriver || messageWorking) return;
+    setMessageWorking(true);
+    setMessageError(null);
+    try {
+      await onMessageDriver(entry.driverAssignment.driver_profile_id);
+    } catch (e) {
+      setMessageError(e instanceof Error ? e.message : "Couldn't open the conversation.");
+    } finally {
+      setMessageWorking(false);
+    }
+  };
 
   return (
     <div className="screen-content drive-detail-screen" data-testid="drive-detail-screen">
@@ -5377,6 +5453,18 @@ function DriveDetailScreen({
       <section className="drive-detail-driver--large">
         <PhotoButton url={driverAvatarUrl} name={driverName} className="child-photo-thumb" />
         <strong>{driverName}</strong>
+        {onMessageDriver && !isUserDriving ? (
+          <button
+            className="drive-message-driver"
+            onClick={() => void handleMessageDriver()}
+            disabled={messageWorking}
+            data-testid="drive-message-driver"
+          >
+            <ChatBubbleIcon width="13" height="13" />
+            {messageWorking ? "Opening…" : `Message ${driverName.split(" ")[0]}`}
+          </button>
+        ) : null}
+        {messageError ? <div className="auth-error" role="alert">{messageError}</div> : null}
         {withinWindow && driverStatus ? (
           <span className="drive-status-line">
             <span className="drive-status-dot drive-status-dot--green" /> On my way · {new Date(driverStatus.set_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: timezone })}
@@ -5842,6 +5930,10 @@ export default function Prototype() {
   const [directoryParentId, setDirectoryParentId] = useState<string | null>(null);
   const [driveDetailId, setDriveDetailId] = useState<string | null>(null);
   const [faqOpen, setFaqOpen] = useState(false);
+  const [chatThreadId, setChatThreadId] = useState<string | null>(null);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
+  const [chatInboxKey, setChatInboxKey] = useState(0);
+  const [chatThreadFromLink, setChatThreadFromLink] = useState<string | null>(null);
   const [pushPermissionShown, setPushPermissionShown] = useState(false);
   const [adminDeclinedAlerts, setAdminDeclinedAlerts] = useState<DeclinedDriveAlert[]>([]);
   const [adminRoster, setAdminRoster] = useState<{ children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null>(null);
@@ -5870,6 +5962,31 @@ export default function Prototype() {
     );
     return () => navigator.serviceWorker.removeEventListener("controllerchange", reloadOnControl);
   }, []);
+
+  // Chat deep link: push notifications carry `/#thread=<id>` (the sw.js
+  // notificationclick handler navigates to the notification's URL). Parse
+  // once on mount and open the thread when identity is ready.
+  useEffect(() => {
+    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const threadParam = hash.get("thread");
+    if (threadParam) {
+      setChatThreadFromLink(threadParam);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!chatThreadFromLink || !identity?.membership) return;
+    setChatThreadFromLink(null);
+    setActiveTab("chat");
+    setChatThreadId(chatThreadFromLink);
+  }, [chatThreadFromLink, identity?.membership]);
+
+  // Returning from a thread remounts the inbox so previews/unread are
+  // fresh without waiting on realtime delivery.
+  useEffect(() => {
+    if (!chatThreadId) setChatInboxKey((k) => k + 1);
+  }, [chatThreadId]);
 
   const loadIdentity = useCallback(async () => {
     setIdentityLoading(true);
@@ -6829,6 +6946,8 @@ export default function Prototype() {
     setDirectoryParentId(null);
     setDriveDetailId(null);
     setFaqOpen(false);
+    setChatThreadId(null);
+    setChatUnreadCount(0);
     setActiveTab("home");
     setAuthWorking(false);
   };
@@ -6838,6 +6957,7 @@ const navItems = useMemo(() => {
       { id: "home" as const, label: "Home", icon: HomeIcon },
       { id: "week" as const, label: "This Week", icon: CalendarIcon },
       { id: "plan" as const, label: "Next Week", icon: BackpackIcon },
+      { id: "chat" as const, label: "Chat", icon: ChatBubbleIcon },
     ];
     if (identity?.membership?.role === "coordinator") {
       items.push({ id: "coordinate" as const, label: "Admin", icon: GroupIcon });
@@ -6851,8 +6971,35 @@ const navItems = useMemo(() => {
     setDirectoryOpen(false);
     setDriveDetailId(null);
     setFaqOpen(false);
+    setChatThreadId(null);
     setActiveTab(tab);
   };
+
+  // Refresh the nav badge when a thread screen reports the read cursor
+  // advanced (or a realtime event landed) — cheap single RPC.
+  const handleChatThreadOpened = useCallback(async () => {
+    try {
+      const rows = await repository.listChatThreads();
+      setChatUnreadCount(rows.reduce((sum, t) => sum + (t.notifications_muted ? 0 : t.unread_count), 0));
+    } catch {
+      // best-effort — the inbox reload also updates the badge
+    }
+  }, [repository]);
+
+  // Open (or create) the DM with another parent. Entry points
+  // (ParentDetailScreen, DriveDetailScreen) wrap this in their own
+  // working/error states.
+  const openDmWithParent = useCallback(
+    (profileId: string) =>
+      repository.createDmThread(profileId).then((threadId) => {
+        setDirectoryOpen(false);
+        setDirectoryParentId(null);
+        setDriveDetailId(null);
+        setActiveTab("chat");
+        setChatThreadId(threadId);
+      }),
+    [repository],
+  );
 
   const renderContent = () => {
     if (!identity) return null;
@@ -6898,6 +7045,7 @@ const navItems = useMemo(() => {
             groupChildren={groupChildren}
             repository={repository}
             onBack={() => setDirectoryParentId(null)}
+            onMessage={openDmWithParent}
           />
         );
       }
@@ -7021,6 +7169,7 @@ const navItems = useMemo(() => {
               }}
               siblingTripLabel={siblingTripLabel}
               siblingTripAvailable={siblingTripAvailable}
+              onMessageDriver={openDmWithParent}
             />
           );
         }
@@ -7092,6 +7241,21 @@ const navItems = useMemo(() => {
 onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); void loadAdminRoster(); setDriveDetailId(id); }}
           onCheckIn={() => navigate("plan")}
           todayDate={todayDate}
+        />
+      );
+    }
+
+    if (activeTab === "chat") {
+      return (
+        <ChatInboxScreen
+          key={chatInboxKey}
+          repository={repository}
+          groupId={identity.group.id}
+          myProfileId={identity.profile.id}
+          avatarUrl={identity.profile.avatar_url}
+          onAccount={() => setAccountOpen(true)}
+          onOpenThread={(threadId) => setChatThreadId(threadId)}
+          onUnreadCount={setChatUnreadCount}
         />
       );
     }
@@ -7310,6 +7474,7 @@ if (authError && !identity) {
               case "home": await loadHomeSchedule(); break;
               case "plan": await loadCheckin(); break;
               case "week": await loadSchedule(); await loadPublishedSchedule(); break;
+              case "chat": setChatInboxKey((k) => k + 1); break;
               case "coordinate": await loadOverview(); await loadHomeSchedule(); await loadSchedule(); break;
             }
           }}
@@ -7319,7 +7484,20 @@ if (authError && !identity) {
           </main>
         </MobileScroll>
       </AppErrorBoundary>
-      {!reviewOpen && !accountOpen && !directoryOpen && !directoryParentId && !driveDetailId && !faqOpen ? (
+      {chatThreadId && identity ? (
+        <div className="chat-thread-layer" data-testid="chat-thread-layer">
+          <AppErrorBoundary>
+            <ChatThreadScreen
+              repository={repository}
+              threadId={chatThreadId}
+              myProfileId={identity.profile.id}
+              onBack={() => setChatThreadId(null)}
+              onThreadOpened={handleChatThreadOpened}
+            />
+          </AppErrorBoundary>
+        </div>
+      ) : null}
+      {!reviewOpen && !accountOpen && !directoryOpen && !directoryParentId && !driveDetailId && !faqOpen && !chatThreadId ? (
         <nav className="bottom-nav" aria-label="Primary navigation"
           style={{ gridTemplateColumns: `repeat(${navItems.length}, 1fr)` }}>
           {navItems.map(({ id, label, icon: Icon }) => (
@@ -7333,6 +7511,11 @@ if (authError && !identity) {
               <Icon width="20" height="20" />
               <span>{label}</span>
               {id === "home" && myAssignments.some((a) => a.assignment.status === "tentative") ? <i aria-label="Action needed" /> : null}
+              {id === "chat" && chatUnreadCount > 0 ? (
+                <span className="nav-badge" aria-label={`${chatUnreadCount} unread messages`}>
+                  {chatUnreadCount > 99 ? "99+" : chatUnreadCount}
+                </span>
+              ) : null}
             </button>
           ))}
         </nav>
