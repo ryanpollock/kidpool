@@ -1559,7 +1559,7 @@ test("send-push: request_id parsed from request body", async () => {
 // ─── Parent-initiated afternoon drive-time switch ─────────────
 
 const switchMigrationUrl = new URL(
-  "../supabase/migrations/202609010003_switch_afternoon_trip.sql",
+  "../supabase/migrations/202609010004_switch_afternoon_trip.sql",
   import.meta.url,
 );
 

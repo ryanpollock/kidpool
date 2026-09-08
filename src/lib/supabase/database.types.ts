@@ -19,6 +19,10 @@ export type ScheduleStatus = "draft" | "published" | "superseded";
 export type AssignmentStatus = "tentative" | "confirmed" | "declined" | "expired" | "released";
 export type ConfirmationResponse = "confirmed" | "declined";
 export type ReassignmentStatus = "pending" | "accepted" | "declined" | "cancelled";
+export type ChatThreadKind = "dm" | "group" | "everyone";
+export type ChatSenderKind = "parent" | "agent" | "system";
+export type ChatProposalKind = "cancel_ride" | "switch_slot" | "swap_drive" | "coverage_fill";
+export type ChatProposalStatus = "pending" | "confirmed" | "executed" | "declined" | "expired" | "failed";
 
 type Table<Row, Insert, Update = Partial<Insert>> = {
   Row: Row;
@@ -65,6 +69,7 @@ export type GroupRow = Timestamps & {
   timezone: string;
   meeting_point: string;
   school_name: string;
+  coordinator_chat_access: boolean;
 };
 
 export type HouseholdRow = Timestamps & {
@@ -250,6 +255,80 @@ export type DriveStatusRow = Timestamps & {
   child_id: string | null;
   status: "on_my_way" | "ready";
   set_at: string;
+};
+
+export type ChatThreadRow = {
+  id: string;
+  group_id: string;
+  kind: ChatThreadKind;
+  title: string | null;
+  dm_a_id: string | null;
+  dm_b_id: string | null;
+  created_by: string | null;
+  last_message_at: string;
+  created_at: string;
+};
+
+export type ChatParticipantRow = {
+  thread_id: string;
+  profile_id: string;
+  last_read_at: string;
+  notifications_muted: boolean;
+  created_at: string;
+};
+
+export type ChatMessageRow = {
+  id: string;
+  thread_id: string;
+  sender_profile_id: string | null;
+  sender_kind: ChatSenderKind;
+  sender_name: string;
+  sender_avatar_url: string | null;
+  body: string;
+  proposal_id: string | null;
+  created_at: string;
+};
+
+export type ChatProposalRow = Timestamps & {
+  id: string;
+  group_id: string;
+  thread_id: string;
+  created_by_profile_id: string | null;
+  triggered_by_message_id: string | null;
+  kind: ChatProposalKind;
+  params: Json;
+  summary: string;
+  required_confirmer_profile_id: string | null;
+  status: ChatProposalStatus;
+  expires_at: string;
+  executed_at: string | null;
+  executed_result: Json | null;
+  failure_reason: string | null;
+};
+
+export type ChatParticipantSummary = {
+  id: string;
+  name: string;
+  avatar_url: string | null;
+};
+
+export type ChatThreadSummary = {
+  thread_id: string;
+  group_id: string;
+  kind: ChatThreadKind;
+  title: string | null;
+  dm_a_id: string | null;
+  dm_b_id: string | null;
+  created_at: string;
+  last_message_at: string;
+  last_message_body: string | null;
+  last_message_sender_name: string | null;
+  last_message_sender_kind: ChatSenderKind | null;
+  last_message_created_at: string | null;
+  unread_count: number;
+  last_read_at: string | null;
+  notifications_muted: boolean;
+  participants: ChatParticipantSummary[];
 };
 
 export type Database = {
@@ -527,6 +606,65 @@ export type Database = {
           set_at?: string;
         }
       >;
+      chat_threads: Table<
+        ChatThreadRow,
+        {
+          id?: string;
+          group_id: string;
+          kind: ChatThreadKind;
+          title?: string | null;
+          dm_a_id?: string | null;
+          dm_b_id?: string | null;
+          created_by?: string | null;
+          last_message_at?: string;
+          created_at?: string;
+        }
+      >;
+      chat_participants: Table<
+        ChatParticipantRow,
+        {
+          thread_id: string;
+          profile_id: string;
+          last_read_at?: string;
+          notifications_muted?: boolean;
+          created_at?: string;
+        }
+      >;
+      chat_messages: Table<
+        ChatMessageRow,
+        {
+          id?: string;
+          thread_id: string;
+          sender_profile_id?: string | null;
+          sender_kind?: ChatSenderKind;
+          sender_name?: string;
+          sender_avatar_url?: string | null;
+          body: string;
+          proposal_id?: string | null;
+          created_at?: string;
+        }
+      >;
+      chat_proposals: Table<
+        ChatProposalRow,
+        {
+          id?: string;
+          group_id: string;
+          thread_id: string;
+          created_by_profile_id?: string | null;
+          triggered_by_message_id?: string | null;
+          kind: ChatProposalKind;
+          params?: Json;
+          summary: string;
+          required_confirmer_profile_id?: string | null;
+          status?: ChatProposalStatus;
+          expires_at?: string;
+          executed_at?: string | null;
+          executed_result?: Json | null;
+          failure_reason?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        }
+      >;
     };
     Views: Record<string, never>;
     Functions: {
@@ -669,6 +807,42 @@ export type Database = {
           p_driver_assignment_id: string;
         };
         Returns: Record<string, unknown>;
+      };
+      can_read_chat_thread: {
+        Args: { target_thread_id: string };
+        Returns: boolean;
+      };
+      ensure_everyone_thread: {
+        Args: { target_group_id: string };
+        Returns: string;
+      };
+      create_dm_thread: {
+        Args: { target_profile_id: string };
+        Returns: string;
+      };
+      create_group_thread: {
+        Args: { target_profile_ids: string[]; thread_title: string };
+        Returns: string;
+      };
+      mark_thread_read: {
+        Args: { target_thread_id: string };
+        Returns: void;
+      };
+      set_thread_notifications_muted: {
+        Args: { target_thread_id: string; p_muted: boolean };
+        Returns: void;
+      };
+      list_chat_threads: {
+        Args: Record<string, never>;
+        Returns: ChatThreadSummary[];
+      };
+      confirm_chat_proposal: {
+        Args: { p_proposal_id: string };
+        Returns: ChatProposalRow;
+      };
+      decline_chat_proposal: {
+        Args: { p_proposal_id: string };
+        Returns: ChatProposalRow;
       };
     };
     Enums: {

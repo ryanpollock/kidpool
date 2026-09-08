@@ -2,6 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { isNoSchoolDay, todayInTimezone, dateInTimezone, PILOT_TIMEZONE } from "../school-calendar";
 import type {
+  ChatProposalRow,
+  ChatThreadSummary,
   ConfirmationResponse,
   Database,
   DefaultDrivePref,
@@ -2536,5 +2538,120 @@ async getLatestScheduleVersion(
     }
 
     return { version, trips, rostersByTrip, uncoveredRidersByTrip };
+  }
+
+  // ── Chat ────────────────────────────────────────────────────
+
+  /**
+   * Inbox listing: every thread the caller participates in (plus every
+   * group thread while coordinator oversight is on), with last message,
+   * unread count, mute state, and participant roster.
+   */
+  async listChatThreads(): Promise<ChatThreadSummary[]> {
+    return unwrapRequired(await this.client.rpc("list_chat_threads"));
+  }
+
+  /** Idempotently create the group's all-parents thread and enroll the caller. */
+  async ensureEveryoneThread(groupId: string): Promise<string> {
+    return unwrapRequired(
+      await this.client.rpc("ensure_everyone_thread", { target_group_id: groupId }),
+    );
+  }
+
+  /** Open (or create) the 1:1 thread with another active member. */
+  async createDmThread(profileId: string): Promise<string> {
+    return unwrapRequired(
+      await this.client.rpc("create_dm_thread", { target_profile_id: profileId }),
+    );
+  }
+
+  /** Create a group thread with a subset of active members. */
+  async createGroupThread(profileIds: string[], title: string): Promise<string> {
+    return unwrapRequired(
+      await this.client.rpc("create_group_thread", {
+        target_profile_ids: profileIds,
+        thread_title: title,
+      }),
+    );
+  }
+
+  /** Latest messages for a thread, oldest-first (a page is fetched
+   * newest-first then reversed so "load older" pages with .lt(cursor)). */
+  async listThreadMessages(
+    threadId: string,
+    beforeCreatedAt?: string | null,
+  ): Promise<Tables<"chat_messages">[]> {
+    let query = this.client
+      .from("chat_messages")
+      .select("*")
+      .eq("thread_id", threadId)
+      .order("created_at", { ascending: false })
+      .limit(60);
+    if (beforeCreatedAt) query = query.lt("created_at", beforeCreatedAt);
+    const rows = unwrapRequired(await query);
+    return [...rows].reverse();
+  }
+
+  /** All proposals in a thread (for rendering message proposal cards). */
+  async listThreadProposals(threadId: string): Promise<ChatProposalRow[]> {
+    return unwrapRequired(
+      await this.client
+        .from("chat_proposals")
+        .select("*")
+        .eq("thread_id", threadId)
+        .order("created_at", { ascending: false }),
+    );
+  }
+
+  /** Send a chat message as the signed-in parent. */
+  async sendChatMessage(threadId: string, body: string): Promise<Tables<"chat_messages">> {
+    const trimmed = body.trim();
+    if (trimmed.length === 0) throw new Error("Message cannot be empty.");
+    if (trimmed.length > 4000) throw new Error("Message is too long (max 4000 characters).");
+    const userResult = await this.client.auth.getUser();
+    if (userResult.error || !userResult.data.user) throw new Error("Not signed in.");
+    return unwrapRequired(
+      await this.client
+        .from("chat_messages")
+        .insert({
+          thread_id: threadId,
+          body: trimmed,
+          sender_profile_id: userResult.data.user.id,
+          sender_kind: "parent",
+        })
+        .select()
+        .single(),
+    );
+  }
+
+  /** Advance the caller's read cursor for a thread. */
+  async markThreadRead(threadId: string): Promise<void> {
+    await unwrap(
+      await this.client.rpc("mark_thread_read", { target_thread_id: threadId }),
+    );
+  }
+
+  /** Mute or unmute push notifications for a thread. */
+  async setThreadNotificationsMuted(threadId: string, muted: boolean): Promise<void> {
+    await unwrap(
+      await this.client.rpc("set_thread_notifications_muted", {
+        target_thread_id: threadId,
+        p_muted: muted,
+      }),
+    );
+  }
+
+  /** Confirm a pending Crew AI proposal; executes the schedule change. */
+  async confirmChatProposal(proposalId: string): Promise<ChatProposalRow> {
+    return unwrapRequired(
+      await this.client.rpc("confirm_chat_proposal", { p_proposal_id: proposalId }),
+    );
+  }
+
+  /** Decline a pending Crew AI proposal. */
+  async declineChatProposal(proposalId: string): Promise<ChatProposalRow> {
+    return unwrapRequired(
+      await this.client.rpc("decline_chat_proposal", { p_proposal_id: proposalId }),
+    );
   }
 }
