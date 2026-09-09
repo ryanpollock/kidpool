@@ -1,6 +1,6 @@
 // E2E tests for the chat feature: the Chat tab, everyone thread, DMs from
 // the parent directory, group creation via the new-chat sheet, live message
-// delivery over Supabase Realtime, and the Crew AI proposal card flow.
+// delivery over Supabase Realtime, and the Crewmate AI proposal card flow.
 //
 // Run locally:   npm run test:runtime:local -- --grep "Chat"
 // Run on staging: npm run test:runtime -- --grep "Chat"
@@ -87,8 +87,8 @@ test("Chat: everyone thread exists with disclosure; parents can send messages", 
     await everyoneRow.click();
     await expect(page.getByTestId("chat-thread-screen")).toBeVisible();
 
-    // Disclosure system note mentions Crew AI
-    await expect(page.getByTestId("chat-system-note").first()).toContainText("Crew AI");
+    // Disclosure system note mentions Crewmate AI
+    await expect(page.getByTestId("chat-system-note").first()).toContainText("Crewmate AI");
 
     // Geometry guard: the first message must sit fully below the thread
     // header. Regression: prototype.css's .subpage-header collision wrapped
@@ -263,7 +263,7 @@ test("Chat: proposal card renders, confirm is gated, and decline posts a note", 
     await openChatTab(page);
     await openThreadByTitle(page, "Everyone");
 
-    // Simulate the M2 Crew AI agent: service-role insert of a pending
+    // Simulate the M2 Crewmate AI agent: service-role insert of a pending
     // cancel_ride proposal + linked agent message.
     const threadId = runSql(`
       SELECT id FROM public.chat_threads WHERE group_id = '${GROUP_ID}' AND kind = 'everyone' LIMIT 1;
@@ -273,7 +273,7 @@ test("Chat: proposal card renders, confirm is gated, and decline posts a note", 
       VALUES ('${UID(800)}', '${GROUP_ID}', '${threadId}', 'cancel_ride', '{}'::jsonb,
               'Cancel Mia Chatty Tuesday morning ride', '${beta.userId}', 'pending');
       INSERT INTO public.chat_messages (thread_id, sender_kind, sender_name, body, proposal_id)
-      VALUES ('${threadId}', 'agent', 'Crew AI', 'I can cancel Mia Chatty Tuesday morning ride. Tap confirm and I will make it happen.', '${UID(800)}');
+      VALUES ('${threadId}', 'agent', 'Crewmate AI', 'I can cancel Mia Chatty Tuesday morning ride. Tap confirm and I will make it happen.', '${UID(800)}');
     `);
 
     // The card renders for alpha but alpha is not the required confirmer

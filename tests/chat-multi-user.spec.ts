@@ -1,7 +1,7 @@
 // Multi-user chat e2e: parents in separate concurrent sessions using chat
 // the way real humans do — two-way conversations, three-way threads, DM
 // back-and-forth with live badges, threads popping into a live inbox,
-// realistic content, and the full Crew AI proposal Confirm loop driven
+// realistic content, and the full Crewmate AI proposal Confirm loop driven
 // through the UI (the path the M2 agent depends on).
 //
 // Run locally:   npm run test:runtime:local -- --grep "Multi-User Chat"
@@ -432,7 +432,7 @@ test("Multi-User Chat: proposal Confirm executes the schedule change via the UI"
         jsonb_build_object('child_id', '${CHILD_R}', 'driver_assignment_id', '${assignment!.id}'),
         'Cancel Otto Kid Monday morning ride', '${rider.userId}', 'pending');
       INSERT INTO public.chat_messages (thread_id, sender_kind, sender_name, body, proposal_id)
-      VALUES ('${threadId.id}', 'agent', 'Crew AI', 'I can cancel Otto Kid Monday morning ride. Tap confirm and I will make it happen.', '${PROPOSAL_ID}');
+      VALUES ('${threadId.id}', 'agent', 'Crewmate AI', 'I can cancel Otto Kid Monday morning ride. Tap confirm and I will make it happen.', '${PROPOSAL_ID}');
     `);
 
     // The card renders for the required confirmer with a live Confirm button

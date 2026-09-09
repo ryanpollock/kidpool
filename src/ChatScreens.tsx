@@ -1,5 +1,5 @@
 // Chat screens: inbox (Chat tab), 1:1/group/everyone thread view, the
-// new-conversation sheet, and Crew AI proposal cards.
+// new-conversation sheet, and Crewmate AI proposal cards.
 //
 // This file is app-owned UI (same boundary as Prototype.tsx — the
 // mobile runtime itself stays untouched). Runtime contract compliance:
@@ -150,7 +150,7 @@ function inboxPreview(thread: ChatThreadSummary): string {
     ? `${thread.last_message_body.slice(0, 90)}…`
     : thread.last_message_body;
   if (thread.last_message_sender_kind === "system") return body;
-  if (thread.last_message_sender_kind === "agent") return `Crew AI: ${body}`;
+  if (thread.last_message_sender_kind === "agent") return `Crewmate AI: ${body}`;
   return body;
 }
 
@@ -266,7 +266,7 @@ function MessageBubble({
       {!mine ? (
         <ChatAvatar
           url={isAgent ? null : message.sender_avatar_url}
-          name={isAgent ? "Crew AI" : message.sender_name}
+          name={isAgent ? "Crewmate AI" : message.sender_name}
           size={28}
           className={isAgent ? "chat-avatar--agent" : undefined}
         />
@@ -274,7 +274,7 @@ function MessageBubble({
       <div className={mine ? "chat-bubble chat-bubble--mine" : isAgent ? "chat-bubble chat-bubble--agent" : "chat-bubble"}>
         {showName && !mine ? (
           <span className={`chat-bubble-name ${isAgent ? "chat-bubble-name--agent" : ""}`}>
-            {isAgent ? <><ChatBubbleIcon width="11" height="11" /> Crew AI</> : message.sender_name}
+            {isAgent ? <><ChatBubbleIcon width="11" height="11" /> Crewmate AI</> : message.sender_name}
           </span>
         ) : null}
         <p className="chat-bubble-body">{message.body}</p>
@@ -898,8 +898,8 @@ export function ChatThreadScreen({
             <small>
               <span className="chat-header-sub">
                 {thread ? threadSubtitle(thread, myProfileId) : ""}
-                {thread?.kind === "everyone" ? " · Crew AI is in this chat" : ""}
-                {thread?.kind !== "everyone" && thread ? " · Crew AI will join to help" : ""}
+                {thread?.kind === "everyone" ? " · Crewmate AI is in this chat" : ""}
+                {thread?.kind !== "everyone" && thread ? " · Crewmate AI will join to help" : ""}
               </span>
               {thread?.notifications_muted ? <span className="chat-muted-flag">Muted</span> : null}
             </small>
@@ -965,7 +965,7 @@ export function ChatThreadScreen({
               })}
               {messages.length === 0 ? (
                 <div className="chat-system-note">
-                  <p>No messages yet — say hi, or ask Crew AI about the schedule.</p>
+                  <p>No messages yet — say hi, or ask Crewmate AI about the schedule.</p>
                 </div>
               ) : null}
             </>
