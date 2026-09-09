@@ -5261,7 +5261,7 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     ],
   },
   {
-    title: "Chat and Crew AI",
+    title: "Chat and Crewmate AI",
     items: [
       {
         q: "How does the Chat tab work?",
@@ -5272,12 +5272,12 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
         a: "Only the parents in a conversation can see it. The carpool coordinator can currently view and post in all conversations to help with coordination — this oversight can be turned off for the group later.",
       },
       {
-        q: "What is Crew AI?",
-        a: "Crew AI is the carpool assistant inside every conversation. It can answer schedule questions (\"who drives Wednesday?\") and propose changes when plans shift — like cancelling a ride, switching pickup times, or finding coverage for a drive.",
+        q: "What is Crewmate AI?",
+        a: "Crewmate AI is the carpool assistant inside every conversation. It can answer schedule questions (\"who drives Wednesday?\") and propose changes when plans shift — like cancelling a ride, switching pickup times, or finding coverage for a drive.",
       },
       {
-        q: "Can Crew AI change the schedule on its own?",
-        a: "No. Crew AI only makes proposals — a card appears in the chat with a Confirm button. Nothing changes on the schedule unless a parent confirms it. The required parent is always the one the change affects.",
+        q: "Can Crewmate AI change the schedule on its own?",
+        a: "No. Crewmate AI only makes proposals — a card appears in the chat with a Confirm button. Nothing changes on the schedule unless a parent confirms it. The required parent is always the one the change affects.",
       },
       {
         q: "How do I stop chat notifications?",

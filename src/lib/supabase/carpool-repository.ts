@@ -2641,14 +2641,14 @@ async getLatestScheduleVersion(
     );
   }
 
-  /** Confirm a pending Crew AI proposal; executes the schedule change. */
+  /** Confirm a pending Crewmate AI proposal; executes the schedule change. */
   async confirmChatProposal(proposalId: string): Promise<ChatProposalRow> {
     return unwrapRequired(
       await this.client.rpc("confirm_chat_proposal", { p_proposal_id: proposalId }),
     );
   }
 
-  /** Decline a pending Crew AI proposal. */
+  /** Decline a pending Crewmate AI proposal. */
   async declineChatProposal(proposalId: string): Promise<ChatProposalRow> {
     return unwrapRequired(
       await this.client.rpc("decline_chat_proposal", { p_proposal_id: proposalId }),
