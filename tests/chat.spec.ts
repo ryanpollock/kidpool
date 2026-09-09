@@ -478,3 +478,54 @@ test("Chat: push deep link opens the thread directly from a fresh load", async (
     cleanupChatData();
   }
 });
+
+test("Chat: notification tap while the app is running opens the thread (service worker handoff)", async ({ page }) => {
+  test.skip(skip, "No service key available");
+  test.setTimeout(90_000);
+
+  cleanupChatData();
+  const alpha = setupHousehold(19, "Phi")!;
+  const beta = setupHousehold(20, "Chi")!;
+  assert.ok(alpha && beta);
+
+  // Alpha ensures the everyone thread exists and leaves a message.
+  const contextA = await page.context().browser()?.newContext();
+  const pageA = await contextA!.newPage();
+  try {
+    await signInWithTestAuth(pageA, alpha.email);
+    await expect(pageA.getByTestId("nav-chat")).toBeVisible({ timeout: 20_000 });
+    await openChatTab(pageA);
+    await openThreadByTitle(pageA, "Everyone");
+    await pageA.getByTestId("chat-composer-input").fill("Handoff check");
+    await pageA.getByTestId("chat-send-button").click();
+    await expect(pageA.locator(".chat-bubble-body", { hasText: "Handoff check" }).first()).toBeVisible();
+  } finally {
+    await contextA?.close();
+  }
+
+  const threadId = (runSql(`
+    SELECT id FROM public.chat_threads WHERE group_id = '${GROUP_ID}' AND kind = 'everyone' LIMIT 1;
+  `).rows ?? [])[0] as { id: string };
+
+  // Beta is signed in and sitting on HOME — the app is running, exactly the
+  // suspended-in-background case the iOS handoff exists for. sw.js focuses
+  // the app and postMessages { type: "chat-open-thread", threadId }; the
+  // app opens the thread from any screen. Simulate the postMessage with a
+  // synthetic MessageEvent on navigator.serviceWorker (the app's listener
+  // is what this proves; the SW side is contract-tested above).
+  await signInWithTestAuth(page, beta.email);
+  await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 20_000 });
+  await page.evaluate((id) => {
+    navigator.serviceWorker.dispatchEvent(
+      new MessageEvent("message", { data: { type: "chat-open-thread", threadId: id } }),
+    );
+  }, threadId.id);
+
+  await expect(page.getByTestId("chat-thread-screen")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".chat-thread-header-info h1")).toContainText("Everyone");
+  await expect(page.locator(".chat-bubble-body", { hasText: "Handoff check" }).first()).toBeVisible();
+
+  // The handoff open counts as reading: no unread badge remains.
+  await page.getByTestId("chat-thread-back").click();
+  await expect(page.getByTestId("nav-chat").locator(".nav-badge")).toHaveCount(0);
+});

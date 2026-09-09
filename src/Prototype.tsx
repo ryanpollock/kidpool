@@ -6024,8 +6024,25 @@ useEffect(() => {
   // the ?testAuth bypass (and OAuth returns) read it.
   window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
   setActiveTab("chat");
-  setChatThreadId(chatThreadFromLink);
-}, [chatThreadFromLink, identity?.membership]);
+setChatThreadId(chatThreadFromLink);
+  }, [chatThreadFromLink, identity?.membership]);
+
+  // Service worker handoff: tapping a chat notification while the app is
+  // already running (suspended in the background) can't navigate on iOS —
+  // WindowClient.navigate() is unimplemented in WebKit — so sw.js focuses
+  // the app and postMessages the thread id instead. The existing
+  // chatThreadFromLink apply-effect opens it once identity is ready.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const onServiceWorkerMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; threadId?: string } | null;
+      if (data?.type === "chat-open-thread" && data.threadId) {
+        setChatThreadFromLink(data.threadId);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", onServiceWorkerMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onServiceWorkerMessage);
+  }, []);
 
   // Returning from a thread remounts the inbox so previews/unread are
   // fresh without waiting on realtime delivery.

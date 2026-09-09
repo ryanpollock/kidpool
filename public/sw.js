@@ -83,9 +83,28 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
 
   const targetUrl = event.notification.data?.url ?? "/";
+  const tag = event.notification.tag ?? "";
 
   event.waitUntil(
     (async () => {
+      // Thread deep link: prefer the payload URL's hash; fall back to the
+      // notification tag (chat-<thread_id>) — some iOS versions drop
+      // notification.data between showNotification and the tap, but the
+      // tag survives (it drives same-thread notification replacement).
+      let threadId = null;
+      try {
+        const hash = new URL(targetUrl, self.location.origin).hash;
+        threadId = new URLSearchParams(hash.replace(/^#/, "")).get("thread");
+      } catch {
+        threadId = null;
+      }
+      if (!threadId && tag.startsWith("chat-")) {
+        threadId = tag.slice("chat-".length);
+      }
+      const deepUrl = threadId
+        ? `${self.location.origin}/#thread=${threadId}`
+        : targetUrl;
+
       const allClients = await self.clients.matchAll({
         type: "window",
         includeUncontrolled: true,
@@ -95,16 +114,31 @@ self.addEventListener("notificationclick", (event) => {
         if (client.url.includes(self.location.origin)) {
           if ("focus" in client) {
             await client.focus();
-            if ("navigate" in client) {
-              await client.navigate(targetUrl);
-            }
-            return;
           }
+          // WindowClient.navigate() is unimplemented on iOS WebKit — tapping
+          // while the app is suspended in the background would just focus
+          // whatever screen was open. The running app listens for this
+          // message and opens the thread itself; navigate() is still
+          // attempted for page versions predating the listener.
+          if ("navigate" in client) {
+            try {
+              await client.navigate(deepUrl);
+            } catch {
+              // unsupported — the postMessage below carries the link
+            }
+          }
+          if (threadId) {
+            client.postMessage({ type: "chat-open-thread", threadId });
+          }
+          return;
         }
       }
 
+      // Cold start (app terminated): open at the deep link. The hash
+      // survives launch, and the app stashes it in sessionStorage so the
+      // service worker's first-install reload doesn't lose it.
       if (self.clients.openWindow) {
-        await self.clients.openWindow(targetUrl);
+        await self.clients.openWindow(deepUrl);
       }
     })(),
   );

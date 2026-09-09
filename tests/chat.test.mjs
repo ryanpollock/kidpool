@@ -434,9 +434,17 @@ test("app icon badge: push carries per-recipient unread and every layer syncs it
   assert.match(proto, /syncAppIconBadge\(total\)/, "refreshChatUnread must sync the icon badge");
   assert.match(proto, /syncAppIconBadge\(0\)/, "sign-out must clear the icon badge");
 
-  // and the deep link that a badge/notification tap lands on is intact
+  // and the notification-tap handoff: iOS WindowClient.navigate() is
+  // unimplemented, so the worker postMessages the thread id to the running
+  // app; the notification tag (chat-<thread_id>) is the fallback when iOS
+  // drops notification.data between show and tap.
   assert.match(sw, /event\.notification\.data\?\.url/);
-  assert.match(sw, /client\.navigate\(targetUrl\)|openWindow\(targetUrl\)/);
+  assert.match(sw, /tag\.startsWith\("chat-"\)/);
+  assert.match(sw, /postMessage\(\{ type: "chat-open-thread", threadId \}\)/);
+  assert.match(sw, /client\.navigate\(deepUrl\)/);
+  assert.match(sw, /openWindow\(deepUrl\)/);
   assert.match(push, /\/#thread=\$\{thread_id\}/);
   assert.match(proto, /hash\.get\("thread"\)/);
+  assert.match(proto, /"chat-open-thread"/);
+  assert.match(proto, /setChatThreadFromLink\(data\.threadId\)/);
 });
