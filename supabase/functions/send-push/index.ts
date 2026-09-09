@@ -241,7 +241,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { type, assignment_id, version_id, displaced_drivers, nonce, test_date, test_status, request_id, new_assignment_id } = body;
+    const { type, assignment_id, version_id, displaced_drivers, nonce, test_date, test_status, request_id, new_assignment_id, thread_id, message_id, sender_profile_id, sender_name } = body;
 
     if (!SERVICE_ROLE_KEY) return jsonError("Service role key not configured", 500);
     if (!type) return jsonError("Missing notification type", 400);
@@ -3331,6 +3331,102 @@ ${cta}
       tag = `rider-ready-${assignment_id}-${childId}`;
       groupId = da.group_id;
       recipientProfileIds = [da.driver_profile_id];
+    } else if (type === "chat_message" && thread_id) {
+      // ── chat_message: parent chat message → push-only fan-out ──
+      // Triggered by the chat_messages AFTER INSERT trigger via pg_net.
+      // No email (chat stays push + in-app). Recipients: active thread
+      // participants minus the sender minus anyone who muted the thread.
+      // Deep-links to /#thread=<id> which the SPA opens on load.
+      const senderName: string = body.sender_name ?? "New message";
+      const messageBody: string | undefined = body.body;
+
+      const threadRows = await supaFetch("chat_threads", "id,group_id,kind,title", { id: `eq.${thread_id}` });
+      if (threadRows.length === 0) return jsonError("Chat thread not found", 404);
+      const thread = threadRows[0];
+
+      const participants = await supaFetch("chat_participants", "profile_id,notifications_muted", { thread_id: `eq.${thread_id}` });
+      const activeMemberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${thread.group_id}`, status: `eq.active` });
+      const activeIds = new Set<string>(activeMemberships.map((m: any) => m.profile_id));
+
+      const recipientIds = participants
+        .filter((p: any) => p.profile_id !== sender_profile_id && !p.notifications_muted && activeIds.has(p.profile_id))
+        .map((p: any) => p.profile_id);
+      if (recipientIds.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, skipped: 0, reason: "no_recipients" });
+      }
+
+      // Notification title: DM → sender name; group/everyone → "Sender · label".
+      // Body: the message preview (already truncated to 300 chars by the trigger).
+      const threadLabel = thread.kind === "everyone" ? "Everyone" : thread.kind === "group" ? (thread.title ?? "Group") : senderName;
+      const notifTitle = thread.kind === "dm" ? senderName : `${senderName.split(" ")[0]} · ${threadLabel}`;
+      const notifBody = messageBody ?? "New message";
+      const deepLink = `${APP_URL ?? ""}/#thread=${thread_id}`;
+
+      // Per-recipient TOTAL unread (all threads, muted excluded) for the
+      // app icon badge: iOS home-screen web apps and desktop Chrome render
+      // it via the Badging API, and the service worker sets it when the
+      // push arrives while the app is closed. Fail-soft per recipient — a
+      // failed count just omits the badge for that person.
+      const unreadByProfile = new Map<string, number>();
+      for (const recipientId of recipientIds) {
+        try {
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/count_unread_chat`, {
+            method: "POST",
+            headers: {
+              "apikey": SERVICE_ROLE_KEY!,
+              "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ target_profile_id: recipientId }),
+          });
+          if (res.ok) {
+            const count = await res.json();
+            if (typeof count === "number") unreadByProfile.set(recipientId, count);
+          }
+        } catch {
+          // badge omitted on failure
+        }
+      }
+
+      if (!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY)) {
+        return jsonResponse({ sent: 0, failed: 0, skipped: recipientIds.length, reason: "no_vapid_keys" });
+      }
+      ensureVapid();
+
+      let sent = 0;
+      let failed = 0;
+      let removed = 0;
+      const profileIdsStr = `(${recipientIds.join(",")})`;
+      const subscriptions = await supaFetch("push_subscriptions", "*", { profile_id: `in.${profileIdsStr}` });
+      for (const sub of subscriptions) {
+        try {
+          const payload: Record<string, unknown> = {
+            title: notifTitle,
+            body: notifBody,
+            tag: `chat-${thread_id}`,
+            url: deepLink,
+          };
+          const badge = unreadByProfile.get(sub.profile_id);
+          if (badge !== undefined) payload.badge = badge;
+          await webpush.sendNotification(
+            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+            JSON.stringify(payload),
+            { TTL: 86400 },
+          );
+          sent++;
+        } catch (error: any) {
+          failed++;
+          const statusCode = error?.statusCode ?? 0;
+          if (statusCode === 410 || statusCode === 404) {
+            await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+            removed++;
+          } else {
+            console.error(`[send-push] Chat push failed (status ${statusCode}):`, error?.message ?? error);
+          }
+        }
+      }
+
+      return jsonResponse({ sent, failed, removed, skipped: recipientIds.length - sent, message_id: message_id ?? null, push_only: true });
     } else {
       return jsonError(`Invalid type or missing parameters: ${type}`, 400);
     }

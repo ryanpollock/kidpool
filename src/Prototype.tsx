@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useMemo, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Session } from "@supabase/supabase-js";
 import * as Sentry from "@sentry/react";
@@ -7,6 +7,7 @@ import {
   BackpackIcon,
   BellIcon,
   CalendarIcon,
+  ChatBubbleIcon,
   CheckCircledIcon,
   CheckIcon,
   ChevronLeftIcon,
@@ -27,6 +28,7 @@ import {
   SunIcon,
 } from "@radix-ui/react-icons";
 import { KeyboardInput, MobileScroll, BottomSheet, useScreenPortal } from "./mobile";
+import { ChatInboxScreen, ChatThreadScreen } from "./ChatScreens";
 import {
   CarpoolRepository,
   getSupabaseClient,
@@ -46,7 +48,7 @@ import {
 import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference, ReassignmentRequestRow } from "./lib/supabase/database.types";
 import { getNoSchoolReason, todayInTimezone, dateInTimezone, isWithinStatusWindow } from "./lib/school-calendar";
 
-type AppTab = "home" | "plan" | "week" | "coordinate";
+type AppTab = "home" | "plan" | "week" | "chat" | "coordinate";
 
 // Staging detection: the Supabase URL is baked at build time. On staging
 // builds it contains the staging project ref; on production it doesn't.
@@ -113,6 +115,45 @@ function oauthErrorFromLocation() {
   const search = new URLSearchParams(window.location.search);
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   return search.get("error_description") ?? hash.get("error_description");
+}
+
+// The Badging API renders the app icon badge on iOS home-screen web apps
+// and desktop Chrome (no-op on Android and in-browser). Typed locally —
+// TS DOM lib coverage for these is version-dependent.
+type BadgeCapableNavigator = Navigator & {
+  setAppBadge?: (content?: number) => Promise<void>;
+  clearAppBadge?: () => Promise<void>;
+};
+
+function syncAppIconBadge(unreadTotal: number): void {
+  const nav = navigator as BadgeCapableNavigator;
+  try {
+    if (unreadTotal > 0) nav.setAppBadge?.(unreadTotal);
+    else nav.clearAppBadge?.();
+  } catch {
+    // Badge API unsupported or denied — the in-app badge still works.
+  }
+}
+
+// Chat deep link: push notifications carry `/#thread=<id>` (the sw.js
+// notificationclick handler navigates there). A service worker taking
+// control for the first time (skipWaiting + clients.claim) fires a
+// controllerchange RELOAD right after load — after the hash is read but
+// before identity is ready — so the captured thread id must survive that
+// reload. sessionStorage holds it across the reload within the app window.
+const CHAT_DEEP_LINK_KEY = "chat_deep_link_thread";
+
+function consumeChatDeepLink(): string | null {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const fromHash = hash.get("thread");
+  if (fromHash) {
+    try { sessionStorage.setItem(CHAT_DEEP_LINK_KEY, fromHash); } catch { /* storage unavailable */ }
+  }
+  try {
+    return fromHash ?? sessionStorage.getItem(CHAT_DEEP_LINK_KEY);
+  } catch {
+    return fromHash;
+  }
 }
 
 type AppErrorBoundaryProps = { children: React.ReactNode };
@@ -4940,12 +4981,14 @@ function ParentDetailWrapper({
   groupChildren,
   repository,
   onBack,
+  onMessage,
 }: {
   parentId: string;
   groupId: string;
   groupChildren: Tables<"children">[];
   repository: CarpoolRepository;
   onBack: () => void;
+  onMessage: (profileId: string) => Promise<void>;
 }) {
   const [entry, setEntry] = useState<DirectoryEntry | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4996,6 +5039,7 @@ function ParentDetailWrapper({
       entry={entry}
       children={householdChildren}
       onBack={onBack}
+      onMessage={onMessage}
     />
   );
 }
@@ -5004,11 +5048,29 @@ function ParentDetailScreen({
   entry,
   children,
   onBack,
+  onMessage,
 }: {
   entry: DirectoryEntry;
   children: Tables<"children">[];
   onBack: () => void;
+  onMessage: (profileId: string) => Promise<void>;
 }) {
+  const [messageWorking, setMessageWorking] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
+
+  const handleMessage = async () => {
+    if (messageWorking) return;
+    setMessageWorking(true);
+    setMessageError(null);
+    try {
+      await onMessage(entry.id);
+    } catch (e) {
+      setMessageError(e instanceof Error ? e.message : "Couldn't open the conversation.");
+    } finally {
+      setMessageWorking(false);
+    }
+  };
+
   return (
     <div className="screen-content parent-detail-screen" data-testid="parent-detail-screen">
       <header className="subpage-header">
@@ -5039,6 +5101,17 @@ function ParentDetailScreen({
           )}
         </div>
       </section>
+
+      <button
+        className="primary-button parent-detail-message"
+        onClick={() => void handleMessage()}
+        disabled={messageWorking}
+        data-testid="parent-detail-message"
+      >
+        <ChatBubbleIcon width="15" height="15" />
+        {messageWorking ? "Opening…" : `Message ${entry.full_name.split(" ")[0]}`}
+      </button>
+      {messageError ? <div className="auth-error" role="alert">{messageError}</div> : null}
 
       <section className="drive-detail-children">
         <h2>Children ({children.length})</h2>
@@ -5188,6 +5261,31 @@ const FAQ_SECTIONS: { title: string; items: { q: string; a: string }[] }[] = [
     ],
   },
   {
+    title: "Chat and Crew AI",
+    items: [
+      {
+        q: "How does the Chat tab work?",
+        a: "The Chat tab is for messaging other parents. The \"Everyone\" conversation includes every parent in the carpool. You can also start a private conversation from the parent directory, or create a group chat with a selection of parents using the + button.",
+      },
+      {
+        q: "Who can see my conversations?",
+        a: "Only the parents in a conversation can see it. The carpool coordinator can currently view and post in all conversations to help with coordination — this oversight can be turned off for the group later.",
+      },
+      {
+        q: "What is Crew AI?",
+        a: "Crew AI is the carpool assistant inside every conversation. It can answer schedule questions (\"who drives Wednesday?\") and propose changes when plans shift — like cancelling a ride, switching pickup times, or finding coverage for a drive.",
+      },
+      {
+        q: "Can Crew AI change the schedule on its own?",
+        a: "No. Crew AI only makes proposals — a card appears in the chat with a Confirm button. Nothing changes on the schedule unless a parent confirms it. The required parent is always the one the change affects.",
+      },
+      {
+        q: "How do I stop chat notifications?",
+        a: "Open a conversation and tap the bell icon in its header to mute it. Muted conversations still show unread counts in your inbox but won't send push notifications.",
+      },
+    ],
+  },
+  {
     title: "This Week tab",
     items: [
       {
@@ -5299,6 +5397,7 @@ function DriveDetailScreen({
   onSwitchAfternoonTrip,
   siblingTripLabel,
   siblingTripAvailable,
+  onMessageDriver,
 }: {
   entry: ScheduleRosterEntry;
   trip: Tables<"trips">;
@@ -5321,6 +5420,7 @@ function DriveDetailScreen({
   onSwitchAfternoonTrip?: (childId: string, driverAssignmentId: string) => Promise<void>;
   siblingTripLabel?: string;
   siblingTripAvailable?: boolean;
+  onMessageDriver?: (driverProfileId: string) => Promise<void>;
 }) {
   const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", {
     weekday: "long",
@@ -5341,6 +5441,21 @@ function DriveDetailScreen({
   const [removeWorking, setRemoveWorking] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [switchWorking, setSwitchWorking] = useState(false);
+  const [messageWorking, setMessageWorking] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
+
+  const handleMessageDriver = async () => {
+    if (!onMessageDriver || messageWorking) return;
+    setMessageWorking(true);
+    setMessageError(null);
+    try {
+      await onMessageDriver(entry.driverAssignment.driver_profile_id);
+    } catch (e) {
+      setMessageError(e instanceof Error ? e.message : "Couldn't open the conversation.");
+    } finally {
+      setMessageWorking(false);
+    }
+  };
 
   return (
     <div className="screen-content drive-detail-screen" data-testid="drive-detail-screen">
@@ -5377,6 +5492,18 @@ function DriveDetailScreen({
       <section className="drive-detail-driver--large">
         <PhotoButton url={driverAvatarUrl} name={driverName} className="child-photo-thumb" />
         <strong>{driverName}</strong>
+        {onMessageDriver && !isUserDriving ? (
+          <button
+            className="drive-message-driver"
+            onClick={() => void handleMessageDriver()}
+            disabled={messageWorking}
+            data-testid="drive-message-driver"
+          >
+            <ChatBubbleIcon width="13" height="13" />
+            {messageWorking ? "Opening…" : `Message ${driverName.split(" ")[0]}`}
+          </button>
+        ) : null}
+        {messageError ? <div className="auth-error" role="alert">{messageError}</div> : null}
         {withinWindow && driverStatus ? (
           <span className="drive-status-line">
             <span className="drive-status-dot drive-status-dot--green" /> On my way · {new Date(driverStatus.set_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: timezone })}
@@ -5842,6 +5969,10 @@ export default function Prototype() {
   const [directoryParentId, setDirectoryParentId] = useState<string | null>(null);
   const [driveDetailId, setDriveDetailId] = useState<string | null>(null);
   const [faqOpen, setFaqOpen] = useState(false);
+  const [chatThreadId, setChatThreadId] = useState<string | null>(null);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
+  const [chatInboxKey, setChatInboxKey] = useState(0);
+  const [chatThreadFromLink, setChatThreadFromLink] = useState<string | null>(null);
   const [pushPermissionShown, setPushPermissionShown] = useState(false);
   const [adminDeclinedAlerts, setAdminDeclinedAlerts] = useState<DeclinedDriveAlert[]>([]);
   const [adminRoster, setAdminRoster] = useState<{ children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null>(null);
@@ -5870,6 +6001,104 @@ export default function Prototype() {
     );
     return () => navigator.serviceWorker.removeEventListener("controllerchange", reloadOnControl);
   }, []);
+
+// Chat deep link: push notifications carry `/#thread=<id>` (the sw.js
+// notificationclick handler navigates to the notification's URL). Parse
+// once on mount and open the thread when identity is ready. The captured
+// id is stashed in sessionStorage first because the service worker's
+// first-install controllerchange reloads the page before identity is
+// ready — the stash survives it (see consumeChatDeepLink).
+useEffect(() => {
+  const threadParam = consumeChatDeepLink();
+  if (threadParam) {
+    setChatThreadFromLink(threadParam);
+  }
+}, []);
+
+useEffect(() => {
+  if (!chatThreadFromLink || !identity?.membership) return;
+  setChatThreadFromLink(null);
+  try { sessionStorage.removeItem(CHAT_DEEP_LINK_KEY); } catch { /* storage unavailable */ }
+  // Consume the hash AFTER the open so a service-worker reload before
+  // this point keeps the deep link; the query string is preserved because
+  // the ?testAuth bypass (and OAuth returns) read it.
+  window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+  setActiveTab("chat");
+setChatThreadId(chatThreadFromLink);
+  }, [chatThreadFromLink, identity?.membership]);
+
+  // Service worker handoff: tapping a chat notification while the app is
+  // already running (suspended in the background) can't navigate on iOS —
+  // WindowClient.navigate() is unimplemented in WebKit — so sw.js focuses
+  // the app and postMessages the thread id instead. The existing
+  // chatThreadFromLink apply-effect opens it once identity is ready.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const onServiceWorkerMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; threadId?: string } | null;
+      if (data?.type === "chat-open-thread" && data.threadId) {
+        setChatThreadFromLink(data.threadId);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", onServiceWorkerMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onServiceWorkerMessage);
+  }, []);
+
+  // Returning from a thread remounts the inbox so previews/unread are
+  // fresh without waiting on realtime delivery.
+  useEffect(() => {
+    if (!chatThreadId) setChatInboxKey((k) => k + 1);
+  }, [chatThreadId]);
+
+  // The Chat tab's unread badge is an app-level concern: it must show at
+  // sign-in (before the tab is ever opened) and update live from any tab.
+  // Single source: list_chat_threads, muted threads excluded. The home-screen
+  // app icon badge stays in sync with the same total.
+  const refreshChatUnread = useCallback(async () => {
+    try {
+      const rows = await repository.listChatThreads();
+      const total = rows.reduce((sum, t) => sum + (t.notifications_muted ? 0 : t.unread_count), 0);
+      setChatUnreadCount(total);
+      syncAppIconBadge(total);
+    } catch {
+      // best-effort — the inbox load also updates the badge
+    }
+  }, [repository]);
+
+  const handleChatThreadOpened = useCallback(async () => {
+    await refreshChatUnread();
+  }, [refreshChatUnread]);
+
+  // Count once identity resolves so the badge is present immediately.
+  useEffect(() => {
+    if (!identity?.membership) return;
+    void refreshChatUnread();
+  }, [identity?.membership, refreshChatUnread]);
+
+  // Live badge from any tab: every message bumps chat_threads.last_message_at,
+  // so one nav-level subscription covers arrivals across all threads. Delivery
+  // is RLS-enforced (a parent only hears threads they can read). Debounced so
+  // bursts cost one re-count.
+  const chatNavReloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!identity?.membership) return;
+    const client = getSupabaseClient();
+    const channel = client
+      .channel(`chat-threads-nav:${identity.group.id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "chat_threads", filter: `group_id=eq.${identity.group.id}` },
+        () => {
+          if (chatNavReloadTimer.current) clearTimeout(chatNavReloadTimer.current);
+          chatNavReloadTimer.current = setTimeout(() => void refreshChatUnread(), 1500);
+        },
+      )
+      .subscribe();
+    return () => {
+      if (chatNavReloadTimer.current) clearTimeout(chatNavReloadTimer.current);
+      client.removeChannel(channel);
+    };
+  }, [identity?.group.id, identity?.membership, refreshChatUnread]);
 
   const loadIdentity = useCallback(async () => {
     setIdentityLoading(true);
@@ -6829,6 +7058,9 @@ export default function Prototype() {
     setDirectoryParentId(null);
     setDriveDetailId(null);
     setFaqOpen(false);
+    setChatThreadId(null);
+    setChatUnreadCount(0);
+    syncAppIconBadge(0);
     setActiveTab("home");
     setAuthWorking(false);
   };
@@ -6838,6 +7070,7 @@ const navItems = useMemo(() => {
       { id: "home" as const, label: "Home", icon: HomeIcon },
       { id: "week" as const, label: "This Week", icon: CalendarIcon },
       { id: "plan" as const, label: "Next Week", icon: BackpackIcon },
+      { id: "chat" as const, label: "Chat", icon: ChatBubbleIcon },
     ];
     if (identity?.membership?.role === "coordinator") {
       items.push({ id: "coordinate" as const, label: "Admin", icon: GroupIcon });
@@ -6851,8 +7084,24 @@ const navItems = useMemo(() => {
     setDirectoryOpen(false);
     setDriveDetailId(null);
     setFaqOpen(false);
+    setChatThreadId(null);
     setActiveTab(tab);
   };
+
+  // Open (or create) the DM with another parent. Entry points
+  // (ParentDetailScreen, DriveDetailScreen) wrap this in their own
+  // working/error states.
+  const openDmWithParent = useCallback(
+    (profileId: string) =>
+      repository.createDmThread(profileId).then((threadId) => {
+        setDirectoryOpen(false);
+        setDirectoryParentId(null);
+        setDriveDetailId(null);
+        setActiveTab("chat");
+        setChatThreadId(threadId);
+      }),
+    [repository],
+  );
 
   const renderContent = () => {
     if (!identity) return null;
@@ -6898,6 +7147,7 @@ const navItems = useMemo(() => {
             groupChildren={groupChildren}
             repository={repository}
             onBack={() => setDirectoryParentId(null)}
+            onMessage={openDmWithParent}
           />
         );
       }
@@ -7021,6 +7271,7 @@ const navItems = useMemo(() => {
               }}
               siblingTripLabel={siblingTripLabel}
               siblingTripAvailable={siblingTripAvailable}
+              onMessageDriver={openDmWithParent}
             />
           );
         }
@@ -7092,6 +7343,21 @@ const navItems = useMemo(() => {
 onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); void loadAdminRoster(); setDriveDetailId(id); }}
           onCheckIn={() => navigate("plan")}
           todayDate={todayDate}
+        />
+      );
+    }
+
+    if (activeTab === "chat") {
+      return (
+        <ChatInboxScreen
+          key={chatInboxKey}
+          repository={repository}
+          groupId={identity.group.id}
+          myProfileId={identity.profile.id}
+          avatarUrl={identity.profile.avatar_url}
+          onAccount={() => setAccountOpen(true)}
+          onOpenThread={(threadId) => setChatThreadId(threadId)}
+          onUnreadCount={setChatUnreadCount}
         />
       );
     }
@@ -7310,6 +7576,7 @@ if (authError && !identity) {
               case "home": await loadHomeSchedule(); break;
               case "plan": await loadCheckin(); break;
               case "week": await loadSchedule(); await loadPublishedSchedule(); break;
+              case "chat": setChatInboxKey((k) => k + 1); break;
               case "coordinate": await loadOverview(); await loadHomeSchedule(); await loadSchedule(); break;
             }
           }}
@@ -7319,7 +7586,20 @@ if (authError && !identity) {
           </main>
         </MobileScroll>
       </AppErrorBoundary>
-      {!reviewOpen && !accountOpen && !directoryOpen && !directoryParentId && !driveDetailId && !faqOpen ? (
+      {chatThreadId && identity ? (
+        <div className="chat-thread-layer" data-testid="chat-thread-layer">
+          <AppErrorBoundary>
+            <ChatThreadScreen
+              repository={repository}
+              threadId={chatThreadId}
+              myProfileId={identity.profile.id}
+              onBack={() => setChatThreadId(null)}
+              onThreadOpened={handleChatThreadOpened}
+            />
+          </AppErrorBoundary>
+        </div>
+      ) : null}
+      {!reviewOpen && !accountOpen && !directoryOpen && !directoryParentId && !driveDetailId && !faqOpen && !chatThreadId ? (
         <nav className="bottom-nav" aria-label="Primary navigation"
           style={{ gridTemplateColumns: `repeat(${navItems.length}, 1fr)` }}>
           {navItems.map(({ id, label, icon: Icon }) => (
@@ -7333,6 +7613,11 @@ if (authError && !identity) {
               <Icon width="20" height="20" />
               <span>{label}</span>
               {id === "home" && myAssignments.some((a) => a.assignment.status === "tentative") ? <i aria-label="Action needed" /> : null}
+              {id === "chat" && chatUnreadCount > 0 ? (
+                <span className="nav-badge" aria-label={`${chatUnreadCount} unread messages`}>
+                  {chatUnreadCount > 99 ? "99+" : chatUnreadCount}
+                </span>
+              ) : null}
             </button>
           ))}
         </nav>

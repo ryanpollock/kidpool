@@ -386,16 +386,49 @@ test.describe("App E2E", () => {
     cleanupE2EData();
   });
 
-  test("bottom navigation has 4 tabs", async ({ page }) => {
+  test("bottom navigation has 5 tabs for a coordinator", async ({ page }) => {
     test.skip(skip, "Requires service key");
-    const user = setupHousehold(3, "E2eNav", false);
+    const user = setupHousehold(3, "E2eNav", true);
     if (!user) { test.skip(); return; }
 
     await signInWithTestAuth(page, user.email);
     await expect(page.getByTestId("nav-home")).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId("nav-plan")).toBeVisible();
     await expect(page.getByTestId("nav-week")).toBeVisible();
+    await expect(page.getByTestId("nav-chat")).toBeVisible();
     await expect(page.getByTestId("nav-coordinate")).toBeVisible();
+
+    // Assert the visible order: Chat is the 4th tab, Admin (coordinator-only) is last.
+    const order = await page.$$eval(
+      '[data-testid^="nav-"]',
+      (els) => els.map((el) => (el as HTMLElement).dataset.testid),
+    );
+    assert.deepEqual(
+      order,
+      ["nav-home", "nav-week", "nav-plan", "nav-chat", "nav-coordinate"],
+      "Tab order must be Home, This Week, Next Week, Chat, then Admin",
+    );
+
+    cleanupE2EData();
+  });
+
+  test("bottom navigation shows 4 tabs for a member (no Admin)", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const user = setupHousehold(12, "E2eNavMember", false);
+    if (!user) { test.skip(); return; }
+
+    await signInWithTestAuth(page, user.email);
+    await expect(page.getByTestId("nav-chat")).toBeVisible({ timeout: 10000 });
+
+    const order = await page.$$eval(
+      '[data-testid^="nav-"]',
+      (els) => els.map((el) => (el as HTMLElement).dataset.testid),
+    );
+    assert.deepEqual(
+      order,
+      ["nav-home", "nav-week", "nav-plan", "nav-chat"],
+      "Members must see exactly Home, This Week, Next Week, Chat — no Admin tab",
+    );
 
     cleanupE2EData();
   });
