@@ -84,10 +84,15 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function slotOrder(slot: string | undefined): number {
-  if (slot === "am") return 0;
-  if (slot === "pm_early") return 1;
-  return 2;
+// Display order within a date: morning first, then chronological by
+// meeting_time — ad hoc custom drives slot in by their own time instead
+// of clumping with pm_late.
+function tripTimeOrder(
+  a: { direction: string; meeting_time: string },
+  b: { direction: string; meeting_time: string },
+): number {
+  if (a.direction !== b.direction) return a.direction === "morning" ? -1 : 1;
+  return String(a.meeting_time).localeCompare(String(b.meeting_time));
 }
 
 function mapsUrlForOrigin(origin: string): string {
@@ -241,7 +246,7 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { type, assignment_id, version_id, displaced_drivers, nonce, test_date, test_status, request_id, new_assignment_id, thread_id, message_id, sender_profile_id, sender_name } = body;
+    const { type, assignment_id, version_id, displaced_drivers, nonce, test_date, test_status, request_id, new_assignment_id, thread_id, message_id, sender_profile_id, sender_name, trip_id, child_ids, cancelled_drive } = body;
 
     if (!SERVICE_ROLE_KEY) return jsonError("Service role key not configured", 500);
     if (!type) return jsonError("Missing notification type", 400);
@@ -696,7 +701,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
         tripsByDate.set(trip.service_date, arr);
       }
       for (const arr of tripsByDate.values()) {
-        arr.sort((a, b) => slotOrder(a.slot) - slotOrder(b.slot));
+        arr.sort(tripTimeOrder);
       }
       const sortedDates = [...tripsByDate.keys()].sort();
 
@@ -946,8 +951,12 @@ Questions? Reply to this email or check the FAQ in the app.`;
         tripDriversMap.set(da.trip_id, arr);
       }
 
-      // Build roster text + structured HTML — iterate trips sorted by slot
-      const sortedTrips = trips.slice().sort((a, b) => slotOrder(a.slot) - slotOrder(b.slot));
+      // Build roster text + structured HTML — iterate trips morning-first, then
+      // chronologically by meeting time so ad hoc custom drives land in order
+      const sortedTrips = trips.slice().sort((a, b) => {
+        if (a.direction !== b.direction) return a.direction === "morning" ? -1 : 1;
+        return String(a.meeting_time).localeCompare(String(b.meeting_time));
+      });
       const rosterLines: string[] = [];
       const rosterHtmlBlocks: string[] = [];
       for (const trip of sortedTrips) {
@@ -956,9 +965,11 @@ Questions? Reply to this email or check the FAQ in the app.`;
         const isMorning = trip.direction === "morning";
         const time = formatTime(trip.meeting_time);
         const origin = trip.origin;
-        const slotLabel = trip.slot === "pm_early" ? "Afternoon · Early"
-          : trip.slot === "pm_late" ? "Afternoon · Late"
-          : isMorning ? "Morning" : "Afternoon";
+        const slotLabel = trip.slot === "custom"
+          ? `${isMorning ? "Morning" : "Afternoon"} · ${time} (extra drive)`
+          : trip.slot === "pm_early" ? "Afternoon · Early"
+            : trip.slot === "pm_late" ? "Afternoon · Late"
+              : isMorning ? "Morning" : "Afternoon";
         const emoji = isMorning ? "🌅" : "🌇";
 
         // Text version
@@ -1255,10 +1266,11 @@ Questions? Reply to this email or check the FAQ in the app.`;
         tripRidersByDriver.set(ra.driver_assignment_id, arr);
       }
 
-      // Map: childId -> per-slot trip info (am, pm_early, pm_late)
-      const childTripInfo = new Map<string, Record<string, any>>();
+      // Map: childId -> per-trip ride info, keyed by trip_id so multiple ad hoc
+      // custom drives on one day never collide the way slot-keyed entries did
+      const childTripInfo = new Map<string, Map<string, any>>();
       for (const child of children) {
-        childTripInfo.set(child.id, {});
+        childTripInfo.set(child.id, new Map());
       }
       for (const da of allDriverAssignments) {
         const trip = tripsById.get(da.trip_id);
@@ -1279,8 +1291,7 @@ Questions? Reply to this email or check the FAQ in the app.`;
         for (const ra of riders) {
           const info = childTripInfo.get(ra.child_id);
           if (!info) continue;
-          const slotKey = trip.slot ?? (trip.direction === "morning" ? "am" : "pm_late");
-          info[slotKey] = entry;
+          info.set(trip.id, entry);
         }
       }
 
@@ -1339,28 +1350,26 @@ Questions? Reply to this email or check the FAQ in the app.`;
           const sheetLinesHtml: string[] = [];
           const sheetLinesText: string[] = [];
 
-          // Determine which slots this child actually needs, based on
+          // Determine which trips this child actually needs, based on
           // ride_requests. This avoids false "No driver assigned" warnings
           // for slots the child doesn't need (e.g., the other half of an
           // "either" afternoon preference, or a slot marked needs_ride=false).
           const rrMap = childRideRequests.get(child.id);
-          const neededSlots = new Set<string>();
+          const neededTripIds = new Set<string>();
 
-          // Always include slots the child is placed on (rider_assignment exists)
-          for (const slot of ["am", "pm_early", "pm_late"]) {
-            if (info[slot]) neededSlots.add(slot);
-          }
+          // Always include trips the child is placed on (rider_assignment exists)
+          for (const tripId of info.keys()) neededTripIds.add(tripId);
 
           if (rrMap && rrMap.size > 0) {
-            const amTripId = slotToTrip.get("am")?.id;
-            const pmEarlyTripId = slotToTrip.get("pm_early")?.id;
-            const pmLateTripId = slotToTrip.get("pm_late")?.id;
-            const amRR = amTripId ? rrMap.get(amTripId) : undefined;
-            const pmEarlyRR = pmEarlyTripId ? rrMap.get(pmEarlyTripId) : undefined;
-            const pmLateRR = pmLateTripId ? rrMap.get(pmLateTripId) : undefined;
+            const amTrip = slotToTrip.get("am");
+            const pmEarlyTrip = slotToTrip.get("pm_early");
+            const pmLateTrip = slotToTrip.get("pm_late");
+            const amRR = amTrip ? rrMap.get(amTrip.id) : undefined;
+            const pmEarlyRR = pmEarlyTrip ? rrMap.get(pmEarlyTrip.id) : undefined;
+            const pmLateRR = pmLateTrip ? rrMap.get(pmLateTrip.id) : undefined;
 
             // AM: needed if needs_ride is true
-            if (amRR?.needs_ride) neededSlots.add("am");
+            if (amRR?.needs_ride && amTrip) neededTripIds.add(amTrip.id);
 
             // Afternoon "either" handling: if the child's preference is
             // "either" for afternoon, they only need ONE of pm_early/pm_late.
@@ -1368,34 +1377,45 @@ Questions? Reply to this email or check the FAQ in the app.`;
             // one warning (pm_early, the earliest).
             const eitherAfternoon = pmEarlyRR?.preference === "either" || pmLateRR?.preference === "either";
             if (eitherAfternoon) {
-              if (info["pm_early"]) {
-                neededSlots.add("pm_early");
-              } else if (info["pm_late"]) {
-                neededSlots.add("pm_late");
-              } else {
-                neededSlots.add("pm_early");
+              if (pmEarlyTrip && info.has(pmEarlyTrip.id)) {
+                neededTripIds.add(pmEarlyTrip.id);
+              } else if (pmLateTrip && info.has(pmLateTrip.id)) {
+                neededTripIds.add(pmLateTrip.id);
+              } else if (pmEarlyTrip) {
+                neededTripIds.add(pmEarlyTrip.id);
               }
             } else {
-              if (pmEarlyRR?.needs_ride) neededSlots.add("pm_early");
-              if (pmLateRR?.needs_ride) neededSlots.add("pm_late");
+              if (pmEarlyRR?.needs_ride && pmEarlyTrip) neededTripIds.add(pmEarlyTrip.id);
+              if (pmLateRR?.needs_ride && pmLateTrip) neededTripIds.add(pmLateTrip.id);
             }
           }
 
-          const slotOrder: { key: string; label: string }[] = [
-            { key: "am", label: "MORNING" },
-            { key: "pm_early", label: "AFTERNOON · EARLY" },
-            { key: "pm_late", label: "AFTERNOON · LATE" },
-          ];
-          for (const { key, label } of slotOrder) {
-            if (!neededSlots.has(key)) continue;
+          // Render morning first, then afternoon trips chronologically —
+          // ad hoc custom drives slot in by their own time
+          const renderTrips = [...neededTripIds]
+            .map((tripId) => tripsById.get(tripId))
+            .filter((t: any) => !!t)
+            .sort((a: any, b: any) =>
+              a.direction === b.direction
+                ? String(a.meeting_time).localeCompare(String(b.meeting_time))
+                : a.direction === "morning" ? -1 : 1,
+            );
 
-            const tripInfo = info[key];
+          for (const renderTrip of renderTrips) {
+            const label = renderTrip.slot === "custom"
+              ? `${renderTrip.direction === "morning" ? "MORNING" : "AFTERNOON"} · ${formatTime(renderTrip.meeting_time)} (extra drive)`
+              : renderTrip.slot === "am"
+                ? "MORNING"
+                : renderTrip.slot === "pm_early"
+                  ? "AFTERNOON · EARLY"
+                  : "AFTERNOON · LATE";
+
+            const tripInfo = info.get(renderTrip.id);
             if (!tripInfo) {
-              // Uncovered slot — look up the trip for time/origin
-              const uncoveredTrip = slotToTrip.get(key);
-              const uncTime = uncoveredTrip ? formatTime(uncoveredTrip.meeting_time) : "";
-              const uncOrigin = uncoveredTrip?.origin ?? "";
-              const timeOriginStr = uncTime ? ` (${uncTime} from ${uncOrigin})` : "";
+              // Uncovered trip — use the trip's own time/origin
+              const uncTime = formatTime(renderTrip.meeting_time);
+              const uncOrigin = renderTrip.origin ?? "";
+              const timeOriginStr = ` (${uncTime} from ${uncOrigin})`;
               sheetLinesHtml.push(`<p style="font-size:14px;margin:0 0 12px;padding:8px 12px;background:#fef2f2;border-radius:6px;color:#b91c1c;"><strong>${label}</strong>${escapeHtml(timeOriginStr)} — ⚠️ No driver assigned — check with coordinator</p>`);
               sheetLinesText.push(`${label}${timeOriginStr}: ⚠️ No driver assigned — check with coordinator`);
               continue;
@@ -1488,10 +1508,11 @@ Questions? Reply to this email or check the FAQ in the app.`;
     }
 
     // ── drive_reminder: 90-min pre-drive email + push to confirmed drivers ─
-    // Triggered by pg_cron at :00, :25, and :40 every hour. Data-driven:
-    // queries today's trips, computes meeting_time - 90 min, and fires
-    // when "now" matches that window. Works for any meeting time on any day
-    // (including Wednesday 2:10 PM early dismissal).
+    // Triggered by pg_cron every 5 minutes. Data-driven: queries today's
+    // trips, computes meeting_time - 90 min, and fires when "now" matches
+    // that window. Works for any meeting time on any day (Wednesday 2:10 PM
+    // early dismissal, ad hoc custom drives at arbitrary times). Multiple
+    // trips can share one window — each gets its own reminders.
     if (type === "drive_reminder") {
       const now = new Date();
       const parts = pacificParts(now, true);
@@ -1499,75 +1520,18 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const pacificMinute = parseInt(parts.minute, 10);
       const today = `${parts.year}-${parts.month}-${parts.day}`;
 
-      // Query today's trips and find which one has a reminder window matching now
+      // Query today's trips and collect ALL with a reminder window matching now
       const todayTrips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", {
         service_date: `eq.${today}`,
       });
-      let slot: "am" | "pm_early" | "pm_late" | null = null;
-      let trip: any = null;
-      for (const t of todayTrips) {
+      const matchingTrips = todayTrips.filter((t: any) => {
         const reminderTime = addMinutes(t.meeting_time, -90);
         const [rh, rm] = reminderTime.split(":").map((n: string) => parseInt(n, 10));
-        if (pacificHour === rh && pacificMinute >= rm && pacificMinute < rm + 5) {
-          slot = t.slot;
-          trip = t;
-          break;
-        }
-      }
-      if (!slot || !trip) {
+        return pacificHour === rh && pacificMinute >= rm && pacificMinute < rm + 5;
+      });
+      if (matchingTrips.length === 0) {
         return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "outside_window" });
       }
-      const groupId = trip.group_id;
-
-      // Find the published schedule version for this week
-      const versions = await supaFetch("schedule_versions", "id", {
-        week_id: `eq.${trip.week_id}`,
-        group_id: `eq.${groupId}`,
-        status: "eq.published",
-      });
-      if (versions.length === 0) {
-        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_published_version" });
-      }
-      const versionId = versions[0].id;
-
-      // Fetch confirmed driver assignments for this trip
-      const driverAssignments = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id", {
-        schedule_version_id: `eq.${versionId}`,
-        trip_id: `eq.${trip.id}`,
-        group_id: `eq.${groupId}`,
-        status: "eq.confirmed",
-      });
-      if (driverAssignments.length === 0) {
-        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_confirmed_drivers" });
-      }
-
-      // Fetch rider assignments (kids in each car)
-      const daIds = driverAssignments.map((da: any) => da.id);
-      const riderAssignments = await supaFetch("rider_assignments", "child_id,driver_assignment_id", {
-        driver_assignment_id: `in.(${daIds.join(",")})`,
-      });
-      const childIds = [...new Set(riderAssignments.map((ra: any) => ra.child_id))];
-      const children = childIds.length > 0 ? await supaFetch("children", "id,first_name,last_name", { id: `in.(${childIds.join(",")})` }) : [];
-      const childMap = new Map(children.map((c: any) => [c.id, c]));
-
-      // Build driver_assignment_id -> kid names
-      const kidsByDriver = new Map<string, string[]>();
-      for (const ra of riderAssignments) {
-        const child = childMap.get(ra.child_id);
-        if (!child) continue;
-        const kidName = `${child.first_name} ${child.last_name}`.trim();
-        const arr = kidsByDriver.get(ra.driver_assignment_id) ?? [];
-        arr.push(kidName);
-        kidsByDriver.set(ra.driver_assignment_id, arr);
-      }
-
-      // Fetch driver profiles
-      const driverProfileIds = driverAssignments.map((da: any) => da.driver_profile_id);
-      const driverProfiles = await supaFetch("profiles", "id,full_name,email", { id: `in.(${driverProfileIds.join(",")})` });
-      const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
-
-      const formattedTime = formatTime(trip.meeting_time);
-      const period = slot === "am" ? "morning" : "afternoon";
 
       ensureVapid();
 
@@ -1577,82 +1541,132 @@ Questions? Reply to this email or check the FAQ in the app.`;
       let emailSent = 0;
       let emailFailed = 0;
 
-      for (const da of driverAssignments) {
-        const driver = driverProfileMap.get(da.driver_profile_id);
-        if (!driver) continue;
-        const kids = kidsByDriver.get(da.id) ?? [];
-        const kidsStr = kids.length > 0 ? ` Kids in your car: ${kids.join(", ")}.` : "";
-        const bodyText = `Your ${period} drive starts at ${formattedTime} from ${trip.origin}.${kidsStr}`;
-        const title = "Drive in 90 minutes";
-        const tag = `drive-reminder-${trip.id}-${da.driver_profile_id}`;
-        const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
+      for (const trip of matchingTrips) {
+        const period = trip.direction === "morning" ? "morning" : "afternoon";
+        const groupId = trip.group_id;
 
-        // Push to this driver's subscriptions
-        const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${da.driver_profile_id}` });
-        for (const sub of subs) {
-          try {
-            await webpush.sendNotification(
-              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
-              pushPayload,
-              { TTL: 2419200 },
-            );
-            sent++;
-          } catch (error: any) {
-            failed++;
-            const statusCode = error?.statusCode ?? 0;
-            if (statusCode === 410 || statusCode === 404) {
-              console.log(`[send-push] Removing dead subscription (status ${statusCode}): ${sub.endpoint.slice(0, 60)}...`);
-              await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
-              removed++;
-            } else {
-              console.error(`[send-push] Drive reminder push failed (status ${statusCode}):`, error?.message ?? error);
-            }
-          }
+        // Find the published schedule version for this week
+        const versions = await supaFetch("schedule_versions", "id", {
+          week_id: `eq.${trip.week_id}`,
+          group_id: `eq.${groupId}`,
+          status: "eq.published",
+        });
+        if (versions.length === 0) continue;
+        const versionId = versions[0].id;
+
+        // Fetch confirmed driver assignments for this trip
+        const driverAssignments = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id", {
+          schedule_version_id: `eq.${versionId}`,
+          trip_id: `eq.${trip.id}`,
+          group_id: `eq.${groupId}`,
+          status: "eq.confirmed",
+        });
+        if (driverAssignments.length === 0) continue;
+
+        // Fetch rider assignments (kids in each car)
+        const daIds = driverAssignments.map((da: any) => da.id);
+        const riderAssignments = await supaFetch("rider_assignments", "child_id,driver_assignment_id", {
+          driver_assignment_id: `in.(${daIds.join(",")})`,
+        });
+        const childIds = [...new Set(riderAssignments.map((ra: any) => ra.child_id))];
+        const children = childIds.length > 0 ? await supaFetch("children", "id,first_name,last_name", { id: `in.(${childIds.join(",")})` }) : [];
+        const childMap = new Map(children.map((c: any) => [c.id, c]));
+
+        // Build driver_assignment_id -> kid names
+        const kidsByDriver = new Map<string, string[]>();
+        for (const ra of riderAssignments) {
+          const child = childMap.get(ra.child_id);
+          if (!child) continue;
+          const kidName = `${child.first_name} ${child.last_name}`.trim();
+          const arr = kidsByDriver.get(ra.driver_assignment_id) ?? [];
+          arr.push(kidName);
+          kidsByDriver.set(ra.driver_assignment_id, arr);
         }
 
-        // Email to this driver
-        if (driver.email && RESEND_API_KEY) {
-          if (isTestEmail(driver.email)) continue;
-          const cta = APP_URL
-            ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
-            : "";
-          const htmlBody =
-            `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
-            `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1>` +
-            `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(bodyText)}</p>` +
-            `<p style="margin-top:24px;">${cta}</p>` +
-            `</body></html>`;
-          try {
-            const res = await fetch("https://api.resend.com/emails", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${RESEND_API_KEY}`,
-                "Content-Type": "application/json",
-                "Idempotency-Key": `carpool-${tag}`,
-              },
-              body: JSON.stringify({
-                from: RESEND_FROM_EMAIL,
-                to: driver.email,
-                reply_to: RESEND_REPLY_TO,
-                subject: title,
-                html: htmlBody,
-                text: bodyText,
-                tags: [
-                  { name: "type", value: "drive_reminder" },
-                  { name: "group", value: groupId ?? "unknown" },
-                ],
-              }),
-            });
-            if (!res.ok) {
-              const err = await res.text();
-              console.error(`[send-push] Drive reminder email to ${driver.email} failed:`, err);
-              emailFailed++;
-            } else {
-              emailSent++;
+        // Fetch driver profiles
+        const driverProfileIds = driverAssignments.map((da: any) => da.driver_profile_id);
+        const driverProfiles = await supaFetch("profiles", "id,full_name,email", { id: `in.(${driverProfileIds.join(",")})` });
+        const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
+
+        const formattedTime = formatTime(trip.meeting_time);
+
+        for (const da of driverAssignments) {
+          const driver = driverProfileMap.get(da.driver_profile_id);
+          if (!driver) continue;
+          const kids = kidsByDriver.get(da.id) ?? [];
+          const kidsStr = kids.length > 0 ? ` Kids in your car: ${kids.join(", ")}.` : "";
+          const bodyText = `Your ${period} drive starts at ${formattedTime} from ${trip.origin}.${kidsStr}`;
+          const title = "Drive in 90 minutes";
+          const tag = `drive-reminder-${trip.id}-${da.driver_profile_id}`;
+          const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
+
+          // Push to this driver's subscriptions
+          const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${da.driver_profile_id}` });
+          for (const sub of subs) {
+            try {
+              await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                pushPayload,
+                { TTL: 2419200 },
+              );
+              sent++;
+            } catch (error: any) {
+              failed++;
+              const statusCode = error?.statusCode ?? 0;
+              if (statusCode === 410 || statusCode === 404) {
+                console.log(`[send-push] Removing dead subscription (status ${statusCode}): ${sub.endpoint.slice(0, 60)}...`);
+                await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+                removed++;
+              } else {
+                console.error(`[send-push] Drive reminder push failed (status ${statusCode}):`, error?.message ?? error);
+              }
             }
-          } catch (e) {
-            console.error(`[send-push] Drive reminder email to ${driver.email} threw:`, e);
-            emailFailed++;
+          }
+
+          // Email to this driver
+          if (driver.email && RESEND_API_KEY) {
+            if (isTestEmail(driver.email)) continue;
+            const cta = APP_URL
+              ? `<a href="${APP_URL}" style="display:inline-block;background:#118b8c;color:white;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">Open the app</a>`
+              : "";
+            const htmlBody =
+              `<!DOCTYPE html><html><body style="font-family:-apple-system,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#0c2b52;">` +
+              `<h1 style="font-size:18px;color:#0c2b52;margin:0 0 16px;">Carpool Crew</h1>` +
+              `<p style="font-size:15px;color:#0c2b52;line-height:1.5;">${escapeHtml(bodyText)}</p>` +
+              `<p style="margin-top:24px;">${cta}</p>` +
+              `</body></html>`;
+            try {
+              const res = await fetch("https://api.resend.com/emails", {
+                method: "POST",
+                headers: {
+                  "Authorization": `Bearer ${RESEND_API_KEY}`,
+                  "Content-Type": "application/json",
+                  "Idempotency-Key": `carpool-${tag}`,
+                },
+                body: JSON.stringify({
+                  from: RESEND_FROM_EMAIL,
+                  to: driver.email,
+                  reply_to: RESEND_REPLY_TO,
+                  subject: title,
+                  html: htmlBody,
+                  text: bodyText,
+                  tags: [
+                    { name: "type", value: "drive_reminder" },
+                    { name: "group", value: groupId ?? "unknown" },
+                  ],
+                }),
+              });
+              if (!res.ok) {
+                const err = await res.text();
+                console.error(`[send-push] Drive reminder email to ${driver.email} failed:`, err);
+                emailFailed++;
+              } else {
+                emailSent++;
+              }
+            } catch (e) {
+              console.error(`[send-push] Drive reminder email to ${driver.email} threw:`, e);
+              emailFailed++;
+            }
           }
         }
       }
@@ -1675,70 +1689,14 @@ Questions? Reply to this email or check the FAQ in the app.`;
       const todayTrips = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", {
         service_date: `eq.${today}`,
       });
-      let slot: "am" | "pm_early" | "pm_late" | null = null;
-      let trip: any = null;
-      for (const t of todayTrips) {
+      const matchingTrips = todayTrips.filter((t: any) => {
         const reminderTime = addMinutes(t.meeting_time, -30);
         const [rh, rm] = reminderTime.split(":").map((n: string) => parseInt(n, 10));
-        if (pacificHour === rh && pacificMinute >= rm && pacificMinute < rm + 5) {
-          slot = t.slot;
-          trip = t;
-          break;
-        }
-      }
-      if (!slot || !trip) {
+        return pacificHour === rh && pacificMinute >= rm && pacificMinute < rm + 5;
+      });
+      if (matchingTrips.length === 0) {
         return jsonResponse({ sent: 0, failed: 0, reason: "outside_window" });
       }
-      const groupId = trip.group_id;
-
-      const versions = await supaFetch("schedule_versions", "id", {
-        week_id: `eq.${trip.week_id}`,
-        group_id: `eq.${groupId}`,
-        status: "eq.published",
-      });
-      if (versions.length === 0) {
-        return jsonResponse({ sent: 0, failed: 0, reason: "no_published_version" });
-      }
-      const versionId = versions[0].id;
-
-      const driverAssignments = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id", {
-        schedule_version_id: `eq.${versionId}`,
-        trip_id: `eq.${trip.id}`,
-        group_id: `eq.${groupId}`,
-        status: "eq.confirmed",
-      });
-      if (driverAssignments.length === 0) {
-        return jsonResponse({ sent: 0, failed: 0, reason: "no_confirmed_drivers" });
-      }
-
-      // Fetch rider assignments + children
-      const daIds = driverAssignments.map((da: any) => da.id);
-      const riderAssignments = await supaFetch("rider_assignments", "child_id,driver_assignment_id", {
-        driver_assignment_id: `in.(${daIds.join(",")})`,
-      });
-      const childIds = [...new Set(riderAssignments.map((ra: any) => ra.child_id))];
-      const children = childIds.length > 0 ? await supaFetch("children", "id,first_name,last_name,household_id", { id: `in.(${childIds.join(",")})` }) : [];
-      const childMap = new Map(children.map((c: any) => [c.id, c]));
-
-      // Build driver_assignment_id -> kid names
-      const kidsByDriver = new Map<string, string[]>();
-      for (const ra of riderAssignments) {
-        const child = childMap.get(ra.child_id);
-        if (!child) continue;
-        const kidName = `${child.first_name} ${child.last_name}`.trim();
-        const arr = kidsByDriver.get(ra.driver_assignment_id) ?? [];
-        arr.push(kidName);
-        kidsByDriver.set(ra.driver_assignment_id, arr);
-      }
-
-      // Fetch driver profiles
-      const driverProfileIds = driverAssignments.map((da: any) => da.driver_profile_id);
-      const driverProfiles = await supaFetch("profiles", "id,full_name", { id: `in.(${driverProfileIds.join(",")})` });
-      const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
-
-      const formattedTime = formatTime(trip.meeting_time);
-      const period = slot === "am" ? "morning" : "afternoon";
-      const isMorning = slot === "am";
 
       ensureVapid();
 
@@ -1746,80 +1704,131 @@ Questions? Reply to this email or check the FAQ in the app.`;
       let failed = 0;
       let removed = 0;
 
-      // ── Driver notifications: "Tap I'm on my way" ──
-      for (const da of driverAssignments) {
-        const driver = driverProfileMap.get(da.driver_profile_id);
-        if (!driver) continue;
-        const kids = kidsByDriver.get(da.id) ?? [];
-        const kidsStr = kids.length > 0 ? ` Kids: ${kids.join(", ")}.` : "";
-        const bodyText = `Tap "I'm on my way" for the ${formattedTime} ${period} pickup.${kidsStr}`;
-        const title = "On your way soon?";
-        const tag = `status-reminder-driver-${trip.id}-${da.driver_profile_id}`;
-        const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
+      for (const trip of matchingTrips) {
+        const groupId = trip.group_id;
 
-        const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${da.driver_profile_id}` });
-        for (const sub of subs) {
-          try {
-            await webpush.sendNotification(
-              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
-              pushPayload,
-              { TTL: 2419200 },
-            );
-            sent++;
-          } catch (error: any) {
-            failed++;
-            const statusCode = error?.statusCode ?? 0;
-            if (statusCode === 410 || statusCode === 404) {
-              await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
-              removed++;
+        const versions = await supaFetch("schedule_versions", "id", {
+          week_id: `eq.${trip.week_id}`,
+          group_id: `eq.${groupId}`,
+          status: "eq.published",
+        });
+        if (versions.length === 0) continue;
+        const versionId = versions[0].id;
+
+        const driverAssignments = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id", {
+          schedule_version_id: `eq.${versionId}`,
+          trip_id: `eq.${trip.id}`,
+          group_id: `eq.${groupId}`,
+          status: "eq.confirmed",
+        });
+        if (driverAssignments.length === 0) continue;
+
+        // Fetch rider assignments + children
+        const daIds = driverAssignments.map((da: any) => da.id);
+        const riderAssignments = await supaFetch("rider_assignments", "child_id,driver_assignment_id", {
+          driver_assignment_id: `in.(${daIds.join(",")})`,
+        });
+        const childIds = [...new Set(riderAssignments.map((ra: any) => ra.child_id))];
+        const children = childIds.length > 0 ? await supaFetch("children", "id,first_name,last_name,household_id", { id: `in.(${childIds.join(",")})` }) : [];
+        const childMap = new Map(children.map((c: any) => [c.id, c]));
+
+        // Build driver_assignment_id -> kid names
+        const kidsByDriver = new Map<string, string[]>();
+        for (const ra of riderAssignments) {
+          const child = childMap.get(ra.child_id);
+          if (!child) continue;
+          const kidName = `${child.first_name} ${child.last_name}`.trim();
+          const arr = kidsByDriver.get(ra.driver_assignment_id) ?? [];
+          arr.push(kidName);
+          kidsByDriver.set(ra.driver_assignment_id, arr);
+        }
+
+        // Fetch driver profiles
+        const driverProfileIds = driverAssignments.map((da: any) => da.driver_profile_id);
+        const driverProfiles = await supaFetch("profiles", "id,full_name", { id: `in.(${driverProfileIds.join(",")})` });
+        const driverProfileMap = new Map(driverProfiles.map((p: any) => [p.id, p]));
+
+        const formattedTime = formatTime(trip.meeting_time);
+        const period = trip.direction === "morning" ? "morning" : "afternoon";
+        const isMorning = trip.direction === "morning";
+
+        // ── Driver notifications: "Tap I'm on my way" ──
+        for (const da of driverAssignments) {
+          const driver = driverProfileMap.get(da.driver_profile_id);
+          if (!driver) continue;
+          const kids = kidsByDriver.get(da.id) ?? [];
+          const kidsStr = kids.length > 0 ? ` Kids: ${kids.join(", ")}.` : "";
+          const bodyText = `Tap "I'm on my way" for the ${formattedTime} ${period} pickup.${kidsStr}`;
+          const title = "On your way soon?";
+          const tag = `status-reminder-driver-${trip.id}-${da.driver_profile_id}`;
+          const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
+
+          const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${da.driver_profile_id}` });
+          for (const sub of subs) {
+            try {
+              await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                pushPayload,
+                { TTL: 2419200 },
+              );
+              sent++;
+            } catch (error: any) {
+              failed++;
+              const statusCode = error?.statusCode ?? 0;
+              if (statusCode === 410 || statusCode === 404) {
+                await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+                removed++;
+              }
             }
           }
         }
-      }
 
-      // ── Rider parent notifications (morning only): "Tap Mark ready" ──
-      if (isMorning && childIds.length > 0) {
-        // Build child_id -> driver_name mapping
-        const childToDriver = new Map<string, string>();
-        for (const ra of riderAssignments) {
-          const da = driverAssignments.find((d: any) => d.id === ra.driver_assignment_id);
-          if (da) {
-            const driver = driverProfileMap.get(da.driver_profile_id);
-            if (driver) childToDriver.set(ra.child_id, driver.full_name.split(" ")[0]);
+        // ── Rider parent notifications (morning only): "Tap Mark ready" ──
+        // Afternoon rider parents get nothing — kids are at school together,
+        // no "at the curb" status needed.
+        if (isMorning && childIds.length > 0) {
+          // Build child_id -> driver_name mapping
+          const childToDriver = new Map<string, string>();
+          for (const ra of riderAssignments) {
+            const da = driverAssignments.find((d: any) => d.id === ra.driver_assignment_id);
+            if (da) {
+              const driver = driverProfileMap.get(da.driver_profile_id);
+              if (driver) childToDriver.set(ra.child_id, driver.full_name.split(" ")[0]);
+            }
           }
-        }
 
-        // Collect distinct households from children
-        const householdIds = [...new Set(children.map((c: any) => c.household_id))];
-        for (const hid of householdIds) {
-          const members = await supaFetch("memberships", "profile_id", { household_id: `eq.${hid}`, status: "eq.active" });
-          // Find children in this household
-          const householdChildren = children.filter((c: any) => c.household_id === hid);
-          const childNames = householdChildren.map((c: any) => c.first_name).join(" and ");
-          const driverNames = householdChildren.map((c: any) => childToDriver.get(c.id)).filter(Boolean);
-          const driverStr = driverNames.length > 0 ? ` ${driverNames[0]} is driving.` : "";
+          // Collect distinct households from children
+          const householdIds = [...new Set(children.map((c: any) => c.household_id))];
+          for (const hid of householdIds) {
+            const members = await supaFetch("memberships", "profile_id", { household_id: `eq.${hid}`, status: "eq.active" });
+            // Find children in this household
+            const householdChildren = children.filter((c: any) => c.household_id === hid);
+            const childNames = householdChildren.map((c: any) => c.first_name).join(" and ");
+            const driverNames = householdChildren.map((c: any) => childToDriver.get(c.id)).filter(Boolean);
+            const driverStr = driverNames.length > 0 ? ` ${driverNames[0]} is driving.` : "";
 
-          for (const member of members) {
-            const bodyText = `On your way? Tap "I'm on my way" in the app for the ${formattedTime} pickup.${driverStr}`;
-            const title = `On your way?`;
-            const tag = `status-reminder-rider-${trip.id}-${member.profile_id}`;
-            const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
+            for (const member of members) {
+              const bodyText = `On your way? Tap "I'm on my way" in the app for the ${formattedTime} pickup.${driverStr}`;
+              const title = `On your way?`;
+              const tag = `status-reminder-rider-${trip.id}-${member.profile_id}`;
+              const pushPayload = JSON.stringify({ title, body: bodyText, tag, url: "/" });
 
-            const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${member.profile_id}` });
-            for (const sub of subs) {
-              try {
-                await webpush.sendNotification(
-                  { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
-                  pushPayload,
-                  { TTL: 2419200 },
-                );
-                sent++;
-              } catch (error: any) {
-                failed++;
-                const statusCode = error?.statusCode ?? 0;
-                if (statusCode === 410 || statusCode === 404) {
-                  await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
-                  removed++;
+              const subs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${member.profile_id}` });
+              for (const sub of subs) {
+                try {
+                  await webpush.sendNotification(
+                    { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+                    pushPayload,
+                    { TTL: 2419200 },
+                  );
+                  sent++;
+                } catch (error: any) {
+                  failed++;
+                  const statusCode = error?.statusCode ?? 0;
+                  if (statusCode === 410 || statusCode === 404) {
+                    await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+                    removed++;
+                  }
                 }
               }
             }
@@ -2162,7 +2171,7 @@ ${childName} won't be riding ${dirLabel.toLowerCase()} on ${tripDate}.
 
 Their parent cancelled this ride. You're still scheduled to drive — other children may still need a ride.
 
-Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
+Trip: ${formatTime(trip.meeting_time)} · ${trip.origin} → ${trip.destination}`;
 
       let emailSent = 0;
       let emailFailed = 0;
@@ -2259,7 +2268,7 @@ Trip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
 <p style="font-size:15px;line-height:1.6;margin:0 0 8px;">Trip: ${escapeHtml(trip.meeting_time)} · ${escapeHtml(trip.origin)} → ${escapeHtml(trip.destination)}</p>
 ${cta}
 </body></html>`;
-          const driverText = `Ride update\n\n${childName} was removed from your ${dirLabel.toLowerCase()} drive on ${tripDate} by a coordinator.\n\nYou're still scheduled to drive — other children may still need a ride.\n\nTrip: ${trip.meeting_time} · ${trip.origin} → ${trip.destination}`;
+          const driverText = `Ride update\n\n${childName} was removed from your ${dirLabel.toLowerCase()} drive on ${tripDate} by a coordinator.\n\nYou're still scheduled to drive — other children may still need a ride.\n\nTrip: ${formatTime(trip.meeting_time)} · ${trip.origin} → ${trip.destination}`;
 
           if (RESEND_API_KEY) {
             try {
@@ -2427,7 +2436,131 @@ ${cta}
       return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
     }
 
-    if (type === "declined" && assignment_id) {
+    // ── custom_drive_offered: notify all group members about an ad hoc drive ──
+    if (type === "custom_drive_offered" && trip_id) {
+      const tripData = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", { id: `eq.${trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+      groupId = trip.group_id;
+
+      // The offering driver's active assignment + current riders for seats open
+      const driverAssignments = await supaFetch("driver_assignments", "id,driver_profile_id,vehicle_id,child_passenger_capacity", {
+        trip_id: `eq.${trip_id}`,
+        status: "in.(tentative,confirmed)",
+        order: "created_at.desc",
+        limit: "1",
+      });
+      if (driverAssignments.length === 0) return jsonError("No driver assignment for custom drive", 404);
+      const da = driverAssignments[0];
+
+      const riderRows = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${da.id}` });
+      const seatsOpen = Math.max(0, da.child_passenger_capacity - riderRows.length);
+
+      const driverRows = await supaFetch("profiles", "full_name", { id: `eq.${da.driver_profile_id}` });
+      const driverName = driverRows.length > 0 ? driverRows[0].full_name : "A parent";
+
+      const memberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${groupId}`, status: "eq.active" });
+      recipientProfileIds = memberships
+        .map((m: any) => m.profile_id)
+        .filter((id: string) => id !== da.driver_profile_id);
+
+      const timeLabel = formatTime(trip.meeting_time);
+      const dateLabel = new Date(trip.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      title = "Extra drive offered";
+      bodyText = `${driverName} added an extra ${period} drive on ${dateLabel} — pickup at ${timeLabel} from ${trip.origin}. ${seatsOpen} seat${seatsOpen === 1 ? "" : "s"} open. Open the app to add your child.`;
+      tag = `custom-drive-offered-${trip_id}`;
+    } else if (type === "custom_drive_joined" && trip_id) {
+      // ── custom_drive_joined: notify the offering driver ──
+      const tripData = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,group_id", { id: `eq.${trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+      groupId = trip.group_id;
+
+      const driverAssignments = await supaFetch("driver_assignments", "id,driver_profile_id", {
+        trip_id: `eq.${trip_id}`,
+        status: "in.(tentative,confirmed)",
+        order: "created_at.desc",
+        limit: "1",
+      });
+      if (driverAssignments.length === 0) return jsonError("No driver assignment for custom drive", 404);
+      const da = driverAssignments[0];
+      recipientProfileIds = [da.driver_profile_id];
+
+      const addedChildIds: string[] = Array.isArray(child_ids) ? child_ids : [];
+      const childRows = addedChildIds.length > 0
+        ? await supaFetch("children", "first_name,last_name", { id: `in.(${addedChildIds.join(",")})` })
+        : [];
+      const childNames = childRows.map((c: any) => `${c.first_name} ${c.last_name}`.trim()).join(" and ") || "A child";
+      const wasWere = childRows.length === 1 ? "was" : "were";
+
+      const timeLabel = formatTime(trip.meeting_time);
+      const dateLabel = new Date(trip.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      title = "Child added to your extra drive";
+      bodyText = `${childNames} ${wasWere} added to your extra ${period} drive on ${dateLabel} (${timeLabel}). Open the app for details.`;
+      tag = `custom-drive-joined-${trip_id}-${addedChildIds.join("-")}`;
+    } else if (type === "custom_drive_left" && trip_id) {
+      // ── custom_drive_left: notify the offering driver ──
+      const childId: string | undefined = body.child_id;
+      if (!childId) return jsonError("Missing child_id for custom_drive_left", 400);
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,group_id", { id: `eq.${trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+      groupId = trip.group_id;
+
+      const driverAssignments = await supaFetch("driver_assignments", "id,driver_profile_id", {
+        trip_id: `eq.${trip_id}`,
+        status: "in.(tentative,confirmed)",
+        order: "created_at.desc",
+        limit: "1",
+      });
+      if (driverAssignments.length === 0) return jsonError("No driver assignment for custom drive", 404);
+      const da = driverAssignments[0];
+      recipientProfileIds = [da.driver_profile_id];
+
+      const childRows = await supaFetch("children", "first_name,last_name", { id: `eq.${childId}` });
+      const childName = childRows.length > 0 ? `${childRows[0].first_name} ${childRows[0].last_name}`.trim() : "A child";
+
+      const timeLabel = formatTime(trip.meeting_time);
+      const dateLabel = new Date(trip.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      title = "Child removed from your extra drive";
+      bodyText = `${childName} was removed from your extra ${period} drive on ${dateLabel} (${timeLabel}).`;
+      tag = `custom-drive-left-${trip_id}-${childId}`;
+    } else if (type === "custom_drive_cancelled" && cancelled_drive) {
+      // ── custom_drive_cancelled: notify rider households (trip rows already
+      // deleted — details come from the RPC's pre-cancel snapshot) ──
+      const cd = cancelled_drive as {
+        driver_profile_id?: string;
+        service_date?: string;
+        meeting_time?: string;
+        direction?: string;
+        rider_profile_ids?: string[];
+      };
+      groupId = null;
+      recipientProfileIds = (cd.rider_profile_ids ?? []).filter((id: string) => id !== cd.driver_profile_id);
+
+      if (recipientProfileIds.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "no_recipients" });
+      }
+
+      let driverName = "A parent";
+      if (cd.driver_profile_id) {
+        const driverRows = await supaFetch("profiles", "full_name", { id: `eq.${cd.driver_profile_id}` });
+        if (driverRows.length > 0) driverName = driverRows[0].full_name;
+      }
+
+      const timeLabel = cd.meeting_time ? formatTime(cd.meeting_time) : "";
+      const dateLabel = cd.service_date
+        ? new Date(cd.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })
+        : "";
+      const period = cd.direction === "morning" ? "morning" : "afternoon";
+      title = "Extra drive cancelled";
+      bodyText = `${driverName} cancelled the extra ${period} drive on ${dateLabel}${timeLabel ? ` at ${timeLabel}` : ""}. Your child needs a new ride.`;
+      tag = `custom-drive-cancelled-${cd.service_date ?? "unknown"}-${(cd.meeting_time ?? "").replace(/:/g, "")}`;
+    } else if (type === "declined" && assignment_id) {
       const riderAssignments = await supaFetch("rider_assignments", "*", { driver_assignment_id: `eq.${assignment_id}` });
       const childIds = riderAssignments.map((ra: any) => ra.child_id);
       if (childIds.length === 0) return jsonError("No riders found", 404);
@@ -2572,7 +2705,7 @@ ${cta}
         tripsByDate.set(trip.service_date, arr);
       }
       for (const arr of tripsByDate.values()) {
-        arr.sort((a, b) => slotOrder(a.slot) - slotOrder(b.slot));
+        arr.sort(tripTimeOrder);
       }
       const sortedDates = [...tripsByDate.keys()].sort();
 

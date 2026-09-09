@@ -91,6 +91,24 @@ test("every database table has a matching TypeScript contract", async () => {
   }
 });
 
+test("migration version prefixes are unique", async () => {
+  // The tracker treats the filename prefix as the version — a duplicate
+  // breaks fresh `supabase start`/`db reset` with a schema_migrations PK
+  // conflict (the 202609010003 incident). Guard against recurrence.
+  const { readdir } = await import("node:fs/promises");
+  const migrationDir = new URL("../supabase/migrations/", import.meta.url);
+  const files = (await readdir(migrationDir)).filter((f) => f.endsWith(".sql"));
+  const seen = new Map();
+  for (const file of files) {
+    const version = file.split("_")[0];
+    const previous = seen.get(version);
+    if (previous) {
+      assert.fail(`Duplicate migration version ${version}: ${previous} and ${file}`);
+    }
+    seen.set(version, file);
+  }
+});
+
 test("every column added by ALTER TABLE migrations appears in database.types.ts", async () => {
   // Parse all migration files for "alter table ... add column" statements
   // and verify each column appears in the corresponding *Row type.
