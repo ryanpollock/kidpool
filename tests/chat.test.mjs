@@ -11,6 +11,7 @@ const repoUrl = new URL("../src/lib/supabase/carpool-repository.ts", import.meta
 const prototypeUrl = new URL("../src/Prototype.tsx", import.meta.url);
 const chatScreensUrl = new URL("../src/ChatScreens.tsx", import.meta.url);
 const chatCssUrl = new URL("../src/chat.css", import.meta.url);
+const prototypeUrl2 = new URL("../src/prototype.css", import.meta.url);
 const sendPushUrl = new URL("../supabase/functions/send-push/index.ts", import.meta.url);
 const dbTruncateUrl = new URL("../tests/lib/db.ts", import.meta.url);
 
@@ -270,6 +271,36 @@ test("thread header beats prototype.css subpage-header collisions by specificity
   assert.match(css, /grid-template-columns: 36px 1fr 36px;/);
   assert.match(css, /font-family: inherit;/);
   assert.match(css, /\.chat-header-sub \{/);
+});
+
+test("every text-entry control meets the iOS 16px no-auto-zoom threshold", async () => {
+  // iOS Safari (and iOS installed PWAs) zoom the whole page when an input
+  // with a computed font-size under 16px gains focus — and KEEP the zoom
+  // after the keyboard closes, so the app renders "too wide" with the right
+  // side clipped (the production iPhone report on the chat composer, which
+  // shipped at 14px). maximum-scale=1 is deliberately not used — it's an
+  // accessibility anti-pattern. This scans every input/textarea rule in the
+  // app stylesheets and enforces the threshold.
+  for (const url of [chatCssUrl, prototypeUrl2]) {
+    const css = await readFile(url, "utf8");
+    const ruleRe = /([^{}]+)\{([^}]*)\}/g;
+    let rule;
+    while ((rule = ruleRe.exec(css)) !== null) {
+      const selector = rule[1];
+      const body = rule[2];
+      const isEntryControl = /(^|[,]\s*)(textarea|input)\b/.test(selector) ||
+        /(^|[,]\s*)\.chat-composer textarea/.test(selector) ||
+        /\binput\[/.test(selector);
+      if (!isEntryControl) continue;
+      const sizeMatch = body.match(/font-size:\s*(\d+(?:\.\d+)?)px/);
+      if (!sizeMatch) continue;
+      const size = Number(sizeMatch[1]);
+      assert.ok(
+        size >= 16,
+        `${url.toString().split("/").pop()}: text-entry rule "${selector.trim().slice(0, 60)}" has font-size ${size}px — below the iOS 16px no-auto-zoom threshold`,
+      );
+    }
+  }
 });
 
 test("ChatScreens follows the mobile runtime contract", async () => {
