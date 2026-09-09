@@ -3362,6 +3362,32 @@ ${cta}
       const notifBody = messageBody ?? "New message";
       const deepLink = `${APP_URL ?? ""}/#thread=${thread_id}`;
 
+      // Per-recipient TOTAL unread (all threads, muted excluded) for the
+      // app icon badge: iOS home-screen web apps and desktop Chrome render
+      // it via the Badging API, and the service worker sets it when the
+      // push arrives while the app is closed. Fail-soft per recipient — a
+      // failed count just omits the badge for that person.
+      const unreadByProfile = new Map<string, number>();
+      for (const recipientId of recipientIds) {
+        try {
+          const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/count_unread_chat`, {
+            method: "POST",
+            headers: {
+              "apikey": SERVICE_ROLE_KEY!,
+              "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ target_profile_id: recipientId }),
+          });
+          if (res.ok) {
+            const count = await res.json();
+            if (typeof count === "number") unreadByProfile.set(recipientId, count);
+          }
+        } catch {
+          // badge omitted on failure
+        }
+      }
+
       if (!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY)) {
         return jsonResponse({ sent: 0, failed: 0, skipped: recipientIds.length, reason: "no_vapid_keys" });
       }
@@ -3374,9 +3400,17 @@ ${cta}
       const subscriptions = await supaFetch("push_subscriptions", "*", { profile_id: `in.${profileIdsStr}` });
       for (const sub of subscriptions) {
         try {
+          const payload: Record<string, unknown> = {
+            title: notifTitle,
+            body: notifBody,
+            tag: `chat-${thread_id}`,
+            url: deepLink,
+          };
+          const badge = unreadByProfile.get(sub.profile_id);
+          if (badge !== undefined) payload.badge = badge;
           await webpush.sendNotification(
             { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
-            JSON.stringify({ title: notifTitle, body: notifBody, tag: `chat-${thread_id}`, url: deepLink }),
+            JSON.stringify(payload),
             { TTL: 86400 },
           );
           sent++;

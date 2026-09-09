@@ -50,14 +50,32 @@ self.addEventListener("push", (event) => {
   const url = payload.url ?? "/";
 
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: "/icon-192.png",
-      badge: "/badge-96.png",
-      data: { url },
-      tag: payload.tag ?? "carpool",
-      renotify: true,
-    }),
+    (async () => {
+      const tasks = [
+        self.registration.showNotification(title, {
+          body,
+          icon: "/icon-192.png",
+          badge: "/badge-96.png",
+          data: { url },
+          tag: payload.tag ?? "carpool",
+          renotify: true,
+        }),
+      ];
+
+      // App icon badge (iOS home-screen web apps, desktop Chrome): the
+      // payload carries the recipient's total unread count. The app itself
+      // re-syncs or clears the badge whenever it opens. Fail-soft — the
+      // Badging API is absent on Android and in-browser.
+      if (typeof payload.badge === "number" && payload.badge >= 0 && navigator.setAppBadge) {
+        try {
+          tasks.push(navigator.setAppBadge(payload.badge));
+        } catch {
+          // unsupported platform — notification still shows
+        }
+      }
+
+      await Promise.all(tasks);
+    })(),
   );
 });
 

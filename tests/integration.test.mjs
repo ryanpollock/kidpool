@@ -2246,3 +2246,56 @@ test("Chat proposals: unsupported kinds are rejected until M2", { skip: !SERVICE
   cleanupAllTestData();
   deleteTestUser(a.userId);
 });
+test("Chat: count_unread_chat totals unread across threads (muted and read cursors respected)", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(84, "Chatomega");
+  const b = setupHousehold(85, "Chatpsi");
+
+  const aJwt = signInUser("chatomega@test.kidpool").access_token;
+  const bJwt = signInUser("chatpsi@test.kidpool").access_token;
+
+  const threadId = rpcCall(aJwt, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+  assert.ok(!chatSqlError(threadId), "ensure should succeed");
+  restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId,
+    sender_profile_id: a.userId,
+    sender_kind: "parent",
+    body: "Badge unread one",
+  });
+  restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId,
+    sender_profile_id: a.userId,
+    sender_kind: "parent",
+    body: "Badge unread two",
+  });
+
+  let count = rpcCall(bJwt, "count_unread_chat", { target_profile_id: b.userId });
+  assert.ok(!chatSqlError(count), `count_unread_chat should succeed: ${JSON.stringify(count)}`);
+  assert.equal(count, 2, "Two unread messages in the everyone thread");
+
+  rpcCall(bJwt, "mark_thread_read", { target_thread_id: threadId });
+  count = rpcCall(bJwt, "count_unread_chat", { target_profile_id: b.userId });
+  assert.equal(count, 0, "Reading the thread clears the count");
+
+  // A DM adds unread; muting it removes it from the badge total.
+  const dmId = rpcCall(aJwt, "create_dm_thread", { target_profile_id: b.userId });
+  restPostAs(aJwt, "chat_messages", {
+    thread_id: dmId,
+    sender_profile_id: a.userId,
+    sender_kind: "parent",
+    body: "DM badge unread",
+  });
+  count = rpcCall(bJwt, "count_unread_chat", { target_profile_id: b.userId });
+  assert.equal(count, 1, "DM message is unread");
+
+  rpcCall(bJwt, "set_thread_notifications_muted", { target_thread_id: dmId, p_muted: true });
+  count = rpcCall(bJwt, "count_unread_chat", { target_profile_id: b.userId });
+  assert.equal(count, 0, "Muted threads never contribute to the badge total");
+
+  rpcCall(bJwt, "set_thread_notifications_muted", { target_thread_id: dmId, p_muted: false });
+  count = rpcCall(bJwt, "count_unread_chat", { target_profile_id: b.userId });
+  assert.equal(count, 1, "Unmuting restores the unread count");
+
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+  deleteTestUser(b.userId);
+});

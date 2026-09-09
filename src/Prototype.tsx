@@ -117,6 +117,45 @@ function oauthErrorFromLocation() {
   return search.get("error_description") ?? hash.get("error_description");
 }
 
+// The Badging API renders the app icon badge on iOS home-screen web apps
+// and desktop Chrome (no-op on Android and in-browser). Typed locally —
+// TS DOM lib coverage for these is version-dependent.
+type BadgeCapableNavigator = Navigator & {
+  setAppBadge?: (content?: number) => Promise<void>;
+  clearAppBadge?: () => Promise<void>;
+};
+
+function syncAppIconBadge(unreadTotal: number): void {
+  const nav = navigator as BadgeCapableNavigator;
+  try {
+    if (unreadTotal > 0) nav.setAppBadge?.(unreadTotal);
+    else nav.clearAppBadge?.();
+  } catch {
+    // Badge API unsupported or denied — the in-app badge still works.
+  }
+}
+
+// Chat deep link: push notifications carry `/#thread=<id>` (the sw.js
+// notificationclick handler navigates there). A service worker taking
+// control for the first time (skipWaiting + clients.claim) fires a
+// controllerchange RELOAD right after load — after the hash is read but
+// before identity is ready — so the captured thread id must survive that
+// reload. sessionStorage holds it across the reload within the app window.
+const CHAT_DEEP_LINK_KEY = "chat_deep_link_thread";
+
+function consumeChatDeepLink(): string | null {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const fromHash = hash.get("thread");
+  if (fromHash) {
+    try { sessionStorage.setItem(CHAT_DEEP_LINK_KEY, fromHash); } catch { /* storage unavailable */ }
+  }
+  try {
+    return fromHash ?? sessionStorage.getItem(CHAT_DEEP_LINK_KEY);
+  } catch {
+    return fromHash;
+  }
+}
+
 type AppErrorBoundaryProps = { children: React.ReactNode };
 type AppErrorBoundaryState = { error: Error | null };
 
@@ -5963,24 +6002,30 @@ export default function Prototype() {
     return () => navigator.serviceWorker.removeEventListener("controllerchange", reloadOnControl);
   }, []);
 
-  // Chat deep link: push notifications carry `/#thread=<id>` (the sw.js
-  // notificationclick handler navigates to the notification's URL). Parse
-  // once on mount and open the thread when identity is ready.
-  useEffect(() => {
-    const hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    const threadParam = hash.get("thread");
-    if (threadParam) {
-      setChatThreadFromLink(threadParam);
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-  }, []);
+// Chat deep link: push notifications carry `/#thread=<id>` (the sw.js
+// notificationclick handler navigates to the notification's URL). Parse
+// once on mount and open the thread when identity is ready. The captured
+// id is stashed in sessionStorage first because the service worker's
+// first-install controllerchange reloads the page before identity is
+// ready — the stash survives it (see consumeChatDeepLink).
+useEffect(() => {
+  const threadParam = consumeChatDeepLink();
+  if (threadParam) {
+    setChatThreadFromLink(threadParam);
+  }
+}, []);
 
-  useEffect(() => {
-    if (!chatThreadFromLink || !identity?.membership) return;
-    setChatThreadFromLink(null);
-    setActiveTab("chat");
-    setChatThreadId(chatThreadFromLink);
-  }, [chatThreadFromLink, identity?.membership]);
+useEffect(() => {
+  if (!chatThreadFromLink || !identity?.membership) return;
+  setChatThreadFromLink(null);
+  try { sessionStorage.removeItem(CHAT_DEEP_LINK_KEY); } catch { /* storage unavailable */ }
+  // Consume the hash AFTER the open so a service-worker reload before
+  // this point keeps the deep link; the query string is preserved because
+  // the ?testAuth bypass (and OAuth returns) read it.
+  window.history.replaceState({}, document.title, window.location.pathname + window.location.search);
+  setActiveTab("chat");
+  setChatThreadId(chatThreadFromLink);
+}, [chatThreadFromLink, identity?.membership]);
 
   // Returning from a thread remounts the inbox so previews/unread are
   // fresh without waiting on realtime delivery.
@@ -5990,11 +6035,14 @@ export default function Prototype() {
 
   // The Chat tab's unread badge is an app-level concern: it must show at
   // sign-in (before the tab is ever opened) and update live from any tab.
-  // Single source: list_chat_threads, muted threads excluded.
+  // Single source: list_chat_threads, muted threads excluded. The home-screen
+  // app icon badge stays in sync with the same total.
   const refreshChatUnread = useCallback(async () => {
     try {
       const rows = await repository.listChatThreads();
-      setChatUnreadCount(rows.reduce((sum, t) => sum + (t.notifications_muted ? 0 : t.unread_count), 0));
+      const total = rows.reduce((sum, t) => sum + (t.notifications_muted ? 0 : t.unread_count), 0);
+      setChatUnreadCount(total);
+      syncAppIconBadge(total);
     } catch {
       // best-effort — the inbox load also updates the badge
     }
@@ -6995,6 +7043,7 @@ export default function Prototype() {
     setFaqOpen(false);
     setChatThreadId(null);
     setChatUnreadCount(0);
+    syncAppIconBadge(0);
     setActiveTab("home");
     setAuthWorking(false);
   };

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { expect, test, type Page } from "@playwright/test";
 import {
   getSpecEnv, makeRunSql, makeAuth, truncateAll,
-  UID, PILOT_GROUP_ID, signInWithTestAuth,
+  UID, PILOT_GROUP_ID, TEST_PASSWORD, signInWithTestAuth,
 } from "./lib/playwright-helpers.ts";
 
 const env = getSpecEnv();
@@ -425,6 +425,56 @@ test("Chat: bell toggle visibly mutes and unmutes a thread", async ({ page }) =>
     assert.equal(await page.locator(".chat-mute-icon--muted").count(), 0);
     assert.equal(await bell.getAttribute("aria-label"), "Mute notifications");
   } finally {
+    cleanupChatData();
+  }
+});
+
+test("Chat: push deep link opens the thread directly from a fresh load", async ({ browser }) => {
+  test.skip(skip, "No service key available");
+  test.setTimeout(90_000);
+
+  cleanupChatData();
+  const alpha = setupHousehold(17, "Tau")!;
+  const beta = setupHousehold(18, "Upsilon")!;
+  assert.ok(alpha && beta);
+
+  // Alpha ensures the everyone thread exists and leaves a message.
+  const contextA = await browser.newContext();
+  const pageA = await contextA.newPage();
+  try {
+    await signInWithTestAuth(pageA, alpha.email);
+    await expect(pageA.getByTestId("nav-chat")).toBeVisible({ timeout: 20_000 });
+    await openChatTab(pageA);
+    await openThreadByTitle(pageA, "Everyone");
+    await pageA.getByTestId("chat-composer-input").fill("Deep link check");
+    await pageA.getByTestId("chat-send-button").click();
+    await expect(pageA.locator(".chat-bubble-body", { hasText: "Deep link check" }).first()).toBeVisible();
+  } finally {
+    await contextA.close();
+  }
+
+  const threadId = (runSql(`
+    SELECT id FROM public.chat_threads WHERE group_id = '${GROUP_ID}' AND kind = 'everyone' LIMIT 1;
+  `).rows ?? [])[0] as { id: string };
+
+  // When a real parent taps a push notification, the OS opens the app at
+  // the payload URL. Simulate exactly that: a FRESH load carrying both the
+  // testAuth sign-in and the #thread hash — the thread must open directly,
+  // and the deep-linked open counts as reading it.
+  const contextB = await browser.newContext();
+  const pageB = await contextB.newPage();
+  try {
+    await pageB.goto(`/?testAuth=${beta.email}|${TEST_PASSWORD}#thread=${threadId.id}`);
+    await expect(pageB.getByTestId("chat-thread-screen")).toBeVisible({ timeout: 20_000 });
+    await expect(pageB.locator(".chat-thread-header-info h1")).toContainText("Everyone");
+    await expect(pageB.locator(".chat-bubble-body", { hasText: "Deep link check" }).first()).toBeVisible();
+
+    // No unread remains for the deep-linked thread anywhere.
+    await pageB.getByTestId("chat-thread-back").click();
+    await expect(pageB.getByTestId("chat-inbox-screen")).toBeVisible();
+    await expect(pageB.getByTestId("nav-chat").locator(".nav-badge")).toHaveCount(0);
+  } finally {
+    await contextB.close();
     cleanupChatData();
   }
 });
