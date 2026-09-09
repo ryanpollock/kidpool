@@ -1,6 +1,6 @@
 -- Chat foundation: parent-to-parent messaging (1:1 DMs, custom group
 -- threads, one all-parents "everyone" thread) with an in-thread proposal
--- model for the Crew AI coordinator agent (Milestone 2).
+-- model for the Crewmate AI coordinator agent (Milestone 2).
 --
 -- Design (see BACKEND_ARCHITECTURE.md §18 / AGENTS.md):
 --   - Threads are group-scoped. kind = 'dm' | 'group' | 'everyone'.
@@ -12,14 +12,14 @@
 --   - Sender name/avatar are DENORMALIZED onto each message at insert
 --     time. Removed members' profiles stop being readable, but their
 --     historical messages keep rendering.
---   - Crew AI is not a profile (no auth.users row): agent/system messages
+--   - Crewmate AI is not a profile (no auth.users row): agent/system messages
 --     have sender_profile_id NULL and a fixed sender_name.
 --   - Coordinator oversight (near-term product decision): coordinators can
 --     read and post in ALL group threads while groups.coordinator_chat_access
 --     is true. Flipping that column to false removes the human admin from
---     threads they are not a participant of — the end-state once Crew AI
+--     threads they are not a participant of — the end-state once Crewmate AI
 --     has earned trust.
---   - chat_proposals: Crew AI proposes schedule changes as structured rows
+--   - chat_proposals: Crewmate AI proposes schedule changes as structured rows
 --     rendered as cards in the thread. The LLM never mutates the schedule
 --     directly — confirm_chat_proposal executes the existing invariant-
 --     enforcing RPCs (cancel_ride_for_child, switch_child_afternoon_trip)
@@ -87,7 +87,7 @@ create table public.chat_participants (
 create index chat_participants_profile_idx
   on public.chat_participants (profile_id);
 
--- Crew AI proposals: structured schedule changes posted into a thread.
+-- Crewmate AI proposals: structured schedule changes posted into a thread.
 -- kind: cancel_ride {child_id, driver_assignment_id}
 --       switch_slot {child_id, driver_assignment_id}
 --       swap_drive  {assignment_id, target_profile_id}     (M2)
@@ -462,7 +462,7 @@ begin
       v_thread_id,
       'system',
       'Carpool Crew',
-      'This is the group conversation for all parents. Crew AI, the carpool assistant, will be in every chat to help coordinate rides — it only proposes changes, and nothing changes unless a parent confirms.'
+      'This is the group conversation for all parents. Crewmate AI, the carpool assistant, will be in every chat to help coordinate rides — it only proposes changes, and nothing changes unless a parent confirms.'
     );
   end if;
 
@@ -533,7 +533,7 @@ begin
       v_thread_id,
       'system',
       'Carpool Crew',
-      'Crew AI, the carpool assistant, will be in this conversation to help coordinate rides — it only proposes changes, and nothing changes unless a parent confirms.'
+      'Crewmate AI, the carpool assistant, will be in this conversation to help coordinate rides — it only proposes changes, and nothing changes unless a parent confirms.'
     );
   else
     select id into v_thread_id
@@ -626,7 +626,7 @@ begin
     v_thread_id,
     'system',
     'Carpool Crew',
-    'Group conversation started. Crew AI, the carpool assistant, will be in this conversation to help coordinate rides — it only proposes changes, and nothing changes unless a parent confirms.'
+    'Group conversation started. Crewmate AI, the carpool assistant, will be in this conversation to help coordinate rides — it only proposes changes, and nothing changes unless a parent confirms.'
   );
 
   return v_thread_id;
@@ -799,7 +799,7 @@ revoke all on function public.list_chat_threads() from public;
 grant execute on function public.list_chat_threads() to authenticated;
 
 -- ── RPC: confirm_chat_proposal ────────────────────────────────
--- A parent confirms a pending Crew AI proposal; the schedule mutation
+-- A parent confirms a pending Crewmate AI proposal; the schedule mutation
 -- executes transactionally through the existing invariant-enforcing
 -- RPCs (which re-validate ownership/freshness against the confirming
 -- parent's JWT). swap_drive and coverage_fill execution land with the
@@ -884,7 +884,7 @@ begin
   values (
     v_proposal.thread_id,
     'agent',
-    'Crew AI',
+    'Crewmate AI',
     'Done — ' || v_proposal.summary,
     v_proposal.id
   );
@@ -959,7 +959,7 @@ begin
   values (
     v_proposal.thread_id,
     'agent',
-    'Crew AI',
+    'Crewmate AI',
     'Okay — ' || v_proposal.summary || ' is off the table. Nothing changed.',
     v_proposal.id
   );
@@ -1022,7 +1022,7 @@ begin
         v_thread_id,
         'system',
         'Carpool Crew',
-        'This is the group conversation for all parents. Crew AI, the carpool assistant, will be in every chat to help coordinate rides — it only proposes changes, and nothing changes unless a parent confirms.'
+        'This is the group conversation for all parents. Crewmate AI, the carpool assistant, will be in every chat to help coordinate rides — it only proposes changes, and nothing changes unless a parent confirms.'
       );
     end if;
   end loop;

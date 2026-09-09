@@ -1816,7 +1816,7 @@ test("B5: schedule generation with either riders — pm_early full, falls to pm_
 // Covers: everyone-thread creation/enrollment, DM idempotency, group
 // threads, RLS thread isolation, coordinator oversight + the
 // coordinator_chat_access flag, sender-identity RLS, unread/mark-read,
-// mute state, the membership auto-enrollment trigger, and the Crew AI
+// mute state, the membership auto-enrollment trigger, and the Crewmate AI
 // proposal confirm/decline lifecycle (executing cancel_ride_for_child
 // through the existing invariant-enforcing RPC).
 
@@ -1887,7 +1887,7 @@ test("Chat: create_dm_thread is idempotent with canonical pair ordering", { skip
 
   const messages = restGet("chat_messages", { thread_id: fromA });
   assert.equal(messages.length, 1, "Disclosure system message posted on creation");
-  assert.match(messages[0].body, /Crew AI/i, "Disclosure mentions Crew AI");
+  assert.match(messages[0].body, /Crewmate AI/i, "Disclosure mentions Crewmate AI");
 
   cleanupAllTestData();
   deleteTestUser(a.userId);
@@ -2138,7 +2138,7 @@ test("Chat proposals: confirm executes cancel_ride via the existing RPC with con
     body: "R1 no longer needs the Tuesday morning ride.",
   });
 
-  // Simulate the M2 Crew AI agent: service-role insert of a pending proposal
+  // Simulate the M2 Crewmate AI agent: service-role insert of a pending proposal
   // + the linked agent message (the LLM proposes; only this table row exists).
   const proposalId = UID(600);
   runSql(`
@@ -2147,7 +2147,7 @@ test("Chat proposals: confirm executes cancel_ride via the existing RPC with con
       jsonb_build_object('child_id', '${UID(280)}', 'driver_assignment_id', '${driverAssignment.id}'),
       'Cancel R1 Rider''s Tuesday morning ride', '${rider.userId}', 'pending');
     INSERT INTO public.chat_messages (thread_id, sender_kind, sender_name, body, proposal_id)
-    VALUES ('${threadId}', 'agent', 'Crew AI', 'I can cancel R1 Rider''s Tuesday morning ride. Tap confirm and I''ll make it happen.', '${proposalId}');
+    VALUES ('${threadId}', 'agent', 'Crewmate AI', 'I can cancel R1 Rider''s Tuesday morning ride. Tap confirm and I''ll make it happen.', '${proposalId}');
   `);
 
   const coordJwt2 = signInUser("chatcoord@test.kidpool").access_token;
