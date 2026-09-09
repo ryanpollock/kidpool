@@ -240,3 +240,73 @@ test("FlowStack pushes and pops screens while dismissing the keyboard", async ({
   await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByRole("heading", { name: "Flow root" })).toBeVisible();
 });
+
+// ── Frameless production runtime ──────────────────────────────────
+// Device geometry is all zeros in the frameless runtime, so these tests pin
+// the behavior that broke in production: BottomSheet must size itself from
+// the measured portal (the real viewport), expand on an upward handle drag,
+// collapse on a downward drag from the top snap, and dismiss on a downward
+// drag from the default snap.
+
+test.describe("BottomSheet in the frameless production runtime", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/tests/runtime-fixture-frameless.html");
+  });
+
+  async function sheetHeight(page: import("@playwright/test").Page) {
+    const box = await page.getByTestId("bottom-sheet").boundingBox();
+    if (!box) throw new Error("Sheet has no bounding box");
+    return box.height;
+  }
+
+  test("sizes from the real viewport, not the zeroed device geometry", async ({ page }) => {
+    await page.locator(".sheet-trigger").click();
+    await expect(page.getByTestId("bottom-sheet")).toBeVisible();
+    await page.waitForTimeout(650);
+
+    // 0.72 × 844 ≈ 608 — the 260px floor (what device geometry produces)
+    // would be less than half this.
+    const height = await sheetHeight(page);
+    expect(Math.abs(height - 0.72 * 844)).toBeLessThanOrEqual(24);
+    expect(height).toBeGreaterThan(400);
+
+    // Tall content is scrollable within the capped sheet.
+    const overflow = await page.getByTestId("frameless-sheet-content").evaluate(
+      (element) => {
+        const scroller = element.closest<HTMLElement>(".sheet-content")!;
+        return {
+          scrollHeight: scroller.scrollHeight,
+          clientHeight: scroller.clientHeight,
+        };
+      },
+    );
+    expect(overflow.scrollHeight).toBeGreaterThan(overflow.clientHeight);
+  });
+
+  test("handle drag expands to the top snap, collapses, then dismisses", async ({ page }) => {
+    await page.locator(".sheet-trigger").click();
+    await expect(page.getByTestId("bottom-sheet")).toBeVisible();
+    await page.waitForTimeout(650);
+    const collapsed = await sheetHeight(page);
+    expect(Math.abs(collapsed - 0.72 * 844)).toBeLessThanOrEqual(24);
+
+    // Drag up on the handle → expanded to ~0.94 of the viewport.
+    await drag(page, page.getByTestId("sheet-handle"), 0, -80);
+    await page.waitForTimeout(650);
+    const expandedHeight = await sheetHeight(page);
+    expect(Math.abs(expandedHeight - 0.94 * 844)).toBeLessThanOrEqual(24);
+
+    // Drag down from the top snap → collapses back to the default snap.
+    await drag(page, page.getByTestId("sheet-handle"), 0, 120);
+    await page.waitForTimeout(650);
+    const collapsedAgain = await sheetHeight(page);
+    expect(Math.abs(collapsedAgain - 0.72 * 844)).toBeLessThanOrEqual(24);
+
+    // Drag down from the default snap → dismisses.
+    await drag(page, page.getByTestId("sheet-handle"), 0, 160);
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId("bottom-sheet")).toHaveCount(0);
+  });
+});

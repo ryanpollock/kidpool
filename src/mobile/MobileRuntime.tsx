@@ -4,14 +4,21 @@ import { KeyboardDock, KeyboardProvider, useKeyboard } from "./Keyboard";
 import { PhoneFrame, ScreenPortalContext } from "./PhoneFrame";
 import { HomeIndicator, StatusBar } from "./components";
 
-export function MobileRuntime({ children }: PropsWithChildren) {
+// `frameless` lets tests mount the production (frameless) runtime inside a
+// dev build — the geometry/sizing paths that only run when
+// import.meta.env.PROD is true (e.g. BottomSheet portal measurement) have no
+// other automated coverage.
+export function MobileRuntime({
+  children,
+  frameless,
+}: PropsWithChildren<{ frameless?: boolean }>) {
   const framelessScreenRef = useRef<HTMLDivElement | null>(null);
   const framelessPortalValue = useMemo(
     () => ({ screenRef: framelessScreenRef }),
     [],
   );
 
-  if (import.meta.env.PROD) {
+  if (frameless ?? import.meta.env.PROD) {
     return (
       <MobileDeviceProvider device={browserDevice}>
         <KeyboardProvider>

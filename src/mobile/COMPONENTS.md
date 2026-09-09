@@ -31,3 +31,9 @@ Use `KeyboardInput`, `KeyboardTextarea`, or `MobileTextField` for all text entry
 `BottomSheet` dismisses the keyboard before opening and animates both in and out by default. Keep its `open` state controlled through `onOpenChange`; no consumer exit-animation wrapper is needed.
 
 `BottomSheet` uses `useScreenPortal()` to portal into the device screen. In dev, `PhoneFrame` provides this context. In production (frameless `MobileRuntime`), `ScreenPortalContext` is provided with a ref on the `mobile-runtime-frameless` container, so `BottomSheet` works in both runtimes.
+
+The sheet sizes itself from the **measured portal box** (`snap` of the portal height, default 0.72), never from `device.geometry` — geometry is all zeros in the frameless production runtime, and sizing from it collapsed every production sheet to the 260px minimum. A `ResizeObserver` tracks URL-bar collapse and rotation. The sheet is content-sized up to that cap; overflowing content scrolls inside `.sheet-content`.
+
+The handle has two-tier snap semantics: it opens at `snap`, a drag up on the handle expands it to 94% of the portal (the sheet stretches so the gesture is always visible), a drag down from the expanded snap collapses back to `snap`, and a drag down from `snap` dismisses. On iOS the sheet clears `env(safe-area-inset-bottom)` (the portal's `--device-safe-area-bottom`) while the keyboard is closed and rides directly above the keyboard while open.
+
+`MobileRuntime` accepts a test-only `frameless` prop to mount the production runtime inside a dev build — the geometry/sizing paths that only run when `import.meta.env.PROD` is true have no other automated coverage (`tests/runtime-fixture-frameless.html`).
