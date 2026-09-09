@@ -582,7 +582,10 @@
   background: #fff;
   color: var(--ink);
   font-family: inherit;
-  font-size: 14px;
+  /* 16px is the iOS no-auto-zoom threshold: anything smaller makes Safari
+     zoom the whole page on focus and KEEP that zoom after the keyboard
+     closes (the "chat renders too wide" iPhone report). */
+  font-size: 16px;
   line-height: 1.4;
   resize: none;
 }
@@ -663,7 +666,7 @@
   background: transparent;
   color: var(--ink);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .chat-newchat-search input:focus {
@@ -678,7 +681,7 @@
   background: #fff;
   color: var(--ink);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .chat-newchat-title input:focus {

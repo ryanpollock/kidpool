@@ -313,7 +313,8 @@ button {
   background: white;
   color: var(--ink);
   font: inherit;
-  font-size: 14px;
+  /* 16px is the iOS no-auto-zoom threshold (see chat.css composer note). */
+  font-size: 16px;
 }
 
 .auth-field input:focus {
