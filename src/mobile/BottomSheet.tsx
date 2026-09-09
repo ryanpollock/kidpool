@@ -1,4 +1,10 @@
-import { type PropsWithChildren, useEffect, useState } from "react";
+import {
+  type PropsWithChildren,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useDrag } from "@use-gesture/react";
 import { AnimatePresence, motion } from "motion/react";
@@ -14,6 +20,18 @@ type BottomSheetProps = PropsWithChildren<{
   snap?: number;
 }>;
 
+// Two-tier snap semantics: the sheet opens at `snap` of the portal height and
+// can be dragged up to EXPANDED_SNAP. Dragging down from the top snap
+// collapses back to `snap`; dragging down from `snap` dismisses (the
+// pre-existing behavior).
+const EXPANDED_SNAP = 0.94;
+const MIN_SHEET_HEIGHT = 260;
+const DISMISS_DRAG_DISTANCE = 96;
+const DISMISS_VELOCITY = 0.55;
+const EXPAND_DRAG_DISTANCE = 48;
+const EXPAND_VELOCITY = 0.55;
+const KEYBOARD_MAX_DEDUCTION = 180;
+
 export function BottomSheet({
   open,
   onOpenChange,
@@ -27,10 +45,51 @@ export function BottomSheet({
   const keyboard = useKeyboard();
   const { keyboardHeight } = useKeyboardInsets();
   const [dragY, setDragY] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const [portal, setPortal] = useState<{ height: number; safeAreaBottom: number } | null>(null);
+  const lastMeasuredElement = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (open) keyboard.hide();
   }, [open]);
+
+  // Every open starts collapsed and un-dragged.
+  useEffect(() => {
+    if (!open) {
+      setExpanded(false);
+      setDragY(0);
+    }
+  }, [open]);
+
+  // Measure the real portal container — the phone screen in the dev frame,
+  // the full-viewport frameless container in production. Device geometry is
+  // deliberately all zeros in the frameless production runtime, so sizing
+  // from it collapsed every production sheet to the MIN_SHEET_HEIGHT floor
+  // (~260px regardless of `snap`). The portal's own box is correct in both
+  // runtimes, and the ResizeObserver tracks URL-bar collapse and rotation.
+  useLayoutEffect(() => {
+    const element = screenRef.current;
+    if (!element) return;
+    lastMeasuredElement.current = element;
+
+    const measure = () => {
+      const style = getComputedStyle(element);
+      const safeAreaRaw = parseFloat(style.getPropertyValue("--device-safe-area-bottom"));
+      setPortal({
+        height: element.clientHeight,
+        safeAreaBottom: Number.isFinite(safeAreaRaw) ? safeAreaRaw : 0,
+      });
+    };
+    measure();
+
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      lastMeasuredElement.current = null;
+    };
+  }, [screenRef, open]);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (nextOpen) {
@@ -40,22 +99,49 @@ export function BottomSheet({
     onOpenChange(nextOpen);
   };
 
+  const portalHeight = portal?.height ?? device.geometry.screen.height;
+  const expandTravel = Math.round(portalHeight * (Math.max(snap, EXPANDED_SNAP) - snap));
+
   const bindDrag = useDrag(
     (state) => {
       const [, movementY] = state.movement;
       const [, velocityY] = state.velocity;
       const [, directionY] = state.direction;
-      const nextY = Math.max(0, movementY);
 
       if (!state.last) {
-        setDragY(nextY);
+        // Follow the finger: upward toward the expanded snap while collapsed,
+        // downward toward collapse/dismiss in either state.
+        const maxUpward = expanded ? 0 : -expandTravel;
+        setDragY(Math.max(maxUpward, movementY));
         return;
       }
 
-      const shouldClose = nextY > 96 || (velocityY > 0.55 && directionY > 0);
+      const downward = Math.max(0, movementY);
       setDragY(0);
 
-      if (shouldClose) {
+      if (expanded) {
+        // Top snap: dragging down collapses back to the default snap.
+        if (
+          downward > EXPAND_DRAG_DISTANCE ||
+          (velocityY > EXPAND_VELOCITY && directionY > 0)
+        ) {
+          setExpanded(false);
+        }
+        return;
+      }
+
+      const shouldExpand =
+        movementY < -EXPAND_DRAG_DISTANCE ||
+        (velocityY < -EXPAND_VELOCITY && directionY < 0);
+      if (shouldExpand) {
+        setExpanded(true);
+        return;
+      }
+
+      const shouldDismiss =
+        downward > DISMISS_DRAG_DISTANCE ||
+        (velocityY > DISMISS_VELOCITY && directionY > 0);
+      if (shouldDismiss) {
         onOpenChange(false);
       }
     },
@@ -65,12 +151,20 @@ export function BottomSheet({
     },
   );
 
-  const sheetHeight = Math.round(device.geometry.screen.height * snap);
-  const effectiveHeight = Math.max(260, sheetHeight - Math.min(keyboardHeight, 180));
+  const effectiveSnap = expanded ? Math.max(snap, EXPANDED_SNAP) : snap;
+  const sheetHeight = Math.round(portalHeight * effectiveSnap);
+  const effectiveHeight = Math.max(
+    MIN_SHEET_HEIGHT,
+    sheetHeight - Math.min(keyboardHeight, KEYBOARD_MAX_DEDUCTION),
+  );
+  // iOS keeps clearing the home-indicator inset while the keyboard is closed
+  // and rides directly above the keyboard once open. The portal's
+  // --device-safe-area-bottom carries env(safe-area-inset-bottom) in the
+  // frameless runtime and the simulated inset in the dev frame.
   const sheetBottom =
     device.platform === "android"
       ? Math.max(device.geometry.safeArea.bottom, keyboardHeight)
-      : keyboardHeight;
+      : Math.max(portal?.safeAreaBottom ?? device.geometry.safeArea.bottom, keyboardHeight);
   const portalContainer = screenRef.current ?? undefined;
 
   return (
@@ -98,6 +192,9 @@ export function BottomSheet({
                   style={{
                     bottom: sheetBottom,
                     maxHeight: effectiveHeight,
+                    // Stretched to the full snap when expanded so the gesture
+                    // is visible even when the content is shorter than the cap.
+                    ...(expanded ? { height: sheetHeight } : {}),
                   }}
                   initial={{ y: effectiveHeight + 36 }}
                   animate={{ y: dragY }}
