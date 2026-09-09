@@ -151,9 +151,13 @@ function unwrap<T>(result: { data: T; error: { message: string } | null }): T {
   return result.data;
 }
 
-function tripSortKey(trip: { service_date: string; direction: string; slot?: string }): string {
-  const slotOrder = trip.slot === "am" ? "0" : trip.slot === "pm_early" ? "1" : "2";
-  return `${trip.service_date}|${slotOrder}`;
+// Time-aware display order: morning before afternoon, then chronological
+// by meeting_time — custom drives at arbitrary times slot in correctly
+// between the standard trips instead of clumping at the end with pm_late.
+function tripSortKey(
+  trip: { service_date: string; direction: string; meeting_time?: string; slot?: string },
+): string {
+  return `${trip.service_date}|${trip.direction === "morning" ? "0" : "1"}|${trip.meeting_time ?? ""}`;
 }
 
 function inferSlot(direction: string, slot?: string): TripSlot {
@@ -1303,6 +1307,48 @@ export class CarpoolRepository {
     );
   }
 
+  async offerCustomDrive(
+    groupId: string,
+    serviceDate: string,
+    direction: Tables<"trips">["direction"],
+    meetingTime: string,
+    childIds: string[],
+  ): Promise<Tables<"driver_assignments">> {
+    const assignment = unwrap(
+      await this.client.rpc("offer_custom_drive", {
+        p_group_id: groupId,
+        p_service_date: serviceDate,
+        p_direction: direction,
+        p_meeting_time: meetingTime,
+        p_child_ids: childIds,
+      }),
+    );
+    if (!assignment) throw new Error("The database returned no assignment.");
+    return assignment;
+  }
+
+  async joinCustomDrive(tripId: string, childIds: string[]): Promise<void> {
+    await unwrap(
+      await this.client.rpc("join_custom_drive", {
+        p_trip_id: tripId,
+        p_child_ids: childIds,
+      }),
+    );
+  }
+
+  async leaveCustomDrive(tripId: string, childId: string): Promise<void> {
+    await unwrap(
+      await this.client.rpc("leave_custom_drive", {
+        p_trip_id: tripId,
+        p_child_id: childId,
+      }),
+    );
+  }
+
+  async cancelCustomDrive(tripId: string): Promise<Record<string, unknown> | null> {
+    return unwrap(await this.client.rpc("cancel_custom_drive", { p_trip_id: tripId }));
+  }
+
   async cancelRideForChild(childId: string, driverAssignmentId: string): Promise<void> {
     await unwrap(
       await this.client.rpc("cancel_ride_for_child", {
@@ -1881,6 +1927,26 @@ export class CarpoolRepository {
     try {
       await this.client.functions.invoke("send-push", {
         body: { assignment_id: assignmentId, version_id: versionId, type, child_id: childId },
+      });
+    } catch (err) {
+      console.error("[carpool] send-push invocation failed:", err);
+    }
+  }
+
+  async sendCustomDriveNotification(
+    type: "custom_drive_offered" | "custom_drive_joined" | "custom_drive_left" | "custom_drive_cancelled",
+    tripId: string | null,
+    childIds?: string[],
+    cancelledDrive?: Record<string, unknown> | null,
+  ): Promise<void> {
+    try {
+      await this.client.functions.invoke("send-push", {
+        body: {
+          type,
+          trip_id: tripId,
+          child_ids: childIds,
+          cancelled_drive: cancelledDrive,
+        },
       });
     } catch (err) {
       console.error("[carpool] send-push invocation failed:", err);

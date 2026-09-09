@@ -10,7 +10,7 @@ export type AppRole = "member" | "coordinator";
 export type MembershipStatus = "active" | "suspended" | "removed";
 export type WeekStatus = "open" | "draft" | "confirming" | "published" | "closed";
 export type TripDirection = "morning" | "afternoon";
-export type TripSlot = "am" | "pm_early" | "pm_late";
+export type TripSlot = "am" | "pm_early" | "pm_late" | "custom";
 export type RidePreference = "specific" | "either";
 export type TripStatus = "scheduled" | "covered" | "uncovered" | "canceled";
 export type CheckinStatus = "draft" | "submitted";
@@ -806,6 +806,28 @@ export type Database = {
           p_child_id: string;
           p_driver_assignment_id: string;
         };
+        Returns: Record<string, unknown>;
+      };
+      offer_custom_drive: {
+        Args: {
+          p_group_id: string;
+          p_service_date: string;
+          p_direction: TripDirection;
+          p_meeting_time: string;
+          p_child_ids: string[];
+        };
+        Returns: DriverAssignmentRow;
+      };
+      join_custom_drive: {
+        Args: { p_trip_id: string; p_child_ids: string[] };
+        Returns: void;
+      };
+      leave_custom_drive: {
+        Args: { p_trip_id: string; p_child_id: string };
+        Returns: void;
+      };
+      cancel_custom_drive: {
+        Args: { p_trip_id: string };
         Returns: Record<string, unknown>;
       };
       can_read_chat_thread: {

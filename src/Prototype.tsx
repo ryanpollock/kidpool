@@ -46,7 +46,7 @@ import {
   type WeekWithTrips,
 } from "./lib/supabase";
 import type { AssignmentStatus, DefaultDrivePref, DefaultRideNeed, DrivePreference, ReassignmentRequestRow } from "./lib/supabase/database.types";
-import { getNoSchoolReason, todayInTimezone, dateInTimezone, isWithinStatusWindow } from "./lib/school-calendar";
+import { getNoSchoolReason, todayInTimezone, dateInTimezone, isNoSchoolDay, isWithinStatusWindow } from "./lib/school-calendar";
 
 type AppTab = "home" | "plan" | "week" | "chat" | "coordinate";
 
@@ -821,14 +821,16 @@ function weekLabel(startsOn: string): string {
   return `Week of ${start.short} – ${end.short}`;
 }
 
-function slotSortOrder(slot: string | undefined): number {
-  if (slot === "am") return 0;
-  if (slot === "pm_early") return 1;
-  return 2;
+// Time-aware display order: morning before afternoon, then chronological
+// by meeting_time — ad hoc custom drives at arbitrary times slot in
+// between the standard trips instead of clumping at the end.
+function tripDisplayTime(trip: { direction: string; meeting_time: string }): number {
+  return trip.direction === "morning" ? 0 : 1;
 }
 
 function tripSlotSort(a: Tables<"trips">, b: Tables<"trips">): number {
-  return slotSortOrder(a.slot) - slotSortOrder(b.slot);
+  if (a.direction !== b.direction) return tripDisplayTime(a) - tripDisplayTime(b);
+  return a.meeting_time.localeCompare(b.meeting_time);
 }
 
 function tripLabel(trip: Tables<"trips">): string {
@@ -1305,7 +1307,12 @@ function DriveCard({
   onSetRiderReady?: (childId: string) => void;
   onClearDriveStatus?: (childId: string | null) => void;
 }) {
-  const period = trip.direction === "morning" ? "Morning" : "Afternoon";
+  // Afternoon cards include the pickup time in the headline so an ad hoc
+  // custom drive (e.g. 4:50 PM) is never interchangeable with 4:20/5:15.
+  const period = trip.direction === "morning"
+    ? "Morning"
+    : `Afternoon · ${formatMeetingTime(trip.meeting_time)}`;
+  const isCustomDrive = trip.slot === "custom";
   const PeriodIcon = trip.direction === "morning" ? SunIcon : MoonIcon;
   const dateInfo = formatTripDate(trip.service_date);
   const riderFirstNames = roster.children.map(c => c.first_name).join(", ");
@@ -1333,6 +1340,7 @@ function DriveCard({
           <span className="drive-card-period">
             <PeriodIcon width="16" height="16" />
             <strong>{headerLabel}</strong>
+            {isCustomDrive && <span className="extra-drive-chip">Extra drive</span>}
           </span>
           <small className="drive-card-route">{formatMeetingTime(trip.meeting_time)}</small>
         </div>
@@ -1511,6 +1519,7 @@ function DriveCard({
           <span className="drive-card-period">
             <PeriodIcon width="16" height="16" />
             <strong>{headerLabel}</strong>
+            {isCustomDrive && <span className="extra-drive-chip">Extra drive</span>}
           </span>
           <small className="drive-card-route">{formatMeetingTime(trip.meeting_time)}</small>
         </div>
@@ -1592,6 +1601,144 @@ function DriveCard({
   return <>{childCards.filter(Boolean)}</>;
 }
 
+// Ad hoc custom drives: minimal offer form. Any parent with an active
+// vehicle can offer a one-off drive at an arbitrary time on a remaining
+// day of the published week; other families add their kids first-come-
+// first-served from the drive detail screen.
+function OfferCustomDriveSheet({
+  open,
+  onOpenChange,
+  dates,
+  householdChildren,
+  vehicle,
+  working,
+  error,
+  onSubmit,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  dates: string[];
+  householdChildren: Tables<"children">[];
+  vehicle: Tables<"vehicles"> | null;
+  working: boolean;
+  error: string | null;
+  onSubmit: (date: string, direction: "morning" | "afternoon", time: string, childIds: string[]) => Promise<void>;
+}) {
+  const [date, setDate] = useState<string | null>(null);
+  const [direction, setDirection] = useState<"morning" | "afternoon">("afternoon");
+  const [time, setTime] = useState("");
+  const [selectedChildren, setSelectedChildren] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (dates.length > 0 && (!date || !dates.includes(date))) setDate(dates[0]);
+  }, [dates.join(",")]);
+
+  const timeValid = /^([01]\d|2[0-3]):[0-5]\d$/.test(time.trim());
+  const todayStr = todayInTimezone();
+  const isToday = date === todayStr;
+  const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+  const [h, m] = timeValid ? time.trim().split(":").map(Number) : [0, 0];
+  const timeInFuture = !isToday || (timeValid && h * 60 + m > nowMinutes);
+
+  const toggleChild = (childId: string) => {
+    setSelectedChildren((prev) => {
+      const next = new Set(prev);
+      if (next.has(childId)) next.delete(childId);
+      else next.add(childId);
+      return next;
+    });
+  };
+
+  const seatsTaken = selectedChildren.size;
+  const overCapacity = vehicle !== null && seatsTaken > vehicle.child_passenger_capacity;
+
+  return (
+    <BottomSheet
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Offer an extra drive"
+      description="A one-off drive at a custom time. Other families can add their kids from the schedule."
+    >
+      {error ? <div className="auth-error" role="alert" style={{ marginBottom: 12 }}>{error}</div> : null}
+      {dates.length === 0 ? (
+        <p className="helper-copy">No remaining school days this week — the schedule publishes Sunday evening.</p>
+      ) : (
+        <>
+          <p className="offer-field-label">Day</p>
+          <div className="offer-chip-row">
+            {dates.map((d) => (
+              <button
+                key={d}
+                type="button"
+                className={`offer-chip${date === d ? " offer-chip--active" : ""}`}
+                onClick={() => setDate(d)}
+              >
+                {formatTripDate(d).weekday}
+              </button>
+            ))}
+          </div>
+
+          <p className="offer-field-label">Direction</p>
+          <div className="offer-chip-row">
+            <button type="button" className={`offer-chip${direction === "morning" ? " offer-chip--active" : ""}`} onClick={() => setDirection("morning")}>Morning · to school</button>
+            <button type="button" className={`offer-chip${direction === "afternoon" ? " offer-chip--active" : ""}`} onClick={() => setDirection("afternoon")}>Afternoon · from school</button>
+          </div>
+
+          <p className="offer-field-label">Pickup time (24-hour, e.g. 16:50)</p>
+          <KeyboardInput
+            value={time}
+            onChange={(event) => setTime(event.target.value)}
+            placeholder="16:50"
+            autoComplete="off"
+            data-testid="offer-time-input"
+          />
+          {isToday && timeValid && !timeInFuture ? (
+            <p className="helper-copy" style={{ color: "#b91c1c" }}>That time has already passed today.</p>
+          ) : null}
+
+          {householdChildren.length > 0 ? (
+            <>
+              <p className="offer-field-label">Your kids on this drive</p>
+              <div className="offer-chip-row">
+                {householdChildren.map((child) => (
+                  <button
+                    key={child.id}
+                    type="button"
+                    className={`offer-chip${selectedChildren.has(child.id) ? " offer-chip--active" : ""}`}
+                    onClick={() => toggleChild(child.id)}
+                  >
+                    {child.first_name}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : null}
+
+          <p className="helper-copy">
+            {vehicle
+              ? `${vehicle.label} · ${vehicle.child_passenger_capacity} seats${seatsTaken > 0 ? ` · ${Math.max(0, vehicle.child_passenger_capacity - seatsTaken)} open for other kids` : ""}`
+              : "No active vehicle on your account."}
+          </p>
+          {overCapacity ? (
+            <p className="helper-copy" style={{ color: "#b91c1c" }}>Your car doesn't seat that many kids.</p>
+          ) : null}
+
+          <button
+            className="primary-button"
+            data-testid="offer-submit"
+            disabled={working || !date || !timeValid || !timeInFuture || overCapacity}
+            onClick={() => {
+              if (date) void onSubmit(date, direction, time.trim(), [...selectedChildren]);
+            }}
+          >
+            {working ? "Offering…" : "Offer this drive"}
+          </button>
+        </>
+      )}
+    </BottomSheet>
+  );
+}
+
 function HomeScreen({
   myAssignments,
   assignmentsLoading,
@@ -1648,6 +1795,8 @@ function HomeScreen({
   onSetDriverOnMyWay,
   onSetRiderReady,
   onClearDriveStatus,
+  canOfferCustomDrive,
+  onOfferCustomDrive,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -1704,6 +1853,8 @@ function HomeScreen({
   onSetDriverOnMyWay: (assignmentId: string) => void;
   onSetRiderReady: (assignmentId: string, childId: string) => void;
   onClearDriveStatus: (assignmentId: string, childId: string | null) => void;
+  canOfferCustomDrive?: boolean;
+  onOfferCustomDrive?: () => void;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const [cancelingId, setCancelingId] = useState<string | null>(null);
@@ -2338,6 +2489,14 @@ function HomeScreen({
         <button className="coverage-alert" onClick={onCoverage} data-testid="coverage-alert">
           <span><ExclamationTriangleIcon width="20" height="20" /></span>
           <span><strong>View this week's schedule</strong><small>See who's driving each day</small></span>
+          <ChevronRightIcon />
+        </button>
+      ) : null}
+
+      {canOfferCustomDrive && onOfferCustomDrive ? (
+        <button className="coverage-alert coverage-alert--muted" onClick={onOfferCustomDrive} data-testid="offer-custom-drive">
+          <span><ClockIcon width="20" height="20" /></span>
+          <span><strong>Offer an extra drive</strong><small>A one-off pickup at a custom time — other families can add their kids</small></span>
           <ChevronRightIcon />
         </button>
       ) : null}
@@ -5398,6 +5557,10 @@ function DriveDetailScreen({
   siblingTripLabel,
   siblingTripAvailable,
   onMessageDriver,
+  customJoinChildren,
+  customSeatsRemaining,
+  onJoinCustomDrive,
+  onCancelCustomDrive,
 }: {
   entry: ScheduleRosterEntry;
   trip: Tables<"trips">;
@@ -5421,6 +5584,10 @@ function DriveDetailScreen({
   siblingTripLabel?: string;
   siblingTripAvailable?: boolean;
   onMessageDriver?: (driverProfileId: string) => Promise<void>;
+  customJoinChildren?: Tables<"children">[];
+  customSeatsRemaining?: number;
+  onJoinCustomDrive?: (childId: string) => Promise<void>;
+  onCancelCustomDrive?: () => Promise<void>;
 }) {
   const dateLabel = new Date(serviceDate + "T00:00:00").toLocaleDateString("en-US", {
     weekday: "long",
@@ -5443,6 +5610,9 @@ function DriveDetailScreen({
   const [switchWorking, setSwitchWorking] = useState(false);
   const [messageWorking, setMessageWorking] = useState(false);
   const [messageError, setMessageError] = useState<string | null>(null);
+  const [joinWorking, setJoinWorking] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [confirmCancelCustom, setConfirmCancelCustom] = useState(false);
 
   const handleMessageDriver = async () => {
     if (!onMessageDriver || messageWorking) return;
@@ -5461,7 +5631,7 @@ function DriveDetailScreen({
     <div className="screen-content drive-detail-screen" data-testid="drive-detail-screen">
       <header className="subpage-header">
         <button className="icon-button" onClick={onBack} aria-label="Back"><Cross2Icon /></button>
-        <div><span className="eyebrow">{dateLabel}</span><h1>{directionLabel} drive</h1></div>
+        <div><span className="eyebrow">{dateLabel}</span><h1>{directionLabel} drive{trip.slot === "custom" ? <span className="extra-drive-chip extra-drive-chip--header">Extra drive</span> : null}</h1></div>
       </header>
 
       <section className="drive-detail-meta">
@@ -5649,6 +5819,38 @@ function DriveDetailScreen({
             })}
           </div>
         )}
+
+        {trip.slot === "custom" && (customSeatsRemaining ?? 0) > 0 && customJoinChildren && customJoinChildren.length > 0 && onJoinCustomDrive ? (
+          <div className="custom-join-block" data-testid="custom-join-block">
+            <h3>Add a child to this extra drive</h3>
+            <p className="helper-copy">{customSeatsRemaining} seat{customSeatsRemaining === 1 ? "" : "s"} remaining — first come, first served.</p>
+            {joinError ? <div className="auth-error" role="alert">{joinError}</div> : null}
+            <div className="offer-chip-row">
+              {customJoinChildren.map((child) => (
+                <button
+                  key={child.id}
+                  type="button"
+                  className="secondary-button custom-join-child"
+                  data-testid={`custom-join-${child.id}`}
+                  disabled={joinWorking}
+                  onClick={async () => {
+                    setJoinWorking(true);
+                    setJoinError(null);
+                    try {
+                      await onJoinCustomDrive(child.id);
+                    } catch (e) {
+                      setJoinError(e instanceof Error ? e.message : "Failed to add child to this drive");
+                    } finally {
+                      setJoinWorking(false);
+                    }
+                  }}
+                >
+                  {joinWorking ? "Adding…" : `Add ${child.first_name}`}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </section>
 
       {isUserDriving && entry.driverAssignment.status === "confirmed" && onReassignDrive ? (
@@ -5680,6 +5882,41 @@ function DriveDetailScreen({
             </button>
           </section>
         )
+      ) : null}
+
+      {trip.slot === "custom" && onCancelCustomDrive && (isUserDriving || isCoordinator) ? (
+        <section className="custom-cancel-block">
+          {confirmCancelCustom ? (
+            <div className="child-remove-confirm" data-testid="cancel-custom-drive-confirm">
+              <p className="child-remove-warning">
+                Cancel this extra drive? Families with kids on it will be notified and their children will need a new ride.
+              </p>
+              <div className="child-remove-actions">
+                <button
+                  className="decline-button"
+                  data-testid="confirm-cancel-custom-drive"
+                  onClick={() => {
+                    setConfirmCancelCustom(false);
+                    void onCancelCustomDrive();
+                  }}
+                >
+                  Yes, cancel this drive
+                </button>
+                <button className="text-button" onClick={() => setConfirmCancelCustom(false)}>
+                  Keep the drive
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              className="decline-button"
+              data-testid="cancel-custom-drive"
+              onClick={() => setConfirmCancelCustom(true)}
+            >
+              Cancel this extra drive
+            </button>
+          )}
+        </section>
       ) : null}
 
       {isCoordinator && adminRoster && onAdminReassign && entry.driverAssignment.status !== "declined" && entry.driverAssignment.status !== "released" ? (
@@ -5985,6 +6222,17 @@ export default function Prototype() {
   const [pendingOutgoingReassignment, setPendingOutgoingReassignment] = useState<ReassignmentRequestRow | null>(null);
   const [reassignWorking, setReassignWorking] = useState(false);
   const [reassignError, setReassignError] = useState<string | null>(null);
+  const [offerSheetOpen, setOfferSheetOpen] = useState(false);
+  const [offerWorking, setOfferWorking] = useState(false);
+  const [offerError, setOfferError] = useState<string | null>(null);
+  const [overlapPrompt, setOverlapPrompt] = useState<{
+    childId: string;
+    childName: string;
+    otherLabel: string;
+    otherAssignmentId: string;
+  } | null>(null);
+  const [overlapWorking, setOverlapWorking] = useState(false);
+  const [overlapError, setOverlapError] = useState<string | null>(null);
 
   // Register service worker for PWA push notifications + cache-busting.
   // On a new SW taking over (skipWaiting + clients.claim), reload once
@@ -6316,33 +6564,43 @@ setChatThreadId(chatThreadFromLink);
 
   const [homeScheduleError, setHomeScheduleError] = useState<string | null>(null);
 
-  const loadHomeSchedule = useCallback(async () => {
-    if (!identity?.group || !weekData) return;
+  const loadHomeSchedule = useCallback(async (): Promise<ScheduleVersionWithRosters | null> => {
+    if (!identity?.group) return null;
     setHomeScheduleError(null);
     try {
+      // Always fetch the week fresh — custom drives can add/remove trips
+      // mid-week, and a weekData closure captured before the mutation
+      // would never contain them.
+      const week = await repository.getCurrentWeek(identity.group.id);
+      if (!week) {
+        setHomeSchedule(null);
+        return null;
+      }
       const roster = await repository.getGroupRoster(identity.group.id);
       // Prefer the latest published version for families; fall back to the
       // latest version (draft) only if no published version exists.
       // This prevents a coordinator's draft regeneration from hiding the
       // live published schedule that families are relying on.
       const published = await repository.getLatestPublishedVersion(
-        weekData.week.id, identity.group.id, weekData.trips,
+        week.week.id, identity.group.id, week.trips,
         roster.children, roster.vehicles, roster.profiles,
       );
       if (published) {
         setHomeSchedule(published);
-      } else {
-        const version = await repository.getLatestScheduleVersion(
-          weekData.week.id, identity.group.id, weekData.trips,
-          roster.children, roster.vehicles, roster.profiles,
-        );
-        setHomeSchedule(version);
+        return published;
       }
+      const version = await repository.getLatestScheduleVersion(
+        week.week.id, identity.group.id, week.trips,
+        roster.children, roster.vehicles, roster.profiles,
+      );
+      setHomeSchedule(version);
+      return version;
     } catch (error) {
       setHomeSchedule(null);
       setHomeScheduleError(readableError(error));
+      return null;
     }
-  }, [identity?.group, weekData, repository]);
+  }, [identity?.group, repository]);
 
   // Load drive statuses (On my way / Ready) for today's assignments
   const loadDriveStatuses = useCallback(async () => {
@@ -6402,18 +6660,24 @@ setChatThreadId(chatThreadFromLink);
   }, [repository, loadDriveStatuses]);
 
   const loadPublishedSchedule = useCallback(async () => {
-    if (!identity?.group || !publishedWeek) { setPublishedSchedule(null); return; }
+    if (!identity?.group) { setPublishedSchedule(null); return; }
     try {
+      // Fetch the published week fresh — custom drives can add/remove trips
+      // mid-week, and a publishedWeek closure captured before the mutation
+      // would never contain them.
+      const pubWeek = await repository.getActivePublishedWeek(identity.group.id);
+      setPublishedWeek(pubWeek);
+      if (!pubWeek) { setPublishedSchedule(null); return; }
       const roster = await repository.getGroupRoster(identity.group.id);
       const version = await repository.getLatestPublishedVersion(
-        publishedWeek.week.id, identity.group.id, publishedWeek.trips,
+        pubWeek.week.id, identity.group.id, pubWeek.trips,
         roster.children, roster.vehicles, roster.profiles,
       );
       setPublishedSchedule(version);
     } catch (error) {
       setPublishedSchedule(null);
     }
-  }, [identity?.group, publishedWeek, repository]);
+  }, [identity?.group, repository]);
 
   useEffect(() => {
     if (weekData) void loadHomeSchedule();
@@ -6661,17 +6925,20 @@ setChatThreadId(chatThreadFromLink);
     return true;
   })();
 
-  const loadMyAssignments = useCallback(async () => {
-    if (!identity?.group || !homeSchedule) return;
+  const loadMyAssignments = useCallback(async (scheduleOverride?: ScheduleVersionWithRosters | null) => {
+    // Callers that just mutated the schedule pass the fresh version in —
+    // the homeSchedule closure captured at render would be stale.
+    const schedule = scheduleOverride !== undefined ? scheduleOverride : homeSchedule;
+    if (!identity?.group || !schedule) return;
     setAssignmentsLoading(true);
     setAssignmentsError(null);
     try {
-      const roster = await repository.getGroupRoster(identity.group.id);
+const roster = await repository.getGroupRoster(identity.group.id);
       const assignments = await repository.getMyDriverAssignments(
-        homeSchedule.version.id,
+        schedule.version.id,
         identity.profile.id,
         identity.group.id,
-        homeSchedule.trips,
+        schedule.trips,
         roster.children,
         roster.vehicles,
       );
@@ -6679,20 +6946,20 @@ setChatThreadId(chatThreadFromLink);
 
       // Load declined drive alerts and uncovered children for affected parents.
       // These are loaded independently so a failure in alert queries doesn't
-      // wipe the assignments that already loaded successfully.
+      // wipe the assignments that loaded successfully.
       try {
         const [alerts, uncovered] = await Promise.all([
           repository.getAffectedDeclinedDrives(
-            homeSchedule.version.id,
+            schedule.version.id,
             identity.profile.id,
             identity.group.id,
-            homeSchedule.version.week_id,
+            schedule.version.week_id,
           ),
           repository.getUncoveredChildren(
-            homeSchedule.version.id,
+            schedule.version.id,
             identity.profile.id,
             identity.group.id,
-            homeSchedule.version.week_id,
+            schedule.version.week_id,
           ),
         ]);
         setDeclinedAlerts(alerts.filter((a) => a.trip.service_date >= todayDate));
@@ -7103,6 +7370,119 @@ const navItems = useMemo(() => {
     [repository],
   );
 
+  // ── Ad hoc custom drives ────────────────────────────────────────
+  // Remaining offerable days of the published week: today (or the week
+  // start if it's in the future) through Friday, skipping no-school days.
+  const offerableDates = useMemo(() => {
+    if (!weekData) return [];
+    const startsOn = weekData.week.starts_on;
+    const dates: string[] = [];
+    const start = new Date((todayDate > startsOn ? todayDate : startsOn) + "T00:00:00");
+    for (let offset = 0; offset < 5; offset++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + offset);
+      const serviceDate = dateInTimezone(d);
+      if (isNoSchoolDay(serviceDate)) continue;
+      dates.push(serviceDate);
+    }
+    return dates;
+  }, [weekData, todayDate]);
+
+  const canOfferCustomDrive = useMemo(() => {
+    if (!identity || offerableDates.length === 0) return false;
+    if (homeSchedule?.version.status !== "published") return false;
+    const householdId = identity.membership?.household_id;
+    if (!householdId || !householdSetup) return false;
+    return resolveDriverVehicle(householdSetup.vehicles, identity.profile.id) !== null;
+  }, [identity, householdSetup, homeSchedule, offerableDates]);
+
+  // Pre-compute other same-day same-direction rides for the given children
+  // (from the current rosters) — used to prompt "cancel the other ride"
+  // after a child joins or is added to a custom drive.
+  const findCustomOverlaps = useCallback(
+    (customTripId: string, serviceDate: string, direction: string, childIds: string[]) => {
+      const sched = homeSchedule ?? publishedSchedule;
+      if (!sched) return [] as Array<{ childId: string; childName: string; otherLabel: string; otherAssignmentId: string }>;
+      const out: Array<{ childId: string; childName: string; otherLabel: string; otherAssignmentId: string }> = [];
+      for (const childId of childIds) {
+        const child = groupChildren.find((c) => c.id === childId);
+        if (!child) continue;
+        for (const trip of sched.trips) {
+          if (trip.id === customTripId || trip.service_date !== serviceDate || trip.direction !== direction) continue;
+          const rosters = sched.rostersByTrip.get(trip.id) ?? [];
+          for (const roster of rosters) {
+            if (
+              roster.children.some((c) => c.id === childId)
+              && (roster.driverAssignment.status === "tentative" || roster.driverAssignment.status === "confirmed")
+            ) {
+              out.push({
+                childId,
+                childName: `${child.first_name} ${child.last_name}`,
+                otherLabel: tripLabel(trip),
+                otherAssignmentId: roster.driverAssignment.id,
+              });
+              break;
+            }
+          }
+        }
+      }
+      return out;
+    },
+    [homeSchedule, publishedSchedule, groupChildren],
+  );
+
+  const offerCustomDrive = useCallback(
+    async (date: string, direction: "morning" | "afternoon", time: string, childIds: string[]) => {
+      if (!identity) return;
+      setOfferWorking(true);
+      setOfferError(null);
+      try {
+        const assignment = await repository.offerCustomDrive(identity.group.id, date, direction, time, childIds);
+        void repository.sendPushNotification(assignment.id, null, "drive_confirmed");
+        void repository.sendCustomDriveNotification("custom_drive_offered", assignment.trip_id);
+        const conflicts = findCustomOverlaps(assignment.trip_id, date, direction, childIds);
+        const fresh = await loadHomeSchedule();
+        await loadMyAssignments(fresh);
+        await loadPublishedSchedule();
+        setOfferSheetOpen(false);
+        if (conflicts.length > 0) setOverlapPrompt(conflicts[0]);
+      } catch (e) {
+        setOfferError(readableError(e));
+      } finally {
+        setOfferWorking(false);
+      }
+    },
+    [identity, repository, findCustomOverlaps, loadHomeSchedule, loadMyAssignments, loadPublishedSchedule],
+  );
+
+  const cancelCustomDrive = useCallback(
+    async (tripId: string) => {
+      try {
+        const info = await repository.cancelCustomDrive(tripId);
+        void repository.sendCustomDriveNotification("custom_drive_cancelled", null, undefined, info);
+      } catch (e) {
+        console.error("[carpool] cancel custom drive failed:", e);
+      }
+      setDriveDetailId(null);
+      const fresh = await loadHomeSchedule();
+      await loadMyAssignments(fresh);
+      await loadPublishedSchedule();
+    },
+    [repository, loadHomeSchedule, loadMyAssignments, loadPublishedSchedule],
+  );
+
+  const joinCustomDrive = useCallback(
+    async (trip: Tables<"trips">, childId: string) => {
+      const conflicts = findCustomOverlaps(trip.id, trip.service_date, trip.direction, [childId]);
+      await repository.joinCustomDrive(trip.id, [childId]);
+      void repository.sendCustomDriveNotification("custom_drive_joined", trip.id, [childId]);
+      await loadHomeSchedule();
+      await loadPublishedSchedule();
+      if (conflicts.length > 0) setOverlapPrompt(conflicts[0]);
+    },
+    [findCustomOverlaps, repository, loadHomeSchedule, loadPublishedSchedule],
+  );
+
   const renderContent = () => {
     if (!identity) return null;
     if (accountOpen && identity) {
@@ -7192,12 +7572,23 @@ const navItems = useMemo(() => {
       if (found) {
           const isCoordinator = identity.membership?.role === "coordinator";
           const householdId = identity.membership?.household_id ?? null;
+          const isCustomDrive = found.trip.slot === "custom";
+          const customJoinChildren = isCustomDrive && householdId
+            ? groupChildren.filter((c) => c.household_id === householdId
+                && !found.entry.children.some((rc) => rc.id === c.id))
+            : [];
+          const customSeatsRemaining = Math.max(
+            0,
+            found.entry.driverAssignment.child_passenger_capacity - found.entry.children.length,
+          );
 
-          // Compute sibling afternoon trip info for the switch button
+          // Compute sibling afternoon trip info for the switch button — only for
+          // the standard slots; ad hoc custom drives have no sibling trip.
           const searchSchedule2 = homeSchedule ?? publishedSchedule;
           let siblingTripLabel: string | undefined;
           let siblingTripAvailable = false;
-          if (found.trip.direction === "afternoon" && searchSchedule2) {
+          if (found.trip.direction === "afternoon" && searchSchedule2
+              && (found.trip.slot === "pm_early" || found.trip.slot === "pm_late")) {
             const siblingSlot = found.trip.slot === "pm_early" ? "pm_late" : "pm_early";
             for (const t of searchSchedule2.trips) {
               if (t.service_date === found.trip.service_date && t.slot === siblingSlot && t.direction === "afternoon") {
@@ -7272,6 +7663,10 @@ const navItems = useMemo(() => {
               siblingTripLabel={siblingTripLabel}
               siblingTripAvailable={siblingTripAvailable}
               onMessageDriver={openDmWithParent}
+              customJoinChildren={isCustomDrive ? customJoinChildren : undefined}
+              customSeatsRemaining={customSeatsRemaining}
+              onJoinCustomDrive={isCustomDrive ? (childId) => joinCustomDrive(found.trip, childId) : undefined}
+              onCancelCustomDrive={isCustomDrive ? () => cancelCustomDrive(found.trip.id) : undefined}
             />
           );
         }
@@ -7485,6 +7880,8 @@ onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); v
         onSetDriverOnMyWay={(assignmentId) => void handleSetDriverOnMyWay(assignmentId)}
         onSetRiderReady={(assignmentId, childId) => void handleSetRiderReady(assignmentId, childId)}
         onClearDriveStatus={(assignmentId, childId) => void handleClearDriveStatus(assignmentId, childId)}
+        canOfferCustomDrive={canOfferCustomDrive}
+        onOfferCustomDrive={() => setOfferSheetOpen(true)}
       />
     );
   };
@@ -7622,6 +8019,66 @@ if (authError && !identity) {
           ))}
         </nav>
       ) : null}
+      {identity ? (
+        <OfferCustomDriveSheet
+          open={offerSheetOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              setOfferSheetOpen(false);
+              setOfferError(null);
+            }
+          }}
+          dates={offerableDates}
+          householdChildren={householdSetup
+            ? householdSetup.children
+            : (identity.membership?.household_id
+              ? groupChildren.filter((c) => c.household_id === identity.membership?.household_id)
+              : [])}
+          vehicle={householdSetup ? resolveDriverVehicle(householdSetup.vehicles, identity.profile.id) : null}
+          working={offerWorking}
+          error={offerError}
+          onSubmit={offerCustomDrive}
+        />
+      ) : null}
+      <BottomSheet
+        open={overlapPrompt !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setOverlapPrompt(null);
+            setOverlapError(null);
+          }
+        }}
+        title="Also cancel the other ride?"
+        description={overlapPrompt ? `${overlapPrompt.childName} is also booked on ${overlapPrompt.otherLabel}.` : undefined}
+      >
+        <p className="helper-copy">Kids should ride in one car per trip. Cancel the other ride so that seat goes to another family?</p>
+        {overlapError ? <div className="auth-error" role="alert" style={{ marginTop: 12 }}>{overlapError}</div> : null}
+        <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
+          <button
+            className="primary-button"
+            data-testid="overlap-cancel-ride"
+            disabled={overlapWorking}
+            onClick={async () => {
+              if (!overlapPrompt) return;
+              setOverlapWorking(true);
+              setOverlapError(null);
+              try {
+                await repository.cancelRideForChild(overlapPrompt.childId, overlapPrompt.otherAssignmentId);
+                void repository.sendPushNotification(overlapPrompt.otherAssignmentId, null, "rider_cancelled", overlapPrompt.childId);
+                await loadHomeSchedule();
+                setOverlapPrompt(null);
+              } catch (e) {
+                setOverlapError(readableError(e));
+              } finally {
+                setOverlapWorking(false);
+              }
+            }}
+          >
+            {overlapWorking ? "Cancelling…" : "Cancel the other ride"}
+          </button>
+          <button className="text-button" disabled={overlapWorking} onClick={() => setOverlapPrompt(null)}>Keep both</button>
+        </div>
+      </BottomSheet>
     </div>
   );
 }
