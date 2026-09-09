@@ -47,17 +47,19 @@ export function BottomSheet({
   const [dragY, setDragY] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const [portal, setPortal] = useState<{ height: number; safeAreaBottom: number } | null>(null);
+  const [nativeKeyboard, setNativeKeyboard] = useState(0);
   const lastMeasuredElement = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (open) keyboard.hide();
   }, [open]);
 
-  // Every open starts collapsed and un-dragged.
+  // Every open starts collapsed, un-dragged, and keyboard-neutral.
   useEffect(() => {
     if (!open) {
       setExpanded(false);
       setDragY(0);
+      setNativeKeyboard(0);
     }
   }, [open]);
 
@@ -90,6 +92,35 @@ export function BottomSheet({
       lastMeasuredElement.current = null;
     };
   }, [screenRef, open]);
+
+  // Track the NATIVE keyboard while the sheet is open. Safari and Chrome
+  // overlay the virtual keyboard on the visual viewport without resizing the
+  // layout viewport, so a bottom-anchored sheet ends up underneath it —
+  // there is no simulated KeyboardDock in production to shrink it. The
+  // visual viewport's height (and pan offset) vs the layout viewport gives
+  // the covered span; a width change means pinch-zoom, not a keyboard.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    const update = () => {
+      const covered = Math.max(
+        0,
+        window.innerHeight - viewport.height - viewport.offsetTop,
+      );
+      const zoomed = Math.abs(window.innerWidth - viewport.width) > 40;
+      setNativeKeyboard(!zoomed && covered > 80 ? Math.round(covered) : 0);
+    };
+    update();
+
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+    };
+  }, [open]);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (nextOpen) {
@@ -153,18 +184,19 @@ export function BottomSheet({
 
   const effectiveSnap = expanded ? Math.max(snap, EXPANDED_SNAP) : snap;
   const sheetHeight = Math.round(portalHeight * effectiveSnap);
-  const effectiveHeight = Math.max(
-    MIN_SHEET_HEIGHT,
-    sheetHeight - Math.min(keyboardHeight, KEYBOARD_MAX_DEDUCTION),
-  );
+  // The simulated dev keyboard deducts through the original cap; the native
+  // keyboard deducts fully — capping it would leave the sheet's lower edge
+  // buried under the real keyboard.
+  const keyboardDeduction = Math.min(keyboardHeight, KEYBOARD_MAX_DEDUCTION) + nativeKeyboard;
+  const effectiveHeight = Math.max(MIN_SHEET_HEIGHT, sheetHeight - keyboardDeduction);
   // iOS keeps clearing the home-indicator inset while the keyboard is closed
   // and rides directly above the keyboard once open. The portal's
   // --device-safe-area-bottom carries env(safe-area-inset-bottom) in the
   // frameless runtime and the simulated inset in the dev frame.
   const sheetBottom =
     device.platform === "android"
-      ? Math.max(device.geometry.safeArea.bottom, keyboardHeight)
-      : Math.max(portal?.safeAreaBottom ?? device.geometry.safeArea.bottom, keyboardHeight);
+      ? Math.max(device.geometry.safeArea.bottom, keyboardHeight, nativeKeyboard)
+      : Math.max(portal?.safeAreaBottom ?? device.geometry.safeArea.bottom, keyboardHeight, nativeKeyboard);
   const portalContainer = screenRef.current ?? undefined;
 
   return (

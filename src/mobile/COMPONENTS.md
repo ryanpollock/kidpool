@@ -36,4 +36,6 @@ The sheet sizes itself from the **measured portal box** (`snap` of the portal he
 
 The handle has two-tier snap semantics: it opens at `snap`, a drag up on the handle expands it to 94% of the portal (the sheet stretches so the gesture is always visible), a drag down from the expanded snap collapses back to `snap`, and a drag down from `snap` dismisses. On iOS the sheet clears `env(safe-area-inset-bottom)` (the portal's `--device-safe-area-bottom`) while the keyboard is closed and rides directly above the keyboard while open.
 
+While open, the sheet also tracks the **native** keyboard via `window.visualViewport`: Safari and Chrome overlay the virtual keyboard without resizing the layout viewport, so the sheet re-anchors its bottom above the covered span and shrinks accordingly (a width change is treated as pinch-zoom, not a keyboard). The simulated dev keyboard keeps its original capped deduction.
+
 `MobileRuntime` accepts a test-only `frameless` prop to mount the production runtime inside a dev build — the geometry/sizing paths that only run when `import.meta.env.PROD` is true have no other automated coverage (`tests/runtime-fixture-frameless.html`).
