@@ -309,4 +309,42 @@ test.describe("BottomSheet in the frameless production runtime", () => {
     await page.waitForTimeout(500);
     await expect(page.getByTestId("bottom-sheet")).toHaveCount(0);
   });
+
+  test("native keyboard overlap raises the sheet above the fold and restores on dismiss", async ({ page }) => {
+    await page.locator(".sheet-trigger").click();
+    await expect(page.getByTestId("bottom-sheet")).toBeVisible();
+    await page.waitForTimeout(650);
+
+    // Emulate the iOS keyboard: the visual viewport shrinks while the layout
+    // viewport (window.innerHeight) stays put — the production scenario the
+    // simulated KeyboardDock can't represent.
+    const emulateKeyboard = (covered: number) =>
+      page.evaluate((span) => {
+        const viewport = window.visualViewport;
+        Object.defineProperty(viewport, "height", {
+          configurable: true,
+          get: () => window.innerHeight - span,
+        });
+        viewport.dispatchEvent(new Event("resize"));
+      }, covered);
+
+    await emulateKeyboard(340);
+    await page.waitForTimeout(300);
+
+    const sheet = await page.getByTestId("bottom-sheet").boundingBox();
+    if (!sheet) throw new Error("Sheet has no bounding box");
+    // Bottom edge sits above the keyboard's top edge.
+    expect(sheet.y + sheet.height).toBeLessThanOrEqual(844 - 340 + 24);
+    // The sheet shrinks but stays a usable height above the floor.
+    expect(sheet.height).toBeGreaterThanOrEqual(240);
+    expect(Math.abs(sheet.height - (0.72 * 844 - 340))).toBeLessThanOrEqual(24);
+
+    // Keyboard dismisses → the sheet restores to the default snap.
+    await emulateKeyboard(0);
+    await page.waitForTimeout(300);
+    const restored = await page.getByTestId("bottom-sheet").boundingBox();
+    if (!restored) throw new Error("Sheet has no bounding box");
+    expect(Math.abs(restored.height - 0.72 * 844)).toBeLessThanOrEqual(24);
+    expect(restored.y + restored.height).toBeGreaterThan(844 - 340 + 24);
+  });
 });
