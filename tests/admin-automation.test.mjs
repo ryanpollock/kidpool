@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+const reminderCronRescheduleMigrationUrl = new URL(
+  "../supabase/migrations/202609100003_custom_drive_reminder_cron.sql",
+  import.meta.url,
+);
 const cronMigrationUrl = new URL(
   "../supabase/migrations/202608070000_schedule_automation.sql",
   import.meta.url,
@@ -1762,4 +1766,29 @@ test("multi-vehicle: volunteer RPCs pick the caller's tagged car", async () => {
   // Grants preserved
   assert.match(sql, /grant execute on function public\.volunteer_for_declined_drive\(uuid\) to authenticated/);
   assert.match(sql, /grant execute on function public\.volunteer_for_uncovered_trip\(uuid, uuid\) to authenticated/);
+});
+// ── Custom drives: reminder cron reschedule (202609100003) ──────────
+// The original drive/status reminder cron migrations (202608070007,
+// 202608190002/3, 202609010002/3) pin the fire minutes to the standard
+// meeting times — an ad hoc custom drive at e.g. 4:50 PM needs a :20
+// fire that never happened. The reschedule widens both crons to */5;
+// the Edge Function's 5-minute window gate means exactly one fire lands
+// per reminder minute, arbitrary or not. The immutable original-migration
+// assertions above stay green — this block covers the new schedule.
+
+test("custom drive reminder cron: both crons rescheduled to */5 with unschedule-first", async () => {
+  const sql = await readFile(reminderCronRescheduleMigrationUrl, "utf8");
+
+  assert.match(sql, /cron\.unschedule\('drive-reminder'\)/, "must unschedule before rescheduling drive-reminder");
+  assert.match(sql, /cron\.unschedule\('status-reminder'\)/, "must unschedule before rescheduling status-reminder");
+
+  const schedules = sql.match(/cron\.schedule\(\s*'([a-z-]+)',\s*'([^']+)'/g) ?? [];
+  assert.ok(schedules.length === 2, `expected exactly two cron.schedule calls, found ${schedules.length}`);
+  for (const entry of schedules) {
+    assert.match(entry, /'\*\/5 \* \* \* \*'/, `schedule must be every-5-minutes: ${entry}`);
+  }
+
+  // The wrapper functions the crons call are unchanged
+  assert.match(sql, /public\.send_drive_reminders\(\)/);
+  assert.match(sql, /public\.send_status_reminders\(\)/);
 });

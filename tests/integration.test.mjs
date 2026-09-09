@@ -2299,3 +2299,271 @@ test("Chat: count_unread_chat totals unread across threads (muted and read curso
   deleteTestUser(a.userId);
   deleteTestUser(b.userId);
 });
+
+// ── Custom (ad hoc) drive RPC tests ─────────────────────────────
+
+test("Custom drives: offer → join → leave → cancel happy path with guards", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(610, "CustomCoord", "member", true);
+  const driver = setupHousehold(611, "CustomDriver");
+  const rider = setupHousehold(612, "CustomRider");
+  const noVehicle = setupHousehold(613, "CustomNoVehicle");
+
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const serviceDate = "2028-01-05"; // inside the 2028-01-03 week, always future
+
+  const driverChild = UID(1160);
+  const riderChild = UID(1161);
+  const vehicleId = UID(1150);
+  const versionId = UID(1155);
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleId}', '${GROUP_ID}', '${driver.householdId}', 'CustomCar', 2, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${driverChild}', '${GROUP_ID}', '${driver.householdId}', 'C1', 'Custom', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${riderChild}', '${GROUP_ID}', '${rider.householdId}', 'C2', 'Custom', '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${versionId}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;
+  `);
+
+  const driverJwt = signInUser("customdriver@test.kidpool").access_token;
+  const riderJwt = signInUser("customrider@test.kidpool").access_token;
+  const noVehicleJwt = signInUser("customnovehicle@test.kidpool").access_token;
+
+  // Guard: no vehicle → cannot offer
+  const noVehicleOffer = rpcCall(noVehicleJwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "16:50", p_child_ids: [],
+  });
+  assert.match(
+    noVehicleOffer.message || "",
+    /You need an active vehicle/,
+    `no-vehicle offer should fail: ${JSON.stringify(noVehicleOffer)}`,
+  );
+
+  // Driver offers a 4:50 PM custom drive with their own child
+  const offer = rpcCall(driverJwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "16:50", p_child_ids: [driverChild],
+  });
+  assert.ok(offer.id, `offer should return the assignment: ${JSON.stringify(offer)}`);
+  assert.equal(offer.status, "confirmed", "Custom drive assignment is confirmed immediately");
+  const customTripId = offer.trip_id;
+
+  const trips = restGet("trips", { id: customTripId });
+  assert.equal(trips.length, 1, "Custom trip row exists");
+  assert.equal(trips[0].slot, "custom");
+  assert.ok(String(trips[0].meeting_time).startsWith("16:50"), "Arbitrary meeting_time is stored");
+  assert.ok(String(trips[0].departure_time).startsWith("16:55"), "Departure is meeting + 5 min");
+  assert.equal(trips[0].origin, "Presidio Middle School", "Afternoon origin is the school");
+
+  // Own child is an initial rider on the published version
+  const initialRiders = restGet("rider_assignments", { trip_id: customTripId });
+  assert.ok(initialRiders.some((ra) => ra.child_id === driverChild), "Own child rides the offered drive");
+  assert.ok(initialRiders.every((ra) => ra.schedule_version_id === versionId), "Rider rows attach to the published version");
+
+  // Audit + duplicate-time guard: same driver cannot double-book the same date+time
+  const dupOffer = rpcCall(driverJwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "16:50", p_child_ids: [],
+  });
+  assert.match(dupOffer.message || "", /already driving at that time/, "Duplicate time offer must be rejected");
+
+  // Rider joins (capacity 2, one seat taken → one left)
+  const joinOk = rpcCall(riderJwt, "join_custom_drive", {
+    p_trip_id: customTripId, p_child_ids: [riderChild],
+  });
+  assert.ok(!joinOk.message, `join should succeed: ${JSON.stringify(joinOk)}`);
+  const afterJoin = restGet("rider_assignments", { trip_id: customTripId });
+  assert.ok(afterJoin.some((ra) => ra.child_id === riderChild), "Joined child now rides");
+
+  // Joining a standard trip directly is rejected
+  const standardJoin = rpcCall(riderJwt, "join_custom_drive", {
+    p_trip_id: tripIds[0], p_child_ids: [riderChild],
+  });
+  assert.match(standardJoin.message || "", /Only custom drives can be joined directly/);
+
+  // Rider leaves → seat freed
+  const leave = rpcCall(riderJwt, "leave_custom_drive", {
+    p_trip_id: customTripId, p_child_id: riderChild,
+  });
+  assert.ok(!leave.message, `leave should succeed: ${JSON.stringify(leave)}`);
+  const afterLeave = restGet("rider_assignments", { trip_id: customTripId });
+  assert.ok(!afterLeave.some((ra) => ra.child_id === riderChild), "Left child no longer rides");
+
+  // Non-driver cannot cancel
+  const riderCancel = rpcCall(riderJwt, "cancel_custom_drive", { p_trip_id: customTripId });
+  assert.match(riderCancel.message || "", /Only the offering driver or a coordinator/);
+
+  // Driver cancels → trip + assignments cascade away, snapshot returned
+  const cancel = rpcCall(driverJwt, "cancel_custom_drive", { p_trip_id: customTripId });
+  assert.ok(!cancel.message, `cancel should succeed: ${JSON.stringify(cancel)}`);
+  assert.equal(cancel.driver_profile_id, driver.userId, "Snapshot carries the driver id");
+  assert.ok(Array.isArray(cancel.rider_profile_ids), "Snapshot carries rider households");
+  assert.equal(restGet("trips", { id: customTripId }).length, 0, "Custom trip deleted on cancel");
+  assert.equal(restGet("rider_assignments", { trip_id: customTripId }).length, 0, "Rider rows cascade away");
+
+  const audits = restGet("audit_events", { group_id: GROUP_ID });
+  for (const action of ["custom_drive_offered", "custom_drive_joined", "custom_drive_left", "custom_drive_cancelled"]) {
+    assert.ok(audits.some((a) => a.action === action), `audit event ${action} must exist`);
+  }
+
+  cleanupAllTestData();
+  for (const u of [coord, driver, rider, noVehicle]) deleteTestUser(u.userId);
+});
+
+test("Custom drives: multiple customs per day allowed, standard slots stay unique", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(620, "UniqueCoord", "member", true);
+  const driverA = setupHousehold(621, "UniqueDriverA");
+  const driverB = setupHousehold(622, "UniqueDriverB");
+  const { weekId } = setupWeekAndTrips();
+  const serviceDate = "2028-01-05";
+  const versionId = UID(1255);
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1250)}', '${GROUP_ID}', '${driverA.householdId}', 'CarA', 4, true, '${driverA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(1251)}', '${GROUP_ID}', '${driverB.householdId}', 'CarB', 4, true, '${driverB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${versionId}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;
+  `);
+
+  const jwtA = signInUser("uniquedrivera@test.kidpool").access_token;
+  const jwtB = signInUser("uniquedriverb@test.kidpool").access_token;
+
+  // Two custom drives on the same day at different times — both allowed
+  const offerA = rpcCall(jwtA, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "16:50", p_child_ids: [],
+  });
+  const offerB = rpcCall(jwtB, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "17:00", p_child_ids: [],
+  });
+  assert.ok(offerA.id, `first custom offer must succeed: ${JSON.stringify(offerA)}`);
+  assert.ok(offerB.id, `second same-day custom offer must succeed: ${JSON.stringify(offerB)}`);
+
+  // A third custom at yet another time on the same day also allowed
+  const offerC = rpcCall(jwtA, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "17:05", p_child_ids: [],
+  });
+  assert.ok(offerC.id, `third same-day custom offer must succeed: ${JSON.stringify(offerC)}`);
+
+  // But a duplicate STANDARD slot on the same (week, date) still violates the partial unique index
+  const dupStandard = runSql(`
+    INSERT INTO public.trips (id, group_id, week_id, service_date, direction, slot, meeting_time, departure_time, origin, destination)
+    VALUES ('${UID(1240)}', '${GROUP_ID}', '${weekId}', '${serviceDate}', 'afternoon', 'pm_late', '17:15', '17:20', 'Presidio', 'Midtown');
+  `);
+  assert.ok(dupStandard.error, "duplicate pm_late on the same day must fail");
+  assert.match(dupStandard.error.message, /trips_week_date_standard_slot_key/, `error should name the partial unique index: ${dupStandard.error.message}`);
+
+  cleanupAllTestData();
+  for (const u of [coord, driverA, driverB]) deleteTestUser(u.userId);
+});
+
+test("Custom drives: future-time guard rejects offers for pickups already past", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(630, "PastCoord", "member", true);
+  const driver = setupHousehold(631, "PastDriver");
+  const vehicleId = UID(1350);
+  const versionId = UID(1355);
+
+  // A week whose Monday was 21 days ago — inside it, every pickup time has passed
+  const pastMonday = new Date(Date.now() - 21 * 24 * 3600 * 1000);
+  pastMonday.setUTCHours(0, 0, 0, 0);
+  const dow = pastMonday.getUTCDay();
+  pastMonday.setUTCDate(pastMonday.getUTCDate() - ((dow + 6) % 7)); // back to Monday
+  const startsOn = pastMonday.toISOString().slice(0, 10);
+  const wednesday = new Date(pastMonday);
+  wednesday.setUTCDate(pastMonday.getUTCDate() + 2);
+  const serviceDate = wednesday.toISOString().slice(0, 10);
+  const weekId = UID(1390);
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleId}', '${GROUP_ID}', '${driver.householdId}', 'PastCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${weekId}', '${GROUP_ID}', '${startsOn}', 'open') ON CONFLICT DO NOTHING;
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${versionId}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;
+  `);
+
+  const jwt = signInUser("pastdriver@test.kidpool").access_token;
+  const offer = rpcCall(jwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "16:50", p_child_ids: [],
+  });
+  assert.match(
+    offer.message || "",
+    /already passed/,
+    `past pickup must be rejected: ${JSON.stringify(offer)}`,
+  );
+
+  cleanupAllTestData();
+  deleteTestUser(coord.userId);
+  deleteTestUser(driver.userId);
+});
+
+test("Custom drives: regenerate carries custom assignments into the new version", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(640, "CarryCoord", "member", true);
+  const driver = setupHousehold(641, "CarryDriver");
+  const rider = setupHousehold(642, "CarryRider");
+
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const tripId = tripIds[0]; // first morning trip
+  const serviceDate = "2028-01-05";
+  const vehicleId = UID(1450);
+  const driverChild = UID(1460);
+  const riderChild = UID(1461);
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleId}', '${GROUP_ID}', '${driver.householdId}', 'CarryCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${driverChild}', '${GROUP_ID}', '${driver.householdId}', 'K1', 'Carry', '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${riderChild}', '${GROUP_ID}', '${rider.householdId}', 'K2', 'Carry', '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1470)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1471)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1471)}', '${tripId}', '${riderChild}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1470)}', '${tripId}', '${driver.userId}', '${vehicleId}', 'prefer') ON CONFLICT DO NOTHING;
+  `);
+
+  // Generate v1 and publish it
+  const coordJwt = signInUser("carrycoord@test.kidpool").access_token;
+  const gen1 = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(gen1.success, "v1 generation should succeed");
+  runSql(`UPDATE public.driver_assignments SET status = 'confirmed' WHERE schedule_version_id IN (SELECT id FROM schedule_versions WHERE week_id = '${weekId}' AND status = 'draft');`);
+  runSql(`UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE week_id = '${weekId}' AND status = 'draft';`);
+
+  // Offer a custom drive against the published v1, then another parent joins
+  const driverJwt = signInUser("carrydriver@test.kidpool").access_token;
+  const riderJwt = signInUser("carryrider@test.kidpool").access_token;
+  const offer = rpcCall(driverJwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "16:50", p_child_ids: [driverChild],
+  });
+  assert.ok(offer.id, `custom offer on published v1 should succeed: ${JSON.stringify(offer)}`);
+  const customTripId = offer.trip_id;
+  const join = rpcCall(riderJwt, "join_custom_drive", { p_trip_id: customTripId, p_child_ids: [riderChild] });
+  assert.ok(!join.message, `join on published v1 should succeed: ${JSON.stringify(join)}`);
+
+  // Regenerate — v2 must carry the custom drive over intact
+  const gen2 = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(gen2.success, "regeneration should succeed");
+  assert.ok(
+    !gen2.trips.some((t) => t.trip_id === customTripId),
+    "custom trip must be excluded from the algorithm's trip results",
+  );
+
+  const v2 = restGet("schedule_versions", { week_id: weekId, version_number: 2 })[0];
+  assert.ok(v2, "v2 must exist");
+  const carriedDa = restGet("driver_assignments", { schedule_version_id: v2.id, trip_id: customTripId });
+  assert.ok(carriedDa.length === 1, "custom drive assignment carried over to v2");
+  assert.equal(carriedDa[0].driver_profile_id, driver.userId, "same driver");
+  assert.equal(carriedDa[0].status, "confirmed", "carried over as confirmed");
+  const carriedRiders = restGet("rider_assignments", { trip_id: customTripId, schedule_version_id: v2.id });
+  assert.equal(carriedRiders.length, 2, "both custom riders carried over to v2");
+  assert.ok(
+    carriedRiders.some((ra) => ra.child_id === driverChild) && carriedRiders.some((ra) => ra.child_id === riderChild),
+    "carried riders are the same children",
+  );
+
+  cleanupAllTestData();
+  for (const u of [coord, driver, rider]) deleteTestUser(u.userId);
+});

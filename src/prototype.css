@@ -4086,3 +4086,77 @@ a.directory-contact-item:hover {
   font-size: 12px;
   padding: 4px 10px;
 }
+
+/* ── Ad hoc custom drives ── */
+
+.extra-drive-chip {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 6px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #ede9fe;
+  color: #5b21b6;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.5;
+}
+
+.extra-drive-chip--header {
+  margin-left: 8px;
+}
+
+.offer-field-label {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink, #0c2b52);
+  letter-spacing: 0.02em;
+}
+
+.offer-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.offer-chip {
+  border: 1.5px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.offer-chip--active {
+  border-color: var(--teal, #118b8c);
+  background: var(--teal, #118b8c);
+  color: #fff;
+}
+
+.custom-join-block {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1.5px dashed #cbd5e1;
+  border-radius: 10px;
+}
+
+.custom-join-block h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #0c2b52;
+}
+
+.custom-join-block .offer-chip-row {
+  margin-top: 8px;
+}
+
+.custom-cancel-block {
+  margin-top: 16px;
+}

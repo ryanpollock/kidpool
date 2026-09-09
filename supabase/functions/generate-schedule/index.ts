@@ -214,12 +214,23 @@ Deno.serve(async (req: Request) => {
       }),
     );
 
-    const trips: SchedulingTrip[] = (tripsRes.data ?? []).map((t) => ({
-      id: t.id,
-      service_date: t.service_date,
-      direction: t.direction,
-      slot: t.slot,
-    }));
+    // Ad hoc custom drives are managed manually (offer/join/cancel RPCs) —
+    // the scheduler never assigns drivers or riders to them. They are
+    // carried over verbatim after the algorithm's assignments are written.
+    const allTrips = tripsRes.data ?? [];
+    const customTripIds = allTrips
+      .filter((t: { slot: string }) => t.slot === "custom")
+      .map((t: { id: string }) => t.id);
+    const customTripIdSet = new Set(customTripIds);
+
+    const trips: SchedulingTrip[] = allTrips
+      .filter((t: { slot: string }) => t.slot !== "custom")
+      .map((t) => ({
+        id: t.id,
+        service_date: t.service_date,
+        direction: t.direction,
+        slot: t.slot,
+      }));
 
     const children: SchedulingChild[] = (childrenRes.data ?? []).map((c) => ({
       id: c.id,
@@ -593,6 +604,99 @@ Deno.serve(async (req: Request) => {
       }
     }
 
+    // ── Carry over ad hoc custom drives ─────────────────────────
+    // Custom trips never enter the algorithm, so the loop above wrote
+    // nothing for them. Copy each custom trip's most recent active
+    // driver assignment (and its riders) from any prior version of
+    // this week into the new version — a coordinator regenerate must
+    // never destroy an ad hoc drive.
+    if (customTripIds.length > 0 && !writeFailed) {
+      try {
+        const { data: priorCustomDAs, error: priorCustomError } = await supabase
+          .from("driver_assignments")
+          .select("id, trip_id, driver_profile_id, vehicle_id, status, child_passenger_capacity")
+          .in("trip_id", customTripIds)
+          .eq("group_id", groupId)
+          .order("created_at", { ascending: false });
+
+        if (priorCustomError) {
+          writeFailed = true;
+          writeErrorMessage = "Failed to load custom drives for carry-over.";
+        } else {
+          // Newest active assignment per custom trip
+          const seenCustomTrips = new Set<string>();
+          const customDAs = (priorCustomDAs ?? []).filter((a: { id: string; trip_id: string; status: string }) => {
+            if (a.status !== "confirmed" && a.status !== "tentative") return false;
+            if (seenCustomTrips.has(a.trip_id)) return false;
+            seenCustomTrips.add(a.trip_id);
+            return true;
+          });
+
+          if (customDAs.length > 0) {
+            const ridersByOldDa = new Map<string, string[]>();
+            const { data: priorCustomRiders, error: riderError } = await supabase
+              .from("rider_assignments")
+              .select("driver_assignment_id, child_id")
+              .in("driver_assignment_id", customDAs.map((a: { id: string }) => a.id));
+            if (riderError) {
+              writeFailed = true;
+              writeErrorMessage = "Failed to load custom drive riders for carry-over.";
+            } else {
+              for (const ra of priorCustomRiders ?? []) {
+                const arr = ridersByOldDa.get(ra.driver_assignment_id) ?? [];
+                arr.push(ra.child_id);
+                ridersByOldDa.set(ra.driver_assignment_id, arr);
+              }
+            }
+
+            for (const da of customDAs) {
+              if (writeFailed) break;
+              const { data: newDa, error: daError } = await supabase
+                .from("driver_assignments")
+                .insert({
+                  group_id: groupId,
+                  schedule_version_id: newVersion.id,
+                  trip_id: da.trip_id,
+                  driver_profile_id: da.driver_profile_id,
+                  vehicle_id: da.vehicle_id,
+                  status: da.status,
+                  child_passenger_capacity: da.child_passenger_capacity,
+                })
+                .select("id")
+                .single();
+              if (daError || !newDa) {
+                writeFailed = true;
+                writeErrorMessage = "Failed to carry over a custom drive.";
+                break;
+              }
+              writtenAssignmentCount++;
+
+              const kids = ridersByOldDa.get(da.id) ?? [];
+              if (kids.length > 0) {
+                const { error: rError } = await supabase.from("rider_assignments").insert(
+                  kids.map((childId: string) => ({
+                    group_id: groupId,
+                    schedule_version_id: newVersion.id,
+                    trip_id: da.trip_id,
+                    driver_assignment_id: newDa.id,
+                    child_id: childId,
+                  })),
+                );
+                if (rError) {
+                  writeFailed = true;
+                  writeErrorMessage = "Failed to carry over custom drive riders.";
+                  break;
+                }
+              }
+            }
+          }
+        }
+      } catch (customCarryError) {
+        writeFailed = true;
+        writeErrorMessage = "Failed to carry over custom drives.";
+      }
+    }
+
     // ── Rollback on write failure ───────────────────────────────
     if (writeFailed) {
       // Delete the new version row (cascades to assignments) so the
@@ -660,6 +764,7 @@ if (shouldAutoPublish) {
       }
       const displaced = priorDriverAssignments.filter((a) =>
         a.status === "confirmed" &&
+        !customTripIdSet.has(a.trip_id) &&
         !newDriverKeys.has(`${a.trip_id}|${a.driver_profile_id}`),
       );
       if (displaced.length > 0) {
