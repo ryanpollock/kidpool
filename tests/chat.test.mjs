@@ -6,6 +6,11 @@ const chatMigrationUrl = new URL(
   "../supabase/migrations/202609070001_chat_1_foundation.sql",
   import.meta.url,
 );
+const chatUnreadMigrationUrl = new URL(
+  "../supabase/migrations/202609090001_chat_unread_count.sql",
+  import.meta.url,
+);
+const swUrl = new URL("../public/sw.js", import.meta.url);
 const typesUrl = new URL("../src/lib/supabase/database.types.ts", import.meta.url);
 const repoUrl = new URL("../src/lib/supabase/carpool-repository.ts", import.meta.url);
 const prototypeUrl = new URL("../src/Prototype.tsx", import.meta.url);
@@ -388,4 +393,50 @@ test("test data cleanup truncates chat tables in FK-safe order", async () => {
   // MUST be truncated in the same statement (pre-existing gap fixed with chat).
   assert.ok(dbSource.includes('"drive_status"'), "drive_status must be in the truncation list");
   assert.ok(dbSource.includes('"reassignment_requests"'), "reassignment_requests must be in the truncation list");
+});
+test("app icon badge: push carries per-recipient unread and every layer syncs it", async () => {
+  // count_unread_chat mirrors the in-app badge definition exactly
+  const migration = await readFile(chatUnreadMigrationUrl, "utf8");
+  assert.match(migration, /create or replace function public\.count_unread_chat\(\w+ uuid\)/i);
+  assert.match(migration, /language sql\s+stable\s+security definer/i);
+  assert.match(migration, /msg\.created_at > cp\.last_read_at/i, "read cursor respected");
+  assert.match(migration, /cp\.notifications_muted = false/i, "muted threads excluded");
+  assert.match(migration, /m\.status = 'active'/i, "removed members excluded");
+  assert.match(migration, /revoke all on function public\.count_unread_chat\(uuid\) from public/i);
+  assert.match(migration, /grant execute on function public\.count_unread_chat\(uuid\) to authenticated/i);
+
+  // typed for the client
+  const types = await readFile(typesUrl, "utf8");
+  assert.match(types, /count_unread_chat:/);
+
+  // send-push computes the per-recipient total and ships it in the payload
+  const push = await readFile(sendPushUrl, "utf8");
+  assert.match(push, /rpc\/count_unread_chat/);
+  assert.match(push, /unreadByProfile/);
+  const branch = push.slice(
+    push.indexOf('type === "chat_message" && thread_id'),
+    push.indexOf("push_only: true"),
+  );
+  assert.match(branch, /payload\.badge = badge/, "chat_message payload must carry the badge count");
+  assert.doesNotMatch(branch, /api\.resend\.com/, "badge work stays push-only");
+
+  // the service worker sets the icon badge from the payload, fail-soft
+  const sw = await readFile(swUrl, "utf8");
+  assert.match(sw, /typeof payload\.badge === "number"/);
+  assert.match(sw, /navigator\.setAppBadge\(payload\.badge\)/);
+
+  // the app keeps the icon badge synced with the in-app total, and clears
+  // it on sign-out
+  const proto = await readFile(prototypeUrl, "utf8");
+  assert.match(proto, /function syncAppIconBadge\(unreadTotal: number\)/);
+  assert.match(proto, /setAppBadge\?\.\(unreadTotal\)/);
+  assert.match(proto, /clearAppBadge\?\./);
+  assert.match(proto, /syncAppIconBadge\(total\)/, "refreshChatUnread must sync the icon badge");
+  assert.match(proto, /syncAppIconBadge\(0\)/, "sign-out must clear the icon badge");
+
+  // and the deep link that a badge/notification tap lands on is intact
+  assert.match(sw, /event\.notification\.data\?\.url/);
+  assert.match(sw, /client\.navigate\(targetUrl\)|openWindow\(targetUrl\)/);
+  assert.match(push, /\/#thread=\$\{thread_id\}/);
+  assert.match(proto, /hash\.get\("thread"\)/);
 });

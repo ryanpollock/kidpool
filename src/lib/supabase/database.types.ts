@@ -844,6 +844,10 @@ export type Database = {
         Args: { p_proposal_id: string };
         Returns: ChatProposalRow;
       };
+      count_unread_chat: {
+        Args: { target_profile_id: string };
+        Returns: number;
+      };
     };
     Enums: {
       app_role: AppRole;
