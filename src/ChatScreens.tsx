@@ -1,3 +1,6 @@
+import { MessageText, MessageEnhancements } from "./ChatMessageContent";
+import { editMentions, trimMentionDraft, linksInText, type ChatExtras } from "./lib/chat-content";
+import type { ChatMention, ChatNotificationMode, ChatParticipantSummary } from "./lib/supabase/database.types";
 // Chat screens: inbox (Chat tab), 1:1/group/everyone thread view, the
 // new-conversation sheet, and Crewmate AI proposal cards.
 //
@@ -11,7 +14,7 @@
 //   - keyboard.hide() fires in the same event as closing the thread or
 //     dismissing the new-conversation flow.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   AvatarIcon,
   BellIcon,
@@ -23,7 +26,7 @@ import {
   PaperPlaneIcon,
   PlusIcon,
 } from "@radix-ui/react-icons";
-import { BottomSheet, KeyboardInput, KeyboardTextarea, MobileScroll, useKeyboard, useKeyboardInsets } from "./mobile";
+import { BottomSheet, KeyboardInput, KeyboardTextarea, MobileScroll, useMobileDevice, useKeyboard, useKeyboardInsets } from "./mobile";
 import { getSupabaseClient, type CarpoolRepository, type ChatThreadSummary } from "./lib/supabase";
 import type {
   ChatMessageRow,
@@ -277,7 +280,7 @@ function MessageBubble({
             {isAgent ? <><ChatBubbleIcon width="11" height="11" /> Crewmate AI</> : message.sender_name}
           </span>
         ) : null}
-        <p className="chat-bubble-body">{message.body}</p>
+        <p className="chat-bubble-body"><MessageText message={message}/></p>
         <span className="chat-bubble-time">{formatBubbleTime(message.created_at)}</span>
       </div>
       {proposal ? (
@@ -484,7 +487,7 @@ export function ChatInboxScreen({
       const rows = await repository.listChatThreads();
       setThreads(rows);
       setError(null);
-      onUnreadCount(rows.reduce((sum, t) => sum + (t.notifications_muted ? 0 : t.unread_count), 0));
+      onUnreadCount(rows.reduce((sum, t) => sum + (t.attention_count ?? (t.notifications_muted ? 0 : t.unread_count)), 0));
     } catch (e) {
       setError(readableChatError(e));
     } finally {
@@ -685,6 +688,7 @@ export function ChatThreadScreen({
 }) {
   const keyboard = useKeyboard();
   const { bottomInset } = useKeyboardInsets();
+  const { device } = useMobileDevice();
   const [thread, setThread] = useState<ChatThreadSummary | null>(null);
   const [messages, setMessages] = useState<ChatMessageRow[]>([]);
   const [proposals, setProposals] = useState<ChatProposalRow[]>([]);
@@ -697,6 +701,53 @@ export function ChatThreadScreen({
   const [proposalWorking, setProposalWorking] = useState(false);
   const [proposalError, setProposalError] = useState<{ proposalId: string; message: string } | null>(null);
   const [muting, setMuting] = useState(false);
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [notificationSession, setNotificationSession] = useState(0);
+  const [mentions, setMentions] = useState<ChatMention[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<{ start: number; end: number; query: string } | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [extras, setExtras] = useState<ChatExtras>({ reactions: [], previews: [] });
+  const requestedPreviews = useRef(new Set<string>());
+  const messageIds = useRef<string[]>([]);
+  const mentionOptions = (thread?.participants ?? []).filter(p => p.id !== myProfileId && p.name.toLocaleLowerCase().includes(mentionQuery?.query.toLocaleLowerCase() ?? "")).slice(0, 6);
+  const updateMentionQuery = (text: string, cursor: number) => {
+    const match = text.slice(0, cursor).match(/(?:^|\s)@([^@\n]{0,60})$/);
+    setMentionQuery(match ? { start: cursor - match[1].length - 1, end: cursor, query: match[1] } : null);
+    setMentionIndex(0);
+  };
+  const insertMention = (person: ChatParticipantSummary) => {
+    if (!mentionQuery) return;
+    const label = `@${person.name}`;
+    const next = draft.slice(0,mentionQuery.start) + label + " " + draft.slice(mentionQuery.end);
+    const start = Array.from(draft.slice(0,mentionQuery.start)).length;
+    setMentions([...editMentions(draft,next,mentions), { profile_id: person.id, label, start, end: start + Array.from(label).length }].sort((a,b)=>a.start-b.start));
+    setDraft(next); setMentionQuery(null);
+    requestAnimationFrame(()=>{const el=document.querySelector<HTMLTextAreaElement>('[data-testid="chat-composer-input"]');el?.focus();el?.setSelectionRange(mentionQuery.start+label.length+1,mentionQuery.start+label.length+1);});
+  };
+  const refreshExtras = useCallback(async () => {
+    if (messageIds.current.length) setExtras(await repository.listChatExtras(messageIds.current));
+  }, [repository]);
+  useEffect(() => {
+    messageIds.current = messages.map(m=>m.id);
+    void refreshExtras().catch(()=>{});
+    let cancelled=false;
+    // Serial preview work keeps a long history page from creating a request burst.
+    void (async()=>{for(const m of messages){
+      if(cancelled)break;
+      if(!linksInText(m.body).length || requestedPreviews.current.has(m.id))continue;
+      requestedPreviews.current.add(m.id);
+      try {await repository.requestChatPreview(m.id); if(!cancelled)await refreshExtras();} catch {requestedPreviews.current.delete(m.id);}
+    }})();
+    return ()=>{cancelled=true;};
+  }, [messages, repository, refreshExtras]);
+  useEffect(()=>{
+    const client=getSupabaseClient();
+    const channel=client.channel(`chat-extras:${threadId}`);
+    for(const table of ["chat_reactions","chat_link_previews"]) channel.on("postgres_changes",{event:"*",schema:"public",table,filter:`thread_id=eq.${threadId}`},()=>{void refreshExtras().catch(()=>{});});
+    channel.subscribe(status=>{if(status==="SUBSCRIBED")void refreshExtras().catch(()=>{});});
+    return ()=>{client.removeChannel(channel);};
+  },[threadId,refreshExtras]);
+  const reactToMessage=async(messageId:string,emoji:string|null)=>{await repository.setChatReaction(messageId,emoji);await refreshExtras();};
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const topRef = useRef<HTMLDivElement | null>(null);
 
@@ -789,12 +840,13 @@ export function ChatThreadScreen({
   };
 
   const send = async () => {
-    const body = draft.trim();
+    const { body, mentions: sentMentions } = trimMentionDraft(draft, mentions);
     if (!body || sending) return;
     setSending(true);
     try {
-      const sent = await repository.sendChatMessage(threadId, body);
+      const sent = await repository.sendChatMessage(threadId, body, sentMentions);
       setDraft("");
+      setMentions([]); setMentionQuery(null);
       setMessages((current) => mergeMessageChronological(current, sent));
       setThread((current) =>
         current
@@ -818,17 +870,21 @@ export function ChatThreadScreen({
     onBack();
   };
 
-  const toggleMute = async () => {
+  const setNotificationMode = async (mode: ChatNotificationMode) => {
     if (!thread || muting) return;
     setMuting(true);
     try {
-      await repository.setThreadNotificationsMuted(threadId, !thread.notifications_muted);
-      setThread({ ...thread, notifications_muted: !thread.notifications_muted });
-    } catch (e) {
-      setError(readableChatError(e));
-    } finally {
-      setMuting(false);
-    }
+      await repository.setThreadNotificationMode(threadId, mode);
+      setThread({ ...thread, notification_mode: mode, notifications_muted: mode === "muted" });
+      setNotificationOpen(false);
+      onThreadOpened?.();
+    } catch (e) { setError(readableChatError(e)); }
+    finally { setMuting(false); }
+  };
+  const toggleMute = () => {
+    if (!thread) return;
+    if (thread.kind === "everyone") { keyboard.hide(); setNotificationSession(n=>n+1); setNotificationOpen(true); }
+    else void setNotificationMode(thread.notifications_muted ? "all" : "muted");
   };
 
   const confirmProposal = async (proposalId: string) => {
@@ -877,7 +933,7 @@ export function ChatThreadScreen({
   }, [draft]);
 
   return (
-    <div className="chat-thread-screen" data-testid="chat-thread-screen">
+    <div className="chat-thread-screen" data-testid="chat-thread-screen" style={{ "--chat-device-safe-area": `${device.geometry.safeArea.top}px` } as CSSProperties}>
       <header className="subpage-header chat-thread-header">
         <button className="icon-button" onClick={goBack} aria-label="Back" data-testid="chat-thread-back">
           <Cross2Icon />
@@ -901,7 +957,7 @@ export function ChatThreadScreen({
                 {thread?.kind === "everyone" ? " · Crewmate AI is in this chat" : ""}
                 {thread?.kind !== "everyone" && thread ? " · Crewmate AI will join to help" : ""}
               </span>
-              {thread?.notifications_muted ? <span className="chat-muted-flag">Muted</span> : null}
+              {thread?.notifications_muted ? <span className="chat-muted-flag">Muted</span> : thread?.notification_mode === "mentions" ? <span className="chat-muted-flag">Mentions only</span> : null}
             </small>
           </div>
         </div>
@@ -909,7 +965,7 @@ export function ChatThreadScreen({
           className="icon-button chat-mute-button"
           onClick={() => void toggleMute()}
           disabled={muting || !thread}
-          aria-label={thread?.notifications_muted ? "Unmute notifications" : "Mute notifications"}
+          aria-label={thread?.kind === "everyone" ? "Notification settings" : thread?.notifications_muted ? "Unmute notifications" : "Mute notifications"}
           data-testid="chat-mute-button"
         >
           <span className={thread?.notifications_muted ? "chat-mute-icon chat-mute-icon--muted" : "chat-mute-icon"}>
@@ -947,8 +1003,8 @@ export function ChatThreadScreen({
                 const firstProposalMessageId = proposal ? firstMessageByProposal.get(proposal.id) : undefined;
                 const renderProposal = proposal && firstProposalMessageId === message.id ? proposal : null;
                 return (
+                  <MessageEnhancements key={message.id} message={message} myProfileId={myProfileId} reactions={extras.reactions.filter(r=>r.message_id===message.id)} preview={extras.previews.find(p=>p.message_id===message.id)} onReact={reactToMessage}>
                   <MessageBubble
-                    key={message.id}
                     message={message}
                     mine={message.sender_profile_id === myProfileId && message.sender_kind === "parent"}
                     showName={isGroupish}
@@ -961,6 +1017,7 @@ export function ChatThreadScreen({
                     onConfirmProposal={(id) => void confirmProposal(id)}
                     onDeclineProposal={(id) => void declineProposal(id)}
                   />
+                  </MessageEnhancements>
                 );
               })}
               {messages.length === 0 ? (
@@ -981,18 +1038,32 @@ export function ChatThreadScreen({
         {/* Enter sends, Shift+Enter inserts a newline (product decision).
             The isComposing guard keeps IME/emoji-picker confirmation
             presses from sending mid-composition. */}
+        {mentionQuery && mentionOptions.length ? <div className="chat-mention-options" role="listbox" id="chat-mention-list" aria-label="Mention a parent">{mentionOptions.map((p,i)=><button type="button" key={p.id} id={`mention-${p.id}`} role="option" aria-selected={i===mentionIndex} onPointerDown={e=>e.preventDefault()} onClick={()=>insertMention(p)}>{p.name}</button>)}</div>:null}
         <KeyboardTextarea
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={!!mentionQuery && mentionOptions.length > 0}
+          aria-controls={mentionQuery ? "chat-mention-list" : undefined}
+          aria-activedescendant={mentionQuery && mentionOptions[mentionIndex] ? `mention-${mentionOptions[mentionIndex].id}` : undefined}
           placeholder="Message…"
           value={draft}
           maxLength={4000}
           rows={1}
           onChange={(e) => {
+            setMentions(editMentions(draft,e.target.value,mentions));
             setDraft(e.target.value);
+            updateMentionQuery(e.target.value,e.target.selectionStart);
             const el = e.target;
             el.style.height = "auto";
             el.style.height = `${Math.min(el.scrollHeight, 96)}px`;
           }}
+          onClick={e=>updateMentionQuery(e.currentTarget.value,e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
+            if(mentionQuery && mentionOptions.length && !e.nativeEvent.isComposing){
+              if(e.key === "ArrowDown" || e.key === "ArrowUp"){e.preventDefault();setMentionIndex(i=>(i+(e.key==="ArrowDown"?1:mentionOptions.length-1))%mentionOptions.length);return;}
+              if(e.key === "Escape"){e.preventDefault();setMentionQuery(null);return;}
+              if(e.key === "Enter" && !e.shiftKey){e.preventDefault();insertMention(mentionOptions[mentionIndex] ?? mentionOptions[0]);return;}
+            }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               void send();
@@ -1010,6 +1081,9 @@ export function ChatThreadScreen({
           <PaperPlaneIcon width="18" height="18" />
         </button>
       </div>
+      <BottomSheet key={notificationSession} open={notificationOpen} onOpenChange={setNotificationOpen} title="Everyone notifications">
+        <div className="chat-notification-options">{([['all','All messages'],['mentions','Mentions only'],['muted','Muted']] as const).map(([mode,label])=><button key={mode} disabled={muting} aria-pressed={(thread?.notification_mode ?? (thread?.notifications_muted?'muted':'all'))===mode} onClick={()=>void setNotificationMode(mode)}>{label}</button>)}</div>
+      </BottomSheet>
     </div>
   );
 }

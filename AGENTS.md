@@ -231,3 +231,11 @@ Deletes profile, auth user, household, children, vehicles, checkins, assignments
 - **DB migrations:** Apply to staging first (`npm run link:test && supabase db query --linked -f <file>`), test, then apply to production (`npm run link:prod && supabase db query --linked -f <file>`)
 - **Seed data:** `npm run seed-demo` / `npm run delete-seed` (staging only)
 - **Supabase secrets:** `supabase secrets set` (manual per project)
+
+### Chat enhancements (September 10, 2026)
+
+- `list_chat_threads_v2` adds `notification_mode` and `attention_count`; the original inbox RPC remains for older clients. New badges use attention counts (exclude the sender, respect all/mentions/muted), while inbox rows retain full unread counts. Everyone supports all messages / mentions only / muted; mute also suppresses mentions. The legacy boolean and RPC are synchronized for compatibility.
+- Messages carry validated `mentions` JSON (`profile_id`, `label`, zero-based Unicode-code-point `start`/`end`). A BEFORE INSERT trigger validates recipients and visible text atomically before push delivery. Typed `@name` text alone does not tag anyone; select a suggestion. The composer uses the existing keyboard-aware textarea; Enter selects an open mention suggestion before it sends.
+- `chat_reactions` stores one reaction per parent/message. Setting emoji to null removes it with an RLS-protected realtime UPDATE. Reacting never sends push. `ChatMessageContent.tsx` owns rich message text, reaction sheets and link cards; it is app-owned chat UI alongside `ChatScreens.tsx`.
+- `chat-link-preview` validates authentication and conversation access, claims a cached record per message, fetches only public HTTP(S) destinations with bounded sizes/timeouts and validated redirects, and caches raster image bytes rather than exposing readers to third-party image requests. Preview failure never blocks sending. Explicit table grants are required for this project's new tables; RLS alone is insufficient for realtime.
+- `tests/chat-enhancements.spec.ts` uses run-specific accounts and scoped cleanup. `playwright.staging.config.ts` targets the actual deployed staging URL, never a local dev server. Do not run legacy suites with broad cleanup against a staging session people are reviewing. Run shared-database suites serially.

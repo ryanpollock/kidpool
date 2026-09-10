@@ -208,11 +208,11 @@ async function cancelDriveViaUI(page: Page) {
   await page.waitForTimeout(2000);
 }
 
-async function reacceptDriveViaUI(page: Page) {
-  const reacceptBtn = page.locator('[data-testid^="reaccept-"]').first();
+async function reacceptDriveViaUI(page: Page, assignmentId: string) {
+  const reacceptBtn = page.getByTestId(`reaccept-${assignmentId}`);
   await expect(reacceptBtn).toBeVisible({ timeout: 5000 });
   await reacceptBtn.click();
-  await page.waitForTimeout(2000);
+  await expect.poll(() => getAssignmentStatus(assignmentId), { timeout: 10000 }).toBe("confirmed");
 }
 
 async function volunteerViaFlowA(page: Page) {
@@ -228,7 +228,7 @@ test.describe.serial("Toggle Drive Cycle", () => {
   test.afterEach(() => { cleanupToggleData(); });
   test.setTimeout(120000);
 
-  test("full toggle: A cancels → B volunteers → B cancels → A re-accepts (released) → A cancels → B re-accepts (declined)", async ({ page }) => {
+  test("full toggle: A cancels → B volunteers → B cancels → A re-accepts (released) → A cancels → B volunteers again", async ({ page }) => {
     test.skip(skip, "Requires service key");
 
     // ── Setup: 2 driver families + 1 rider family ──
@@ -245,8 +245,8 @@ test.describe.serial("Toggle Drive Cycle", () => {
     if (!riderC) { test.skip(); return; }
 
     // Generate + publish
-    const genResult = generateSchedule(coord.email, weekId);
-    assert.ok(genResult.success || genResult.version, "Schedule generation should succeed");
+    const genResult = await generateSchedule(coord.email, weekId);
+    assert.ok(genResult.success || genResult.version, `Schedule generation should succeed: ${JSON.stringify(genResult)}`);
     publishScheduleViaSql(weekId);
     const versionId = getPublishedVersionId(weekId);
     assert.ok(versionId, "Should have a published version");
@@ -300,7 +300,7 @@ test.describe.serial("Toggle Drive Cycle", () => {
     await page.waitForTimeout(2000);
 
     // A should see "Another driver took this drive" with a re-accept button
-    await reacceptDriveViaUI(page);
+    await reacceptDriveViaUI(page, aAssignmentId);
 
     assert.equal(getAssignmentStatus(aAssignmentId), "confirmed");
     assert.equal(getAssignmentStatus(bAssignmentId), "declined");
@@ -315,14 +315,16 @@ test.describe.serial("Toggle Drive Cycle", () => {
     assert.equal(getConfirmedCount(versionId, morningTrip), 0);
     assert.ok(getRiderCount(aAssignmentId) > 0, "Riders stay on A's declined assignment");
 
-    // ── Step 6: Driver B re-accepts their own declined assignment ──
+    // ── Step 6: B has no rider rows, so reclaim through the volunteer flow.
+    // Direct re-accept correctly rejects an empty declined assignment.
     await switchUser(page, driverB.email);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
     await page.waitForTimeout(2000);
-    await reacceptDriveViaUI(page);
+    await volunteerViaFlowA(page);
+    await expect.poll(() => getAssignmentStatus(bAssignmentId)).toBe("confirmed");
 
     assert.equal(getAssignmentStatus(bAssignmentId), "confirmed");
-    assert.equal(getAssignmentStatus(aAssignmentId), "declined");
+    assert.equal(getAssignmentStatus(aAssignmentId), "released");
     assert.equal(getConfirmedCount(versionId, morningTrip), 1);
     assert.ok(getRiderCount(bAssignmentId) > 0, "Riders on B's confirmed assignment");
     assert.equal(getRiderCount(aAssignmentId), 0, "A has 0 riders");
@@ -334,7 +336,7 @@ test.describe.serial("Toggle Drive Cycle", () => {
     await switchUser(page, driverA.email);
     await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
     await page.waitForTimeout(2000);
-    await reacceptDriveViaUI(page);
+    await reacceptDriveViaUI(page, aAssignmentId);
 
     assert.equal(getAssignmentStatus(aAssignmentId), "confirmed");
     assert.equal(getAssignmentStatus(bAssignmentId), "declined");

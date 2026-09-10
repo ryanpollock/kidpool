@@ -43,7 +43,20 @@ jobs:
         run: npm run check:contracts
 
       - name: Run integration tests (local)
-        run: npm run test:integration:local
+        run: npm run test:integration:local && npm run test:chat:integration
+
+      - name: Start local Edge Functions
+        run: |
+          supabase functions serve --no-verify-jwt > /tmp/edge-functions.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:54321/functions/v1/chat-link-preview | grep -q 401; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/edge-functions.log
+          exit 1
+
+      - name: Test preview fetching and push delivery policy
+        run: TEST_DB_TARGET=local node --experimental-strip-types --test --test-concurrency=1 tests/chat-preview.integration.mjs tests/chat-push.integration.mjs
 
       - name: Build (for sites worker test)
         run: npm run build
@@ -89,7 +102,7 @@ jobs:
         run: supabase db reset
 
       - name: Run Playwright E2E tests
-        run: npx playwright test tests/cross-family.spec.ts tests/weekly-cycle.spec.ts tests/today-card.spec.ts tests/toggle-drive-cycle.spec.ts tests/drive-status.spec.ts --workers=1
+        run: npx playwright test tests/cross-family.spec.ts tests/weekly-cycle.spec.ts tests/today-card.spec.ts tests/toggle-drive-cycle.spec.ts tests/drive-status.spec.ts tests/chat.spec.ts tests/chat-multi-user.spec.ts tests/chat-enhancements.spec.ts --workers=1
         env:
           TEST_DB_TARGET: local
 
