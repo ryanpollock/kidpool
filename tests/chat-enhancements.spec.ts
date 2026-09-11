@@ -37,6 +37,27 @@ test("Chat enhancements: two parents react, tag, set mentions-only and open link
       .locator(".chat-message-enhancements")
       .filter({ hasText: "Meet at the playground" });
     await expect(received).toBeVisible({ timeout: 15_000 });
+    // Radix disables background pointer events, so Playwright can click a
+    // visually covered sheet. Enable the background just for hit testing to
+    // verify that the picker actually paints above the conversation.
+    await received.getByRole("button", { name: "React to message" }).click();
+    const thumbsUp = b.getByRole("button", { name: "React 👍", exact: true });
+    await expect(thumbsUp).toBeVisible();
+    await expect.poll(() => thumbsUp.evaluate((button) => {
+      const layer = document.querySelector<HTMLElement>(".chat-thread-layer")!;
+      const previous = layer.style.pointerEvents;
+      layer.style.pointerEvents = "auto";
+      try {
+        const rect = button.getBoundingClientRect();
+        const top = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        return top === button || button.contains(top);
+      } finally {
+        layer.style.pointerEvents = previous;
+      }
+    })).toBe(true);
+    await b.screenshot({ path: test.info().outputPath("chat-reaction-picker.png") });
+    await b.keyboard.press("Escape");
+    await expect(b.getByTestId("bottom-sheet")).toHaveCount(0);
     const box = await received.locator(".chat-bubble-body").boundingBox();
     if (!box) throw new Error("Message geometry missing");
     await b.mouse.move(box.x + 10, box.y + 10);
