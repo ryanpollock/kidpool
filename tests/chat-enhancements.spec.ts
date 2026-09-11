@@ -164,3 +164,34 @@ test("Chat enhancements: two parents react, tag, set mentions-only and open link
     await f.cleanup();
   }
 });
+
+test("Chat reactions: repeated touch taps can add, change and remove a reaction", async ({ browser }) => {
+  test.setTimeout(120_000);
+  const f = await chatFixture();
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  try {
+    f.must(await f.people[0].client.from("chat_messages").insert({
+      thread_id: f.dm, sender_profile_id: f.people[0].id,
+      sender_kind: "parent", sender_name: f.people[0].name, body: "Repeated tap test",
+    }));
+    const page = await context.newPage();
+    await page.goto(`/?testAuth=${encodeURIComponent(f.people[1].email + "|" + TEST_PASSWORD)}`);
+    await expect(page.getByTestId("nav-chat")).toBeVisible({ timeout: 25_000 });
+    await page.getByTestId("nav-chat").tap();
+    await page.getByTestId("chat-thread-row").filter({ hasText: f.people[0].name }).tap();
+    const message = page.locator(".chat-message-enhancements").filter({ hasText: "Repeated tap test" });
+    for (const [emoji, expected] of [["👍", "👍"], ["😂", "😂"], ["😂", null], ["❤️", "❤️"]] as const) {
+      await message.getByRole("button", { name: "React to message" }).tap();
+      await page.getByRole("button", { name: `React ${emoji}`, exact: true }).tap();
+      if (expected) await expect(message.locator(".chat-reaction")).toHaveText(`${expected} 1`);
+      else await expect(message.locator(".chat-reaction")).toHaveCount(0);
+    }
+    await message.locator(".chat-reaction").tap();
+    await page.getByRole("button", { name: "Change your reaction" }).tap();
+    await page.getByRole("button", { name: "React 🙏", exact: true }).tap();
+    await expect(message.locator(".chat-reaction")).toHaveText("🙏 1");
+  } finally {
+    await context.close();
+    await f.cleanup();
+  }
+});
