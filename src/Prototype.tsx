@@ -6305,7 +6305,7 @@ setChatThreadId(chatThreadFromLink);
   const refreshChatUnread = useCallback(async () => {
     try {
       const rows = await repository.listChatThreads();
-      const total = rows.reduce((sum, t) => sum + (t.notifications_muted ? 0 : t.unread_count), 0);
+      const total = rows.reduce((sum, t) => sum + (t.attention_count ?? (t.notifications_muted ? 0 : t.unread_count)), 0);
       setChatUnreadCount(total);
       syncAppIconBadge(total);
     } catch {
@@ -7990,7 +7990,7 @@ if (authError && !identity) {
               repository={repository}
               threadId={chatThreadId}
               myProfileId={identity.profile.id}
-              onBack={() => setChatThreadId(null)}
+              onBack={() => { setChatThreadId(null); setChatInboxKey(k => k + 1); }}
               onThreadOpened={handleChatThreadOpened}
             />
           </AppErrorBoundary>

@@ -277,7 +277,11 @@ export type ChatParticipantRow = {
   created_at: string;
 };
 
+export type ChatMention = { profile_id: string; label: string; start: number; end: number };
+export type ChatNotificationMode = "all" | "mentions" | "muted";
+
 export type ChatMessageRow = {
+  mentions?: ChatMention[];
   id: string;
   thread_id: string;
   sender_profile_id: string | null;
@@ -313,6 +317,8 @@ export type ChatParticipantSummary = {
 };
 
 export type ChatThreadSummary = {
+  notification_mode?: ChatNotificationMode;
+  attention_count?: number;
   thread_id: string;
   group_id: string;
   kind: ChatThreadKind;
@@ -640,6 +646,7 @@ export type Database = {
           sender_name?: string;
           sender_avatar_url?: string | null;
           body: string;
+          mentions?: ChatMention[];
           proposal_id?: string | null;
           created_at?: string;
         }
@@ -854,6 +861,10 @@ export type Database = {
         Args: { target_thread_id: string; p_muted: boolean };
         Returns: void;
       };
+      set_thread_notification_mode: { Args: { target_thread_id: string; p_mode: string }; Returns: void };
+      set_chat_reaction: { Args: { p_message_id: string; p_emoji: string | null }; Returns: void };
+      list_chat_extras: { Args: { p_message_ids: string[] }; Returns: Json };
+      list_chat_threads_v2: { Args: Record<string, never>; Returns: ChatThreadSummary[] };
       list_chat_threads: {
         Args: Record<string, never>;
         Returns: ChatThreadSummary[];

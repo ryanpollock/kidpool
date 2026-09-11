@@ -1,3 +1,4 @@
+import { chatRecipients } from "../_shared/chat-notifications.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 import webpush from "npm:web-push@3.6.7";
 
@@ -3465,25 +3466,29 @@ ${cta}
       groupId = da.group_id;
       recipientProfileIds = [da.driver_profile_id];
     } else if (type === "chat_message" && thread_id) {
+      const triggerToken = authHeader.slice("Bearer ".length);
+      if (triggerToken !== SERVICE_ROLE_KEY && (!CRON_SECRET || triggerToken !== CRON_SECRET)) return jsonError("Chat notifications are trigger-only", 403);
       // ── chat_message: parent chat message → push-only fan-out ──
       // Triggered by the chat_messages AFTER INSERT trigger via pg_net.
       // No email (chat stays push + in-app). Recipients: active thread
       // participants minus the sender minus anyone who muted the thread.
       // Deep-links to /#thread=<id> which the SPA opens on load.
-      const senderName: string = body.sender_name ?? "New message";
-      const messageBody: string | undefined = body.body;
+      // Read authoritative content/mentions after the insert transaction commits.
+      const saved = await supaFetch("chat_messages", "id,thread_id,sender_profile_id,sender_name,body,mentions,sender_kind", { id: `eq.${body.message_id}` });
+      const message = saved[0];
+      if (!message || message.thread_id !== thread_id || message.sender_kind !== "parent") return jsonError("Chat message not found", 404);
+      const senderName: string = message.sender_name;
+      const messageBody: string = message.body.slice(0, 300);
 
       const threadRows = await supaFetch("chat_threads", "id,group_id,kind,title", { id: `eq.${thread_id}` });
       if (threadRows.length === 0) return jsonError("Chat thread not found", 404);
       const thread = threadRows[0];
 
-      const participants = await supaFetch("chat_participants", "profile_id,notifications_muted", { thread_id: `eq.${thread_id}` });
+      const participants = await supaFetch("chat_participants", "profile_id,notifications_muted,notification_mode", { thread_id: `eq.${thread_id}` });
       const activeMemberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${thread.group_id}`, status: `eq.active` });
       const activeIds = new Set<string>(activeMemberships.map((m: any) => m.profile_id));
 
-      const recipientIds = participants
-        .filter((p: any) => p.profile_id !== sender_profile_id && !p.notifications_muted && activeIds.has(p.profile_id))
-        .map((p: any) => p.profile_id);
+      const recipientIds = chatRecipients(participants, activeIds, message.sender_profile_id, message.mentions ?? []);
       if (recipientIds.length === 0) {
         return jsonResponse({ sent: 0, failed: 0, skipped: 0, reason: "no_recipients" });
       }
@@ -3534,7 +3539,7 @@ ${cta}
       for (const sub of subscriptions) {
         try {
           const payload: Record<string, unknown> = {
-            title: notifTitle,
+            title: (message.mentions ?? []).some((m: any) => m.profile_id === sub.profile_id) ? `${senderName.split(" ")[0]} mentioned you · ${threadLabel}` : notifTitle,
             body: notifBody,
             tag: `chat-${thread_id}`,
             url: deepLink,
