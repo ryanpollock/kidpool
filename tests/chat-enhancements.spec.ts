@@ -9,6 +9,14 @@ test("Chat enhancements: two parents react, tag, set mentions-only and open link
   const f = await chatFixture();
   const ca = await browser.newContext(),
     cb = await browser.newContext();
+  // Metadata fetching has its own real-service integration test. Keep this
+  // rendering test deterministic: an in-flight fetch must not overwrite the
+  // fixture card after it is inserted below.
+  for (const context of [ca, cb]) {
+    await context.route("**/functions/v1/chat-link-preview", route => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify({ status: "pending" }),
+    }));
+  }
   const a = await ca.newPage(),
     b = await cb.newPage();
   const login = async (page: Page, email: string) => {
