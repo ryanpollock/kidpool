@@ -1,18 +1,181 @@
 // E2E test for the "On my way" / "Ready" drive status feature.
-// Uses the @local.kidpool demo users seeded by scripts/seed-local-demo.mjs.
+// Seeds its own local parents and trips; fixes the browser clock inside the morning status window.
 
 import { expect, test } from "@playwright/test";
+import { chatFixture } from "./lib/chat-fixture.ts";
+import {
+  getSpecEnv,
+  makeRunSql,
+  truncateAll,
+  PILOT_GROUP_ID,
+  TEST_PASSWORD,
+} from "./lib/playwright-helpers.ts";
+import { randomUUID } from "node:crypto";
+let fixture: Awaited<ReturnType<typeof chatFixture>>;
+let weekId = "";
+const env = getSpecEnv();
+const runSql = makeRunSql(env);
+const today = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/Los_Angeles",
+}).format(new Date());
+const offset = new Intl.DateTimeFormat("en", {
+  timeZone: "America/Los_Angeles",
+  timeZoneName: "longOffset",
+})
+  .formatToParts(new Date())
+  .find((p) => p.type === "timeZoneName")!
+  .value.replace("GMT", "");
+const statusTime = new Date(`${today}T08:35:00${offset}`);
 
-const DRIVER_EMAIL = "driver@local.kidpool";
-const RIDER_EMAIL = "rider@local.kidpool";
-const PASS = "DemoPass123!";
+let DRIVER_EMAIL = "";
+let RIDER_EMAIL = "";
+const PASS = TEST_PASSWORD;
 
-async function signIn(page: import("@playwright/test").Page, email: string, password: string) {
+async function signIn(
+  page: import("@playwright/test").Page,
+  email: string,
+  password: string,
+) {
   await page.goto(`/?testAuth=${email}|${password}`);
 }
 
 test.describe.serial("Drive Status (On my way / Ready)", () => {
   test.setTimeout(60000);
+  test.beforeAll(async () => {
+    if (!env.isLocal)
+      throw new Error("Drive status fixtures require local Supabase");
+    truncateAll(runSql, PILOT_GROUP_ID);
+    fixture = await chatFixture();
+    const [driver, rider] = fixture.people;
+    DRIVER_EMAIL = driver.email;
+    RIDER_EMAIL = rider.email;
+    const monday = new Date(`${today}T12:00:00Z`);
+    monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+    weekId = randomUUID();
+    const version = randomUUID(),
+      vehicle = randomUUID(),
+      child = randomUUID(),
+      driverChild = randomUUID();
+    const must = fixture.must,
+      admin = fixture.admin,
+      group_id = PILOT_GROUP_ID;
+    must(
+      await admin
+        .from("weeks")
+        .insert({
+          id: weekId,
+          group_id,
+          starts_on: monday.toISOString().slice(0, 10),
+          status: "open",
+        }),
+    );
+    must(
+      await admin
+        .from("schedule_versions")
+        .insert({
+          id: version,
+          group_id,
+          week_id: weekId,
+          version_number: 1,
+          status: "published",
+          published_at: new Date().toISOString(),
+        }),
+    );
+    must(
+      await admin
+        .from("vehicles")
+        .insert({
+          id: vehicle,
+          group_id,
+          household_id: driver.household,
+          label: "Test car",
+          child_passenger_capacity: 4,
+          created_by: driver.id,
+        }),
+    );
+    must(
+      await admin
+        .from("children")
+        .insert({
+          id: child,
+          group_id,
+          household_id: rider.household,
+          first_name: "Sam",
+          last_name: "Status",
+          created_by: rider.id,
+        }),
+    );
+    must(
+      await admin
+        .from("children")
+        .insert({
+          id: driverChild,
+          group_id,
+          household_id: driver.household,
+          first_name: "Dana",
+          last_name: "Status",
+          created_by: driver.id,
+        }),
+    );
+    for (const [direction, slot, time] of [
+      ["morning", "am", "08:40"],
+      ["afternoon", "pm_late", "15:30"],
+    ]) {
+      const trip = randomUUID(),
+        assignment = randomUUID();
+      must(
+        await admin
+          .from("trips")
+          .insert({
+            id: trip,
+            group_id,
+            week_id: weekId,
+            service_date: today,
+            direction,
+            slot,
+            meeting_time: time,
+            departure_time: time,
+            origin: "Playground",
+            destination: "School",
+          }),
+      );
+      must(
+        await admin
+          .from("driver_assignments")
+          .insert({
+            id: assignment,
+            group_id,
+            schedule_version_id: version,
+            trip_id: trip,
+            driver_profile_id: driver.id,
+            vehicle_id: vehicle,
+            status: "confirmed",
+            child_passenger_capacity: 4,
+          }),
+      );
+      for (const child_id of [child, driverChild])
+        must(
+          await admin
+            .from("rider_assignments")
+            .insert({
+              group_id,
+              schedule_version_id: version,
+              trip_id: trip,
+              driver_assignment_id: assignment,
+              child_id,
+            }),
+        );
+    }
+  });
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(statusTime);
+  });
+  test.afterAll(async () => {
+    if (fixture) {
+      fixture.must(await fixture.admin.from("weeks").delete().eq("id", weekId));
+      await fixture.cleanup();
+    }
+  });
 
   test("driver taps I'm on my way and sees status", async ({ page }) => {
     const consoleErrors: string[] = [];
@@ -21,7 +184,9 @@ test.describe.serial("Drive Status (On my way / Ready)", () => {
     });
 
     await signIn(page, DRIVER_EMAIL, PASS);
-    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("home-screen")).toBeVisible({
+      timeout: 15000,
+    });
     await expect(page.getByTestId("today-card")).toBeVisible({ timeout: 5000 });
 
     // The "I'm on my way" button should appear on the afternoon card (within 6h window)
@@ -33,7 +198,9 @@ test.describe.serial("Drive Status (On my way / Ready)", () => {
     await page.waitForTimeout(500);
 
     // Confirm the "on my way" status
-    const confirmBtn = page.locator('[data-testid^="confirm-on-my-way-"]').first();
+    const confirmBtn = page
+      .locator('[data-testid^="confirm-on-my-way-"]')
+      .first();
     await expect(confirmBtn).toBeVisible({ timeout: 5000 });
     await confirmBtn.click();
     await page.waitForTimeout(1500);
@@ -44,14 +211,18 @@ test.describe.serial("Drive Status (On my way / Ready)", () => {
     }
 
     // The button should be replaced by a status line "On my way"
-    const statusLine = page.locator('[data-testid^="driver-on-my-way-"]').first();
+    const statusLine = page
+      .locator('[data-testid^="driver-on-my-way-"]')
+      .first();
     await expect(statusLine).toBeVisible({ timeout: 5000 });
     await expect(statusLine).toContainText("On my way");
   });
 
   test("rider sees driver's status and marks child ready", async ({ page }) => {
     await signIn(page, RIDER_EMAIL, PASS);
-    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("home-screen")).toBeVisible({
+      timeout: 15000,
+    });
     await expect(page.getByTestId("today-card")).toBeVisible({ timeout: 5000 });
 
     // The rider should see the driver's "On my way" status on the afternoon card
@@ -63,13 +234,19 @@ test.describe.serial("Drive Status (On my way / Ready)", () => {
     // "Mark ready" only appears on morning drives within the morning window.
     // If we're outside that window (after ~9:10 AM Pacific), skip the ready test.
     const markReadyBtn = page.locator('[data-testid^="mark-ready-"]');
-    const isReadyVisible = await markReadyBtn.first().isVisible().catch(() => false);
+    const isReadyVisible = await markReadyBtn
+      .first()
+      .isVisible()
+      .catch(() => false);
 
     if (!isReadyVisible) {
       // Outside the morning window — verify the driver status is visible
       // (the core cross-user visibility test) and skip the ready flow.
       await expect(driverStatus.first()).toContainText("On my way");
-test.skip(true, "Outside the morning status window — 'I'm on my way' only shows for morning drives 40min before to 30min after 8:40 AM");
+      test.skip(
+        true,
+        "Outside the morning status window — 'I'm on my way' only shows for morning drives 40min before to 30min after 8:40 AM",
+      );
     }
 
     // Tap it — opens a confirmation
@@ -77,7 +254,9 @@ test.skip(true, "Outside the morning status window — 'I'm on my way' only show
     await page.waitForTimeout(500);
 
     // Confirm the "on my way" status
-    const confirmBtn = page.locator('[data-testid^="confirm-mark-ready-"]').first();
+    const confirmBtn = page
+      .locator('[data-testid^="confirm-mark-ready-"]')
+      .first();
     await expect(confirmBtn).toBeVisible({ timeout: 5000 });
     await confirmBtn.click();
     await page.waitForTimeout(1500);
@@ -88,32 +267,47 @@ test.skip(true, "Outside the morning status window — 'I'm on my way' only show
     await expect(readyStatus).toContainText("On my way");
   });
 
-  test("driver sees rider's ready status on Drive Details", async ({ page }) => {
+  test("driver sees rider's ready status on Drive Details", async ({
+    page,
+  }) => {
     await signIn(page, DRIVER_EMAIL, PASS);
-    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("home-screen")).toBeVisible({
+      timeout: 15000,
+    });
     await expect(page.getByTestId("today-card")).toBeVisible({ timeout: 5000 });
 
     // Tap "Drive details" on the afternoon card — scope to today-card to avoid
     // matching links in the Upcoming section
     const todayCard = page.getByTestId("today-card");
-    const driveDetailsLinks = todayCard.locator('[data-testid^="today-drive-status-"]');
+    const driveDetailsLinks = todayCard.locator(
+      '[data-testid^="today-drive-status-"]',
+    );
     const count = await driveDetailsLinks.count();
     expect(count).toBeGreaterThan(0);
     // The afternoon card should be the last one in the Today section
     await driveDetailsLinks.nth(count - 1).click();
-    await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("drive-detail-screen")).toBeVisible({
+      timeout: 5000,
+    });
 
     // Should see the big driver photo section
-    await expect(page.locator(".drive-detail-driver--large")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".drive-detail-driver--large")).toBeVisible({
+      timeout: 5000,
+    });
 
     // Should see vertical children list (not the old grid)
-    await expect(page.locator(".child-status-list")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".child-status-list")).toBeVisible({
+      timeout: 5000,
+    });
 
     // The rider "Ready" status only appears for morning drives within the window.
     // Afternoon drives don't have rider ready status (kids are at school together).
     // Verify the driver's own "on my way" status is shown on the detail screen.
     const driverStatusLine = page.locator('[data-testid^="driver-on-my-way-"]');
-    const hasDriverStatus = await driverStatusLine.first().isVisible().catch(() => false);
+    const hasDriverStatus = await driverStatusLine
+      .first()
+      .isVisible()
+      .catch(() => false);
     if (hasDriverStatus) {
       await expect(driverStatusLine.first()).toContainText("On my way");
     }
@@ -121,7 +315,10 @@ test.skip(true, "Outside the morning status window — 'I'm on my way' only show
     // If we opened a morning drive within the window, check for rider ready status.
     // Otherwise (afternoon, or outside window) just verify the layout rendered.
     const readyStatuses = page.locator('[data-testid^="rider-ready-"]');
-    const hasReadyStatus = await readyStatuses.first().isVisible().catch(() => false);
+    const hasReadyStatus = await readyStatuses
+      .first()
+      .isVisible()
+      .catch(() => false);
     if (!hasReadyStatus) {
       // Expected for afternoon drives or outside the morning window
       return;

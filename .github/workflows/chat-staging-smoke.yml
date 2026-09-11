@@ -1,0 +1,30 @@
+name: Deployed Staging Chat Smoke
+on:
+  workflow_dispatch:
+jobs:
+  chat-staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - run: supabase link --project-ref jfyjgmhqnlbdcafoarrg
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      - run: npm run test:chat:staging
+        env:
+          SUPABASE_TEST_SERVICE_KEY: ${{ secrets.SUPABASE_STAGING_SERVICE_KEY }}
+          SUPABASE_TEST_ANON_KEY: ${{ secrets.SUPABASE_STAGING_ANON_KEY }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: deployed-staging-chat-results
+          path: test-results/

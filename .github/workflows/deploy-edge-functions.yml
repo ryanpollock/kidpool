@@ -69,6 +69,11 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
+      - name: Deploy chat-link-preview
+        run: supabase functions deploy chat-link-preview --no-verify-jwt
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
       - name: Summary
         run: |
           echo "Deployed Edge Functions to ${{ steps.project.outputs.env }} (${{ steps.project.outputs.ref }})"

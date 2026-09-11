@@ -302,7 +302,8 @@ test.describe.serial("Cross-Family Cancel/Recovery", () => {
     const riderC = seedFamilyForTrip(13, "XFRiderC", weekId, morningTrip, false, false);
     if (!riderC) { test.skip(); return; }
 
-    await generateSchedule(coord!.email, weekId);
+    const generated = await generateSchedule(coord!.email, weekId);
+    assert.ok(generated.success || generated.version, JSON.stringify(generated));
     await page.waitForTimeout(1000);
     publishScheduleViaSql(weekId);
 
@@ -379,7 +380,8 @@ test.describe.serial("Cross-Family Cancel/Recovery", () => {
     const rider = seedFamilyForTrip(22, "FlipRider", weekId, morningTrip, false, false);
     if (!rider) { test.skip(); return; }
 
-    await generateSchedule(coord!.email, weekId);
+    const generated = await generateSchedule(coord!.email, weekId);
+    assert.ok(generated.success || generated.version, JSON.stringify(generated));
     await page.waitForTimeout(1000);
     publishScheduleViaSql(weekId);
 
@@ -432,7 +434,8 @@ test.describe.serial("Cross-Family Cancel/Recovery", () => {
     const rider = seedFamilyForTrip(32, "BtnGoneRider", weekId, morningTrip, false, true, false);
     if (!rider) { test.skip(); return; }
 
-    await generateSchedule(coord!.email, weekId);
+    const generated = await generateSchedule(coord!.email, weekId);
+    assert.ok(generated.success || generated.version, JSON.stringify(generated));
     await page.waitForTimeout(1000);
     publishScheduleViaSql(weekId);
 
@@ -480,7 +483,8 @@ test.describe.serial("Cross-Family Cancel/Recovery", () => {
     const riderC = seedFamilyForTrip(43, "RaceRiderC", weekId, morningTrip, false, true, false);
     if (!riderC) { test.skip(); return; }
 
-    await generateSchedule(coord!.email, weekId);
+    const generated = await generateSchedule(coord!.email, weekId);
+    assert.ok(generated.success || generated.version, JSON.stringify(generated));
     await page.waitForTimeout(1000);
     publishScheduleViaSql(weekId);
 
@@ -549,7 +553,8 @@ test.describe.serial("Cross-Family Cancel/Recovery", () => {
     const riderD = seedFamilyForTrip(54, "ChainRiderD", weekId, morningTrip, false, true, false);
     if (!riderD) { test.skip(); return; }
 
-    await generateSchedule(coord!.email, weekId);
+    const generated = await generateSchedule(coord!.email, weekId);
+    assert.ok(generated.success || generated.version, JSON.stringify(generated));
     await page.waitForTimeout(1000);
     publishScheduleViaSql(weekId);
 
@@ -613,7 +618,8 @@ test.describe.serial("Cross-Family Cancel/Recovery", () => {
     const rider = seedFamilyForTrip(62, "RealTimeRider", weekId, morningTrip, false, true, false);
     if (!rider) { test.skip(); return; }
 
-    await generateSchedule(coord!.email, weekId);
+    const generated = await generateSchedule(coord!.email, weekId);
+    assert.ok(generated.success || generated.version, JSON.stringify(generated));
     await page.waitForTimeout(1000);
     publishScheduleViaSql(weekId);
 
@@ -668,7 +674,8 @@ test.describe.serial("Cross-Family Cancel/Recovery", () => {
     const riderD = seedFamilyForTrip(74, "IntegrityRiderD", weekId, morningTrip, false, false);
     if (!riderD) { test.skip(); return; }
 
-    await generateSchedule(coord!.email, weekId);
+    const generated = await generateSchedule(coord!.email, weekId);
+    assert.ok(generated.success || generated.version, JSON.stringify(generated));
     await page.waitForTimeout(1000);
     publishScheduleViaSql(weekId);
 

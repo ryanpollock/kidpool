@@ -221,7 +221,7 @@ test("send-push chat_message branch is push-only, mutes-aware, and deep-links", 
 
   assert.match(source, /type === "chat_message" && thread_id/i);
   // Skip the sender, muted participants, and non-active members
-  assert.match(source, /p\.profile_id !== sender_profile_id && !p\.notifications_muted && activeIds\.has\(p\.profile_id\)/);
+  assert.match(source, /chatRecipients\(participants, activeIds, message\.sender_profile_id, message\.mentions/);
   // Deep link to the thread (sw.js notificationclick navigates to data.url)
   assert.match(source, /\/#thread=\$\{thread_id\}/);
   assert.match(source, /push_only: true/);

@@ -414,16 +414,18 @@ test("Chat: bell toggle visibly mutes and unmutes a thread", async ({ page }) =>
     // Mute: the slash wrapper renders (HTML span, not SVG), the pinned
     // "Muted" flag appears in the subtitle, and the aria-label flips.
     await bell.click();
+    await page.getByRole("button", { name: "Muted", exact: true }).click();
     await expect(page.locator(".chat-muted-flag")).toBeVisible({ timeout: 15_000 });
     await expect(page.locator(".chat-muted-flag")).toHaveText("Muted");
     assert.equal(await page.locator(".chat-mute-icon--muted").count(), 1, "Muted slash wrapper must render");
-    assert.equal(await bell.getAttribute("aria-label"), "Unmute notifications");
+    assert.equal(await bell.getAttribute("aria-label"), "Notification settings");
 
     // Unmute: every visible trace clears.
     await bell.click();
+    await page.getByRole("button", { name: "All messages", exact: true }).click();
     await expect(page.locator(".chat-muted-flag")).toHaveCount(0, { timeout: 15_000 });
     assert.equal(await page.locator(".chat-mute-icon--muted").count(), 0);
-    assert.equal(await bell.getAttribute("aria-label"), "Mute notifications");
+    assert.equal(await bell.getAttribute("aria-label"), "Notification settings");
   } finally {
     cleanupChatData();
   }

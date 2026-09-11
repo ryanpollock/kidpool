@@ -1,3 +1,4 @@
+import type { ChatMention, ChatNotificationMode } from "./database.types";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { isNoSchoolDay, todayInTimezone, dateInTimezone, PILOT_TIMEZONE } from "../school-calendar";
@@ -2614,7 +2615,7 @@ async getLatestScheduleVersion(
    * unread count, mute state, and participant roster.
    */
   async listChatThreads(): Promise<ChatThreadSummary[]> {
-    return unwrapRequired(await this.client.rpc("list_chat_threads"));
+    return unwrapRequired(await this.client.rpc("list_chat_threads_v2"));
   }
 
   /** Idempotently create the group's all-parents thread and enroll the caller. */
@@ -2670,7 +2671,7 @@ async getLatestScheduleVersion(
   }
 
   /** Send a chat message as the signed-in parent. */
-  async sendChatMessage(threadId: string, body: string): Promise<Tables<"chat_messages">> {
+  async sendChatMessage(threadId: string, body: string, mentions: ChatMention[] = []): Promise<Tables<"chat_messages">> {
     const trimmed = body.trim();
     if (trimmed.length === 0) throw new Error("Message cannot be empty.");
     if (trimmed.length > 4000) throw new Error("Message is too long (max 4000 characters).");
@@ -2682,6 +2683,7 @@ async getLatestScheduleVersion(
         .insert({
           thread_id: threadId,
           body: trimmed,
+          mentions,
           sender_profile_id: userResult.data.user.id,
           sender_kind: "parent",
         })
@@ -2705,6 +2707,28 @@ async getLatestScheduleVersion(
         p_muted: muted,
       }),
     );
+  }
+
+  async setThreadNotificationMode(threadId: string, mode: ChatNotificationMode): Promise<void> {
+    unwrap(await this.client.rpc("set_thread_notification_mode", { target_thread_id: threadId, p_mode: mode }));
+  }
+
+  async setChatReaction(messageId: string, emoji: string | null): Promise<void> {
+    unwrap(await this.client.rpc("set_chat_reaction", { p_message_id: messageId, p_emoji: emoji }));
+  }
+
+  async listChatExtras(messageIds: string[]): Promise<import("../chat-content").ChatExtras> {
+    const chunks = [];
+    for (let i = 0; i < messageIds.length; i += 120) {
+      chunks.push(unwrapRequired(await this.client.rpc("list_chat_extras", { p_message_ids: messageIds.slice(i, i + 120) })));
+    }
+    const results = chunks as unknown as import("../chat-content").ChatExtras[];
+    return { reactions: results.flatMap(r => r.reactions), previews: results.flatMap(r => r.previews) };
+  }
+
+  async requestChatPreview(messageId: string): Promise<void> {
+    const { error } = await this.client.functions.invoke("chat-link-preview", { body: { message_id: messageId } });
+    if (error) throw error;
   }
 
   /** Confirm a pending Crewmate AI proposal; executes the schedule change. */
