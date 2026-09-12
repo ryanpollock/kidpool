@@ -752,7 +752,7 @@
 .chat-mention { color: #086b62; background: #d9f2ed; border-radius: 4px; padding: 1px 2px; }
 .chat-bubble-body a { color: inherit; text-decoration: underline; overflow-wrap: anywhere; }
 .chat-reactions { display: flex; gap: 5px; align-items: center; margin: 4px 0 0 36px; }
-.chat-reaction, .chat-add-reaction { border: 1px solid #d4dfdc; background: white; border-radius: 20px; min-height: 32px; padding: 4px 9px; color: #47645e; }
+.chat-reaction { border: 1px solid #d4dfdc; background: white; border-radius: 20px; min-height: 32px; padding: 4px 9px; color: #47645e; }
 .chat-reaction.is-mine { background: #e1f4ee; border-color: #308877; }
 .chat-reaction-picker { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 0; }
 .chat-reaction-picker button { font-size: 28px; min-height: 48px; min-width: 48px; border: 1px solid #d4dfdc; background: white; border-radius: 12px; }

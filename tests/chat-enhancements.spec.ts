@@ -1,6 +1,26 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Locator } from "@playwright/test";
 import { chatFixture } from "./lib/chat-fixture.ts";
 import { TEST_PASSWORD } from "./lib/playwright-helpers.ts";
+
+async function holdMessage(page: Page, message: Locator, touch = false) {
+  await expect(page.getByTestId("bottom-sheet")).toHaveCount(0);
+  await message.locator(".chat-bubble-body").scrollIntoViewIfNeeded();
+  const box = await message.locator(".chat-bubble-body").boundingBox();
+  if (!box) throw new Error("Message geometry missing");
+  const x = box.x + 10, y = box.y + 10;
+  if (touch) {
+    const session = await page.context().newCDPSession(page);
+    await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    await page.waitForTimeout(600);
+    await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await session.detach();
+  } else {
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.waitForTimeout(600);
+    await page.mouse.up();
+  }
+}
 
 test("Chat enhancements: two parents react, tag, set mentions-only and open links", async ({
   browser,
@@ -45,10 +65,11 @@ test("Chat enhancements: two parents react, tag, set mentions-only and open link
       .locator(".chat-message-enhancements")
       .filter({ hasText: "Meet at the playground" });
     await expect(received).toBeVisible({ timeout: 15_000 });
+    await expect(received.locator(".chat-add-reaction")).toHaveCount(0);
     // Radix disables background pointer events, so Playwright can click a
     // visually covered sheet. Enable the background just for hit testing to
     // verify that the picker actually paints above the conversation.
-    await received.getByRole("button", { name: "React to message" }).click();
+    await holdMessage(b, received);
     const thumbsUp = b.getByRole("button", { name: "React 👍", exact: true });
     await expect(thumbsUp).toBeVisible();
     await expect.poll(() => thumbsUp.evaluate((button) => {
@@ -76,7 +97,7 @@ test("Chat enhancements: two parents react, tag, set mentions-only and open link
     await expect(
       a.getByRole("button", { name: "👍 1 reactions; view people" }),
     ).toBeVisible({ timeout: 15_000 });
-    await received.getByRole("button", { name: "React to message" }).click();
+    await holdMessage(b, received);
     await b.getByRole("button", { name: "React 😂", exact: true }).click();
     await expect(
       a.getByRole("button", { name: "😂 1 reactions; view people" }),
@@ -165,7 +186,7 @@ test("Chat enhancements: two parents react, tag, set mentions-only and open link
   }
 });
 
-test("Chat reactions: repeated touch taps can add, change and remove a reaction", async ({ browser }) => {
+test("Chat reactions: repeated touch holds can add, change and remove a reaction", async ({ browser }) => {
   test.setTimeout(120_000);
   const f = await chatFixture();
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
@@ -181,7 +202,7 @@ test("Chat reactions: repeated touch taps can add, change and remove a reaction"
     await page.getByTestId("chat-thread-row").filter({ hasText: f.people[0].name }).tap();
     const message = page.locator(".chat-message-enhancements").filter({ hasText: "Repeated tap test" });
     for (const [emoji, expected] of [["👍", "👍"], ["😂", "😂"], ["😂", null], ["❤️", "❤️"]] as const) {
-      await message.getByRole("button", { name: "React to message" }).tap();
+      await holdMessage(page, message, true);
       await page.getByRole("button", { name: `React ${emoji}`, exact: true }).tap();
       if (expected) await expect(message.locator(".chat-reaction")).toHaveText(`${expected} 1`);
       else await expect(message.locator(".chat-reaction")).toHaveCount(0);
