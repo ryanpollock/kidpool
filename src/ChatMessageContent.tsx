@@ -69,6 +69,7 @@ export function MessageEnhancements({
     [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null),
     origin = useRef({ x: 0, y: 0 });
+  const suppressClick = useRef(false);
   const cancel = () => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
@@ -94,40 +95,7 @@ export function MessageEnhancements({
   };
   return (
     <div className="chat-message-enhancements" data-message-id={message.id}>
-      <div
-        onPointerDown={(e) => {
-          if (
-            message.sender_kind !== "parent" ||
-            (e.target as HTMLElement).closest("a,button") ||
-            e.button !== 0
-          )
-            return;
-          cancel();
-          origin.current = { x: e.clientX, y: e.clientY };
-          timer.current = setTimeout(open, 500);
-        }}
-        onPointerMove={(e) => {
-          if (
-            Math.hypot(
-              e.clientX - origin.current.x,
-              e.clientY - origin.current.y,
-            ) > 8
-          )
-            cancel();
-        }}
-        onContextMenu={(e) => {
-          if (
-            message.sender_kind === "parent" &&
-            !(e.target as HTMLElement).closest("a")
-          )
-            e.preventDefault();
-        }}
-        onPointerUp={cancel}
-        onPointerCancel={cancel}
-        onPointerLeave={cancel}
-      >
-        {children}
-      </div>
+      <div>{children}</div>
       {preview?.status === "ready" ? (
         <a
           className="chat-link-card"
@@ -153,8 +121,44 @@ export function MessageEnhancements({
           </span>
         </a>
       ) : null}
-      {message.sender_kind === "parent" && reactions.length > 0 ? (
+      {message.sender_kind === "parent" ? (
         <div className="chat-reactions">
+          <button
+            className="chat-quick-reaction"
+            aria-label="Thumbs up; hold to choose a reaction"
+            aria-pressed={mine === "👍"}
+            disabled={working}
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              cancel();
+              suppressClick.current = false;
+              origin.current = { x: e.clientX, y: e.clientY };
+              timer.current = setTimeout(() => {
+                suppressClick.current = true;
+                open();
+              }, 500);
+            }}
+            onPointerMove={(e) => {
+              if (Math.hypot(e.clientX - origin.current.x, e.clientY - origin.current.y) > 8) {
+                suppressClick.current = true;
+                cancel();
+              }
+            }}
+            onPointerUp={cancel}
+            onPointerCancel={() => { suppressClick.current = true; cancel(); }}
+            onPointerLeave={cancel}
+            onContextMenu={(e) => e.preventDefault()}
+            onClick={(e) => {
+              if (e.detail !== 0 && suppressClick.current) {
+                suppressClick.current = false;
+                return;
+              }
+              void react("👍");
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") { e.preventDefault(); open(); }
+            }}
+          >👍</button>
           {REACTIONS.filter((emoji) =>
             reactions.some((r) => r.emoji === emoji),
           ).map((emoji) => (
@@ -171,6 +175,7 @@ export function MessageEnhancements({
           ))}
         </div>
       ) : null}
+      {error && !picker ? <p role="alert">{error}</p> : null}
       <BottomSheet
         open={picker}
         onOpenChange={setPicker}
