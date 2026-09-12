@@ -125,6 +125,7 @@ export function MessageEnhancements({
         <div className="chat-reactions">
           <button
             className="chat-quick-reaction"
+            data-reacted={Boolean(mine)}
             aria-label="Thumbs up; hold to choose a reaction"
             aria-pressed={mine === "👍"}
             disabled={working}
