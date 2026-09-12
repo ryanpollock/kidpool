@@ -4,8 +4,8 @@ import { TEST_PASSWORD } from "./lib/playwright-helpers.ts";
 
 async function holdMessage(page: Page, message: Locator, touch = false) {
   await expect(page.getByTestId("bottom-sheet")).toHaveCount(0);
-  await message.locator(".chat-bubble-body").scrollIntoViewIfNeeded();
-  const box = await message.locator(".chat-bubble-body").boundingBox();
+  await message.locator(".chat-quick-reaction").scrollIntoViewIfNeeded();
+  const box = await message.locator(".chat-quick-reaction").boundingBox();
   if (!box) throw new Error("Message geometry missing");
   const x = box.x + 10, y = box.y + 10;
   if (touch) {
@@ -87,7 +87,7 @@ test("Chat enhancements: two parents react, tag, set mentions-only and open link
     await b.screenshot({ path: test.info().outputPath("chat-reaction-picker.png") });
     await b.keyboard.press("Escape");
     await expect(b.getByTestId("bottom-sheet")).toHaveCount(0);
-    const box = await received.locator(".chat-bubble-body").boundingBox();
+    const box = await received.locator(".chat-quick-reaction").boundingBox();
     if (!box) throw new Error("Message geometry missing");
     await b.mouse.move(box.x + 10, box.y + 10);
     await b.mouse.down();
@@ -201,6 +201,12 @@ test("Chat reactions: repeated touch holds can add, change and remove a reaction
     await page.getByTestId("nav-chat").tap();
     await page.getByTestId("chat-thread-row").filter({ hasText: f.people[0].name }).tap();
     const message = page.locator(".chat-message-enhancements").filter({ hasText: "Repeated tap test" });
+    const quick = message.locator(".chat-quick-reaction");
+    await expect(quick).toHaveText("👍");
+    await quick.tap();
+    await expect(message.locator(".chat-reaction")).toHaveText("👍 1");
+    await quick.tap();
+    await expect(message.locator(".chat-reaction")).toHaveCount(0);
     for (const [emoji, expected] of [["👍", "👍"], ["😂", "😂"], ["😂", null], ["❤️", "❤️"]] as const) {
       await holdMessage(page, message, true);
       await page.getByRole("button", { name: `React ${emoji}`, exact: true }).tap();
