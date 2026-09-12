@@ -241,3 +241,5 @@ Deletes profile, auth user, household, children, vehicles, checkins, assignments
 - `tests/chat-enhancements.spec.ts` uses run-specific accounts and scoped cleanup. `playwright.staging.config.ts` targets the actual deployed staging URL, never a local dev server. Do not run legacy suites with broad cleanup against a staging session people are reviewing. Run shared-database suites serially.
 
 - Chat thread layers must stay below the runtime sheet overlay/content (z-index 20/21). Radix disables background pointer events, so a visually covered picker can still pass ordinary Playwright clicks; the chat browser test temporarily restores background hit testing to detect this occlusion.
+
+- Reaction entry is long-press only: do not show an add-reaction smiley/plus button beneath messages. Existing reaction counts stay visible and open the people/reaction details sheet.

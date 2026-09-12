@@ -153,7 +153,7 @@ export function MessageEnhancements({
           </span>
         </a>
       ) : null}
-      {message.sender_kind === "parent" ? (
+      {message.sender_kind === "parent" && reactions.length > 0 ? (
         <div className="chat-reactions">
           {REACTIONS.filter((emoji) =>
             reactions.some((r) => r.emoji === emoji),
@@ -169,13 +169,6 @@ export function MessageEnhancements({
               {emoji} {reactions.filter((r) => r.emoji === emoji).length}
             </button>
           ))}
-          <button
-            className="chat-add-reaction"
-            onClick={open}
-            aria-label="React to message"
-          >
-            ☺ +
-          </button>
         </div>
       ) : null}
       <BottomSheet
