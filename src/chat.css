@@ -774,3 +774,5 @@
 
 .chat-quick-reaction { min-width: 44px; min-height: 44px; font-size: 18px; touch-action: pan-y; user-select: none; -webkit-touch-callout: none; }
 .chat-quick-reaction[aria-pressed="true"] { background: #e1f4ee; border-color: #308877; }
+
+.chat-quick-reaction[data-reacted="false"] { filter: grayscale(1); opacity: 0.6; }
