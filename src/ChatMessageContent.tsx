@@ -80,6 +80,7 @@ export function MessageEnhancements({
     setPicker(true);
   };
   const mine = reactions.find((r) => r.profile_id === myProfileId)?.emoji;
+  const thumbsUpCount = reactions.filter((r) => r.emoji === "👍").length;
   const react = async (emoji: string) => {
     if (working) return;
     setWorking(true);
@@ -124,9 +125,9 @@ export function MessageEnhancements({
       {message.sender_kind === "parent" ? (
         <div className="chat-reactions">
           <button
-            className="chat-quick-reaction"
+            className={thumbsUpCount ? "chat-quick-reaction chat-reaction" : "chat-quick-reaction"}
             data-reacted={Boolean(mine)}
-            aria-label="Thumbs up; hold to choose a reaction"
+            aria-label={`Thumbs up${thumbsUpCount ? `, ${thumbsUpCount}` : ""}; hold to choose a reaction`}
             aria-pressed={mine === "👍"}
             disabled={working}
             onPointerDown={(e) => {
@@ -159,9 +160,9 @@ export function MessageEnhancements({
             onKeyDown={(e) => {
               if (e.key === "ArrowDown") { e.preventDefault(); open(); }
             }}
-          >👍</button>
+          >👍{thumbsUpCount > 0 ? ` ${thumbsUpCount}` : ""}</button>
           {REACTIONS.filter((emoji) =>
-            reactions.some((r) => r.emoji === emoji),
+            emoji !== "👍" && reactions.some((r) => r.emoji === emoji),
           ).map((emoji) => (
             <button
               key={emoji}
@@ -196,6 +197,11 @@ export function MessageEnhancements({
             </button>
           ))}
         </div>
+        {reactions.length > 0 ? (
+          <button className="text-button" onClick={() => { setPicker(false); setWho(true); }}>
+            View reactions
+          </button>
+        ) : null}
         {error ? <p role="alert">{error}</p> : null}
       </BottomSheet>
       <BottomSheet open={who} onOpenChange={setWho} title="Reactions">

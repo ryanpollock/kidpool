@@ -243,3 +243,5 @@ Deletes profile, auth user, household, children, vehicles, checkins, assignments
 - Chat thread layers must stay below the runtime sheet overlay/content (z-index 20/21). Radix disables background pointer events, so a visually covered picker can still pass ordinary Playwright clicks; the chat browser test temporarily restores background hit testing to detect this occlusion.
 
 - Each parent message shows a persistent thumbs-up button: tap toggles thumbs up, hold opens the reaction picker. Holding must not also submit a thumbs up. Existing reaction counts stay visible and open the people/reaction details sheet.
+
+- The persistent thumbs-up control also displays the aggregate thumbs-up count. Never render a second thumbs-up chip; tap toggles the current user’s like, and hold opens the picker (including View reactions).
