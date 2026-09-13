@@ -385,8 +385,8 @@
 .chat-bubble--mine {
   border-color: transparent;
   border-radius: 16px 16px 4px 16px;
-  background: var(--teal);
-  color: #fff;
+  background: #dceef5;
+  color: #173b4b;
 }
 
 .chat-bubble--agent {
@@ -424,7 +424,7 @@
 }
 
 .chat-bubble--mine .chat-bubble-time {
-  color: rgba(255, 255, 255, 0.8);
+  color: #526b78;
 }
 
 .chat-system-note {
