@@ -10,12 +10,26 @@ export const PILOT_GROUP_ID = "c1000000-0000-4000-8000-000000000001";
 export const TEST_PASSWORD = "TestPass123!";
 export const UID = (n: number) => `deadbeef-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
-// Local Supabase deterministic keys (shipped with the CLI).
+// Local Supabase key fallbacks. The stack's keys are NOT stable across
+// resets that regenerate the JWT secret (e.g. local branch switches), so
+// getSpecEnv prefers live keys from `supabase status -o json`.
 const LOCAL_SERVICE_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU";
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Utcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU";
 const LOCAL_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0";
 const LOCAL_DB_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres";
+
+/** Live local keys from `supabase status -o json` (null when unavailable). */
+function localStackKeys(): { serviceKey: string; anonKey: string } | null {
+  try {
+    const status = execSync("supabase status -o json", { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+    const parsed = JSON.parse(status);
+    const serviceKey = parsed.SERVICE_ROLE_KEY ?? parsed.SECRET_KEY;
+    const anonKey = parsed.ANON_KEY ?? parsed.PUBLISHABLE_KEY;
+    if (serviceKey && anonKey) return { serviceKey, anonKey };
+  } catch {}
+  return null;
+}
 
 export type TestTarget = "local" | "staging";
 
@@ -37,11 +51,12 @@ export function getSpecEnv(): SpecEnv {
   // login credentials" under plain `npm run test:runtime`, while the
   // legacy specs hardcoded staging and failed under test:runtime:local.
   if (process.env.TEST_DB_TARGET === "local") {
+    const liveKeys = localStackKeys();
     return {
       target: "local",
       supabaseUrl: "http://127.0.0.1:54321",
-      serviceKey: LOCAL_SERVICE_KEY,
-      anonKey: LOCAL_ANON_KEY,
+      serviceKey: liveKeys?.serviceKey ?? LOCAL_SERVICE_KEY,
+      anonKey: liveKeys?.anonKey ?? LOCAL_ANON_KEY,
       groupId: PILOT_GROUP_ID,
       isLocal: true,
     };
