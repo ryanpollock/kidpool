@@ -1613,6 +1613,7 @@ function OfferCustomDriveSheet({
   vehicle,
   working,
   error,
+  schedulePublished,
   onSubmit,
 }: {
   open: boolean;
@@ -1622,6 +1623,7 @@ function OfferCustomDriveSheet({
   vehicle: Tables<"vehicles"> | null;
   working: boolean;
   error: string | null;
+  schedulePublished: boolean;
   onSubmit: (date: string, direction: "morning" | "afternoon", time: string, childIds: string[]) => Promise<void>;
 }) {
   const [date, setDate] = useState<string | null>(null);
@@ -1660,6 +1662,9 @@ function OfferCustomDriveSheet({
       description="A one-off drive at a custom time. Other families can add their kids from the schedule."
     >
       {error ? <div className="auth-error" role="alert" style={{ marginBottom: 12 }}>{error}</div> : null}
+      {!schedulePublished ? (
+        <p className="helper-copy" style={{ marginTop: 0 }}>Families can join right away — the drive goes live with the week's published schedule (Sun 7 PM).</p>
+      ) : null}
       {dates.length === 0 ? (
         <p className="helper-copy">No remaining school days this week — the schedule publishes Sunday evening.</p>
       ) : (
@@ -7389,12 +7394,16 @@ const navItems = useMemo(() => {
   }, [weekData, todayDate]);
 
   const canOfferCustomDrive = useMemo(() => {
+    // Any juncture in the weekly cycle: the week just needs remaining school
+    // days and the caller needs a car. The RPC attaches to the published
+    // version when one exists, the latest draft during the pre-publish
+    // window, and seeds a manual draft v1 when the week has no version yet
+    // (Saturday check-in day / Sunday before the 7 AM generation).
     if (!identity || offerableDates.length === 0) return false;
-    if (homeSchedule?.version.status !== "published") return false;
     const householdId = identity.membership?.household_id;
     if (!householdId || !householdSetup) return false;
     return resolveDriverVehicle(householdSetup.vehicles, identity.profile.id) !== null;
-  }, [identity, householdSetup, homeSchedule, offerableDates]);
+  }, [identity, householdSetup, offerableDates]);
 
   // Pre-compute other same-day same-direction rides for the given children
   // (from the current rosters) — used to prompt "cancel the other ride"
@@ -8037,6 +8046,7 @@ if (authError && !identity) {
           vehicle={householdSetup ? resolveDriverVehicle(householdSetup.vehicles, identity.profile.id) : null}
           working={offerWorking}
           error={offerError}
+          schedulePublished={homeSchedule?.version.status === "published"}
           onSubmit={offerCustomDrive}
         />
       ) : null}

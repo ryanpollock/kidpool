@@ -34,13 +34,16 @@ function sfDateStr(date: Date): string {
   }).format(date);
 }
 
-function thisMondayStrSF(): string {
+// The week the APP treats as current: on Sat/Sun getCurrentWeek returns
+// the upcoming week, so weekend runs target the NEXT Monday.
+function targetMondayStrSF(): string {
   const today = sfDateStr(new Date());
   const [y, m, d] = today.split("-").map(Number);
   const date = new Date(Date.UTC(y, m - 1, d));
   const dow = date.getUTCDay();
-  const daysBack = dow === 0 ? 6 : dow - 1;
-  date.setUTCDate(date.getUTCDate() - daysBack);
+  if (dow === 6) date.setUTCDate(date.getUTCDate() + 2);
+  else if (dow === 0) date.setUTCDate(date.getUTCDate() + 1);
+  else date.setUTCDate(date.getUTCDate() - (dow === 0 ? 6 : dow - 1));
   return date.toISOString().slice(0, 10);
 }
 
@@ -134,30 +137,32 @@ test.describe.serial("Custom drive", () => {
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${riderChildId}', '${GROUP_ID}', '${rider.householdId}', 'Sam', 'Custom', '${rider.userId}') ON CONFLICT DO NOTHING;
     `);
 
-    // The current week must exist with a published schedule version —
-    // custom drives attach to it.
-    const monday = thisMondayStrSF();
+    // The current week must exist with a schedule version — custom drives
+    // attach to the roster the app displays. Seed a DRAFT (the Sunday
+    // 7 AM–7 PM pre-publish window): the offer button must appear without
+    // a published schedule, and the drive attaches to the draft.
+    const monday = targetMondayStrSF();
     runSql(`INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${UID(550)}', '${GROUP_ID}', '${monday}', 'open') ON CONFLICT DO NOTHING;`);
     const weekRow = runSql(`SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${monday}' LIMIT 1;`).rows?.[0] as { id: string } | undefined;
     if (!weekRow) return;
-    const published = runSql(`SELECT id FROM public.schedule_versions WHERE group_id = '${GROUP_ID}' AND week_id = '${weekRow.id}' AND status = 'published' LIMIT 1;`).rows?.[0] as { id: string } | undefined;
-    if (!published) {
-      runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${UID(551)}', '${GROUP_ID}', '${weekRow.id}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
+    const existing = runSql(`SELECT id FROM public.schedule_versions WHERE group_id = '${GROUP_ID}' AND week_id = '${weekRow.id}' LIMIT 1;`).rows?.[0] as { id: string } | undefined;
+    if (!existing) {
+      runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status) VALUES ('${UID(551)}', '${GROUP_ID}', '${weekRow.id}', 1, 'draft') ON CONFLICT DO NOTHING;`);
     }
 
-    // First remaining weekday of the published week that still has pickup
+    // First remaining weekday of the targeted week that still has pickup
     // time left (a same-day 4:50 PM offer needs to be before ~4 PM).
     const today = sfDateStr(new Date());
     const sfHour = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hour12: false }).format(new Date());
-    let candidate = monday < today ? today : monday;
+    let candidate = "";
     for (let i = 0; i < 5; i++) {
       const d = addDays(monday, i);
-      if (d < candidate) continue;
+      if (d < today) continue;
       if (d === today && parseInt(sfHour, 10) >= 16) continue;
       candidate = d;
       break;
     }
-    if (candidate < today) return; // weekend / late Friday — nothing offerable
+    if (!candidate) return; // late Friday — nothing offerable today
     serviceDate = candidate;
     setupReady = true;
   });
@@ -192,15 +197,18 @@ test.describe.serial("Custom drive", () => {
     await expect(page.getByText("4:50 PM").first()).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("Extra drive").first()).toBeVisible({ timeout: 5000 });
 
-    // Confirmed driver assignment + own child as rider on the published version
+    // Confirmed driver assignment + own child as rider on the version the app
+    // displays — this run seeds a draft-only week (pre-publish window), so
+    // the drive attaches to the draft and goes live with Sunday's publish.
     const assignments = runSql(`
-      SELECT da.id, da.status, da.driver_profile_id
+      SELECT da.id, da.status, da.driver_profile_id, sv.status as version_status, sv.version_number
       FROM public.driver_assignments da
       JOIN public.schedule_versions sv ON sv.id = da.schedule_version_id
-      WHERE da.trip_id = '${customTripId}' AND sv.status = 'published';
+      WHERE da.trip_id = '${customTripId}';
     `).rows ?? [];
-    assert.equal(assignments.length, 1, "one published-version assignment");
+    assert.equal(assignments.length, 1, "one assignment for the offered drive");
     assert.equal(assignments[0].status, "confirmed");
+    assert.equal(assignments[0].version_status, "draft", "pre-publish offers attach to the draft version");
     const riders = runSql(`SELECT child_id FROM public.rider_assignments WHERE trip_id = '${customTripId}';`).rows ?? [];
     assert.ok(riders.some((r) => String(r.child_id) === driverChildId), "own child rides the offered drive");
   });
