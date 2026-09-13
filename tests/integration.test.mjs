@@ -2725,3 +2725,120 @@ test("Custom drives: published version wins when a draft coexists mid-week", { s
   cleanupAllTestData();
   deleteTestUser(driver.userId);
 });
+
+// ── Either-sibling dedup: volunteer / manual-assign must not double-place ──
+// Production incident 2026-09-13 (Fri Sep 18): an "Either" child seated on
+// pm_early by the scheduler was re-placed on pm_late when a parent
+// volunteered for the uncovered 5:15 trip — the RPCs' per-trip uncovered
+// check lacked the pm_early <-> pm_late dedup that the scheduler, surgical
+// mode, and client alerts all have.
+
+test("either-dedup: volunteering for uncovered pm_late skips a child already covered on pm_early", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(680, "DedupCoord", "member", true);
+  const parentA = setupHousehold(681, "DedupParentA");
+  const parentB = setupHousehold(682, "DedupParentB");
+  const { weekId, tripIds } = setupWeekAnd3Trips();
+  const pmEarly = tripIds.pm_early[0];
+  const pmLate = tripIds.pm_late[0];
+  const versionId = UID(1855);
+  const coordVehicle = UID(1850);
+  const vehicleB = UID(1851);
+  const kidEither = UID(1860);   // preference 'either', covered on pm_early
+  const kidSpecific = UID(1861); // needs pm_late specifically
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${coordVehicle}', '${GROUP_ID}', '${coord.householdId}', 'CoordCar', 4, true, '${coord.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleB}', '${GROUP_ID}', '${parentB.householdId}', 'ParentBCar', 4, true, '${parentB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidEither}', '${GROUP_ID}', '${parentA.householdId}', 'Evie', 'Either', '${parentA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidSpecific}', '${GROUP_ID}', '${parentB.householdId}', 'Sam', 'Specific', '${parentB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1870)}', '${GROUP_ID}', '${weekId}', '${parentA.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1871)}', '${GROUP_ID}', '${weekId}', '${parentB.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, preference, created_by) VALUES ('${GROUP_ID}', '${UID(1870)}', '${pmEarly}', '${kidEither}', true, 'either', '${parentA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, preference, created_by) VALUES ('${GROUP_ID}', '${UID(1870)}', '${pmLate}', '${kidEither}', true, 'either', '${parentA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, preference, created_by) VALUES ('${GROUP_ID}', '${UID(1871)}', '${pmLate}', '${kidSpecific}', true, 'specific', '${parentB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${versionId}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;
+  `);
+
+  // Simulate the scheduler's either-placement: kidEither covered on pm_early
+  runSql(`
+    INSERT INTO public.driver_assignments (id, group_id, schedule_version_id, trip_id, driver_profile_id, vehicle_id, child_passenger_capacity, status)
+    VALUES ('${UID(1856)}', '${GROUP_ID}', '${versionId}', '${pmEarly}', '${coord.userId}', '${coordVehicle}', 4, 'confirmed') ON CONFLICT DO NOTHING;
+    INSERT INTO public.rider_assignments (group_id, schedule_version_id, trip_id, driver_assignment_id, child_id)
+    VALUES ('${GROUP_ID}', '${versionId}', '${pmEarly}', '${UID(1856)}', '${kidEither}') ON CONFLICT DO NOTHING;
+  `);
+
+  const jwtA = signInUser("dedupparenta@test.kidpool").access_token;
+  const jwtB = signInUser("dedupparentb@test.kidpool").access_token;
+
+  // Parent A's only child is either-covered on pm_early — they are NOT
+  // "uncovered" on pm_late, so the volunteer gate must reject them.
+  const blockedA = rpcCall(jwtA, "volunteer_for_uncovered_trip", {
+    p_trip_id: pmLate, p_schedule_version_id: versionId,
+  });
+  assert.match(
+    blockedA.message || "",
+    /Your child is not uncovered for this trip/,
+    "either-covered child's parent must not count as uncovered",
+  );
+
+  // Parent B's child specifically needs pm_late — the volunteer succeeds,
+  // places their own child, and must NOT sweep the either-covered child in.
+  const volunteer = rpcCall(jwtB, "volunteer_for_uncovered_trip", {
+    p_trip_id: pmLate, p_schedule_version_id: versionId,
+  });
+  assert.ok(volunteer.id, `volunteer should succeed: ${JSON.stringify(volunteer)}`);
+
+  const lateRiders = restGet("rider_assignments", { trip_id: pmLate, schedule_version_id: versionId });
+  assert.ok(lateRiders.some((ra) => ra.child_id === kidSpecific), "specific-preference child placed on the pm_late car");
+  assert.ok(!lateRiders.some((ra) => ra.child_id === kidEither), "either child must NOT be placed on pm_late while covered on pm_early");
+  const earlyRiders = restGet("rider_assignments", { trip_id: pmEarly, schedule_version_id: versionId });
+  assert.ok(earlyRiders.some((ra) => ra.child_id === kidEither), "either child still covered on pm_early");
+
+  cleanupAllTestData();
+  for (const u of [coord, parentA, parentB]) deleteTestUser(u.userId);
+});
+
+test("either-dedup: manually_assign_driver skips a child already covered on the sibling trip", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(690, "MDedupCoord", "member", true);
+  const parentA = setupHousehold(691, "MDedupParentA");
+  const parentB = setupHousehold(692, "MDedupParentB");
+  const { weekId, tripIds } = setupWeekAnd3Trips();
+  const pmEarly = tripIds.pm_early[1];
+  const pmLate = tripIds.pm_late[1];
+  const versionId = UID(1955);
+  const coordVehicle = UID(1950);
+  const targetVehicle = UID(1951);
+  const kidEither = UID(1960);
+  const kidSpecific = UID(1961);
+
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${coordVehicle}', '${GROUP_ID}', '${coord.householdId}', 'CoordCar', 4, true, '${coord.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${targetVehicle}', '${GROUP_ID}', '${parentB.householdId}', 'TargetCar', 4, true, '${parentB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidEither}', '${GROUP_ID}', '${parentA.householdId}', 'Evie', 'Either', '${parentA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidSpecific}', '${GROUP_ID}', '${parentB.householdId}', 'Sam', 'Specific', '${parentB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1970)}', '${GROUP_ID}', '${weekId}', '${parentA.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1971)}', '${GROUP_ID}', '${weekId}', '${parentB.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, preference, created_by) VALUES ('${GROUP_ID}', '${UID(1970)}', '${pmEarly}', '${kidEither}', true, 'either', '${parentA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, preference, created_by) VALUES ('${GROUP_ID}', '${UID(1970)}', '${pmLate}', '${kidEither}', true, 'either', '${parentA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, preference, created_by) VALUES ('${GROUP_ID}', '${UID(1971)}', '${pmLate}', '${kidSpecific}', true, 'specific', '${parentB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${versionId}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_assignments (id, group_id, schedule_version_id, trip_id, driver_profile_id, vehicle_id, child_passenger_capacity, status)
+    VALUES ('${UID(1956)}', '${GROUP_ID}', '${versionId}', '${pmEarly}', '${coord.userId}', '${coordVehicle}', 4, 'confirmed') ON CONFLICT DO NOTHING;
+    INSERT INTO public.rider_assignments (group_id, schedule_version_id, trip_id, driver_assignment_id, child_id)
+    VALUES ('${GROUP_ID}', '${versionId}', '${pmEarly}', '${UID(1956)}', '${kidEither}') ON CONFLICT DO NOTHING;
+  `);
+
+  const coordJwt = signInUser("mdedupcoord@test.kidpool").access_token;
+  const assign = rpcCall(coordJwt, "manually_assign_driver", {
+    p_trip_id: pmLate, p_schedule_version_id: versionId,
+    p_driver_profile_id: parentB.userId, p_vehicle_id: targetVehicle,
+  });
+  assert.ok(assign.id, `manual assign should succeed: ${JSON.stringify(assign)}`);
+
+  const lateRiders = restGet("rider_assignments", { trip_id: pmLate, schedule_version_id: versionId });
+  assert.ok(lateRiders.some((ra) => ra.child_id === kidSpecific), "specific-preference child placed");
+  assert.ok(!lateRiders.some((ra) => ra.child_id === kidEither), "either child must NOT be double-placed by manual assign");
+
+  cleanupAllTestData();
+  for (const u of [coord, parentA, parentB]) deleteTestUser(u.userId);
+});
