@@ -106,9 +106,10 @@ test("custom drive RPCs follow the security-definer conventions", async () => {
 test("custom drive RPC invariants: published version, future guard, capacity, vehicle", async () => {
   const sql = await readFile(customDrivesMigrationUrl, "utf8");
 
-  // Custom drives attach to the published schedule version
+  // Version resolution is shared with the app's roster display: published
+  // first, else the latest draft (202609130001 added the pre-publish path).
   const publishedGuards = sql.match(/status = 'published'/g);
-  assert.ok(publishedGuards && publishedGuards.length >= 4, "every RPC must resolve the published version");
+  assert.ok(publishedGuards && publishedGuards.length >= 1, "the RPCs must resolve a published version when one exists");
 
   // Future-trip guard (pilot timezone) — same pattern as the reassignment RPC
   const futureGuards = sql.match(/at time zone v_group\.timezone <= now\(\)/g);
@@ -284,4 +285,47 @@ test("prototype.css: custom drive styles exist and respect the 16px input rule",
       if (fs) assert.ok(parseFloat(fs[1]) >= 16, `${selector} input font-size must be >= 16px`);
     }
   }
+});
+// ── Any-juncture support (202609130001) ──────────────────────────
+
+const anyJunctureMigrationUrl = new URL(
+  "../supabase/migrations/202609130001_custom_drives_any_juncture.sql",
+  import.meta.url,
+);
+
+test("custom drives resolve the version the roster displays: published → latest draft → manual v1", async () => {
+  const sql = await readFile(anyJunctureMigrationUrl, "utf8");
+
+  // Shared resolver, used by all four RPCs
+  assert.match(sql, /create or replace function public\.resolve_custom_drive_version\(/);
+  assert.match(sql, /revoke all on function public\.resolve_custom_drive_version\(uuid, uuid\) from public;/);
+  // Published wins; otherwise the latest version_number
+  const resolver = sql.split(/create or replace function public\.resolve_custom_drive_version/)[1].split("$$;")[0];
+  assert.match(resolver, /status = 'published'/);
+  assert.match(resolver, /order by version_number desc/);
+
+  const helperCalls = sql.match(/public\.resolve_custom_drive_version\(/g) ?? [];
+  assert.ok(helperCalls.length >= 4, "all four RPCs must use the shared resolver");
+
+  // offer seeds a manual draft v1 when the week has no version at all
+  // (Saturday check-in / Sunday pre-generation) and audits that fact
+  assert.match(sql, /insert into public\.schedule_versions \(group_id, week_id, version_number, status\)/);
+  assert.match(sql, /values \(p_group_id, v_week\.id, 1, 'draft'\)/);
+  assert.match(sql, /'created_schedule_version', v_created_version/);
+
+  // join/leave/cancel guard the no-version case instead of requiring published
+  const noVersionGuards = sql.match(/No schedule version exists for this week yet/g);
+  assert.ok(noVersionGuards && noVersionGuards.length === 3, "join/leave/cancel must guard the no-version case");
+  assert.doesNotMatch(sql, /The schedule for this week is not published/);
+});
+
+test("UI: the offer button no longer requires a published schedule", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+
+  // The published-status gate is gone — the RPC owns version resolution now
+  assert.doesNotMatch(source, /homeSchedule\?\.version\.status !== "published"/);
+
+  // Pre-publish helper copy explains the lifecycle
+  assert.match(source, /the drive goes live with the week's published schedule \(Sun 7 PM\)/);
+  assert.match(source, /schedulePublished=\{homeSchedule\?\.version\.status === "published"\}/);
 });
