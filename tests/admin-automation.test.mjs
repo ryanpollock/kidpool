@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+const eitherDedupMigrationUrl = new URL(
+  "../supabase/migrations/202609130002_either_sibling_dedup.sql",
+  import.meta.url,
+);
 const reminderCronRescheduleMigrationUrl = new URL(
   "../supabase/migrations/202609100003_custom_drive_reminder_cron.sql",
   import.meta.url,
@@ -1791,4 +1795,35 @@ test("custom drive reminder cron: both crons rescheduled to */5 with unschedule-
   // The wrapper functions the crons call are unchanged
   assert.match(sql, /public\.send_drive_reminders\(\)/);
   assert.match(sql, /public\.send_status_reminders\(\)/);
+});
+
+// ── Either-sibling dedup (202609130002) ───────────────────────────
+// Production incident 2026-09-13: an "Either" child seated on pm_early was
+// re-placed on pm_late by volunteer_for_uncovered_trip (and the same gap
+// existed in manually_assign_driver) because their per-trip uncovered checks
+// lacked the pm_early <-> pm_late dedup that the scheduler, surgical mode,
+// and the client's uncovered alerts all have.
+
+test("either-sibling dedup present in both placement RPCs", async () => {
+  const sql = await readFile(eitherDedupMigrationUrl, "utf8");
+
+  // Both redefined functions carry the dedup clause
+  const dedupClauses = sql.match(
+    /v_trip\.slot in \('pm_early', 'pm_late'\)\s+and rr\.preference = 'either'/g,
+  ) ?? [];
+  assert.ok(dedupClauses.length === 3, `expected 3 dedup clauses (volunteer own + volunteer others + manual assign), found ${dedupClauses.length}`);
+
+  // The dedup joins the sibling afternoon trip within the same version
+  assert.ok(
+    (sql.match(/st\.slot in \('pm_early', 'pm_late'\)/g) ?? []).length === 3,
+    "dedup must scope the sibling join to the standard afternoon pair",
+  );
+  assert.ok(
+    (sql.match(/st\.service_date = v_trip\.service_date/g) ?? []).length === 3,
+    "dedup must compare the same service date",
+  );
+
+  // Grants preserved
+  assert.match(sql, /grant execute on function public\.volunteer_for_uncovered_trip\(uuid, uuid\) to authenticated/);
+  assert.match(sql, /grant execute on function public\.manually_assign_driver\(uuid, uuid, uuid, uuid\) to authenticated/);
 });
