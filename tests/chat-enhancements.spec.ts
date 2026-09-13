@@ -95,7 +95,7 @@ test("Chat enhancements: two parents react, tag, set mentions-only and open link
     await b.mouse.up();
     await b.getByRole("button", { name: "React 👍", exact: true }).click();
     await expect(
-      a.getByRole("button", { name: "👍 1 reactions; view people" }),
+      a.getByRole("button", { name: "Thumbs up, 1; hold to choose a reaction" }),
     ).toBeVisible({ timeout: 15_000 });
     await holdMessage(b, received);
     await b.getByRole("button", { name: "React 😂", exact: true }).click();
@@ -204,7 +204,8 @@ test("Chat reactions: repeated touch holds can add, change and remove a reaction
     const quick = message.locator(".chat-quick-reaction");
     await expect(quick).toHaveText("👍");
     await quick.tap();
-    await expect(message.locator(".chat-reaction")).toHaveText("👍 1");
+    await expect(quick).toHaveText("👍 1");
+    await expect(message.locator(".chat-reactions button")).toHaveCount(1);
     await quick.tap();
     await expect(message.locator(".chat-reaction")).toHaveCount(0);
     for (const [emoji, expected] of [["👍", "👍"], ["😂", "😂"], ["😂", null], ["❤️", "❤️"]] as const) {
