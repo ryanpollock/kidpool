@@ -240,9 +240,15 @@ test("chat-agent function: trigger-authenticated, ledger-first, and Phase 1 writ
   // Chat notifications are push-only — no email from the agent.
   assert.doesNotMatch(src, /api\.resend\.com/);
 
-  // Phase 1 hard boundary: the function never references chat_proposals
-  // and never writes a schedule table. Reads (select) are expected.
-  assert.doesNotMatch(src, /from\("chat_proposals"\)/);
+  // Phase 2 boundary: the agent CREATES pending proposal cards (that is its
+  // only write path beyond chat_messages/crewmate_runs) but never executes
+  // or confirms them — status is only ever "pending" at insert, and its only
+  // chat_proposals update rewrites params (the swap sibling link).
+  assert.match(src, /from\("chat_proposals"\)[\s\S]{0,400}\.insert\(/);
+  assert.match(src, /status: "pending"/);
+  // chat_proposals updates may only rewrite params (the swap sibling link) —
+  // never a status: the agent cannot execute or confirm anything.
+  assert.doesNotMatch(src, /from\("chat_proposals"\)[^;]{0,120}\.update\(\s*\{[^}]*status/);
   const scheduleTables = [
     "trips", "weeks", "children", "vehicles", "households", "memberships",
     "groups", "ride_requests", "weekly_checkins", "driver_availability",
@@ -256,9 +262,12 @@ test("chat-agent function: trigger-authenticated, ledger-first, and Phase 1 writ
       `chat-agent must not write ${table} in Phase 1`,
     );
   }
-  // The only writes: agent messages + the ledger.
+  // The only writes: agent messages, the ledger, and pending proposals.
   assert.match(src, /from\("chat_messages"\)[\s\S]{0,200}\.insert\(/);
   assert.match(src, /from\("crewmate_runs"\)[\s\S]{0,400}\.update\(/);
+  // Executions only ever go through the consent-validating RPCs.
+  assert.match(src, /rpc\("confirm_chat_proposal_via_consent"/);
+  assert.doesNotMatch(src, /rpc\("confirm_chat_proposal"/);
 });
 
 test("chat-agent pushes replies only in private Crewmate threads", async () => {
@@ -329,4 +338,115 @@ test("eval harness exists and refuses production", async () => {
   assert.match(evalScript, /ujcrnrcgbvzyqosykkjy/);
   assert.match(evalScript, /TOGETHER_API_KEY/);
   assert.match(evalScript, /Defaulting to staging|defaults to staging/i);
+});
+const phase2CatalogUrl = new URL(
+  "../supabase/migrations/202609140002_crewmate_phase2_catalog.sql",
+  import.meta.url,
+);
+const phase2ProposalsUrl = new URL(
+  "../supabase/migrations/202609140003_crewmate_phase2_proposals.sql",
+  import.meta.url,
+);
+
+test("Phase 2: catalog executors exist with ownership gates and audits", async () => {
+  const sql = await readFile(phase2CatalogUrl, "utf8");
+
+  const executors = [
+    "cancel_ride_range_for_child", "place_child_in_vehicle", "add_ride_request_for_child",
+    "change_assignment_vehicle", "swap_driver_assignments", "adjust_trip_times", "cancel_trip",
+  ];
+  for (const fn of executors) {
+    assert.match(sql, new RegExp(`create or replace function public\\.${fn}\\(`, "i"), `missing executor ${fn}`);
+    assert.match(sql, new RegExp(`${fn}[\\s\\S]*?revoke all on function`, "i"), `${fn} must be revoked from public`);
+  }
+  // Every executor validates the actor + writes an audit event.
+  for (const gate of [
+    "Only a parent of this child can cancel their rides",
+    "Only a parent of this child can change their placement",
+    "Only a parent of this child can request their rides",
+    "Only the assigned driver can change their vehicle",
+    "Only coordinators can change trip times",
+    "Only coordinators can cancel a trip",
+  ]) {
+    assert.ok(sql.includes(gate), `missing ownership gate: ${gate}`);
+  }
+  assert.ok((sql.match(/insert into public\.audit_events/g) ?? []).length >= 7, "every executor audits");
+  // The either-sibling dedup survives in placement.
+  assert.match(sql, /already placed on the other afternoon trip that day/i);
+  // Capacity is enforced in placement.
+  assert.match(sql, /That car is already full/i);
+});
+
+test("Phase 2: proposal kinds widened and each branch dispatches to an executor", async () => {
+  const cat = await readFile(phase2CatalogUrl, "utf8");
+  const prop = await readFile(phase2ProposalsUrl, "utf8");
+
+  for (const kind of [
+    "cancel_ride", "switch_slot", "swap_drive", "coverage_fill", "cancel_ride_range",
+    "add_ride", "place_child", "decline_drive", "volunteer_drive", "change_vehicle",
+    "adjust_times", "cancel_trip", "admin_sql",
+    "offer_custom_drive", "join_custom_drive", "leave_custom_drive", "cancel_custom_drive",
+  ]) {
+    assert.match(cat, new RegExp(`'${kind}'`), `kind ${kind} missing from the CHECK`);
+    if (kind !== "coverage_fill") {
+      assert.match(prop, new RegExp(`when '${kind}'`, "i"), `missing confirm branch for ${kind}`);
+    }
+  }
+  // coverage_fill execution stays Phase 3.
+  assert.match(prop, /not supported yet/);
+});
+
+test("Phase 2: dual consent — a swap executes only when both linked proposals confirm", async () => {
+  const prop = await readFile(phase2ProposalsUrl, "utf8");
+
+  assert.match(prop, /when 'swap_drive' then[\s\S]*?sibling_proposal_id/);
+  assert.match(prop, /if v_sibling\.status <> 'confirmed' then[\s\S]*?return v_proposal/);
+  assert.match(prop, /waiting on the other driver before the swap happens/);
+  // The parked swap must NOT be marked executed by the outer flow.
+  assert.match(prop, /v_executed\.kind not in \('admin_sql', 'swap_drive'\)/);
+});
+
+test("Phase 2: in-thread consent is service-gated, evidence-checked, and runs as the confirmer", async () => {
+  const prop = await readFile(phase2ProposalsUrl, "utf8");
+
+  assert.match(
+    prop,
+    /confirm_chat_proposal_via_consent[\s\S]*?auth\.role\(\), ''\) <> 'service_role' then[\s\S]*?raise exception 'Not allowed'/i,
+  );
+  assert.match(prop, /Consent evidence does not match the required confirmer/);
+  assert.match(prop, /Consent evidence is stale/);
+  // The execution chain runs with the confirmer's identity via transaction-
+  // local JWT claims, so every executor's auth.uid() gate applies unchanged.
+  assert.match(prop, /set_config\(\s*'request\.jwt\.claims'[\s\S]*?'sub', v_proposal\.required_confirmer_profile_id/);
+  assert.match(prop, /'via', 'in_thread_consent'/);
+  assert.match(prop, /revoke all on function public\.confirm_chat_proposal_via_consent\(uuid, uuid\) from public, authenticated/i);
+  assert.match(prop, /grant execute on function public\.confirm_chat_proposal_via_consent\(uuid, uuid\) to service_role/i);
+});
+
+test("Phase 2: admin_sql is owner-confined, single-statement, DML-only, group-scoped, audited", async () => {
+  const prop = await readFile(phase2ProposalsUrl, "utf8");
+
+  assert.match(prop, /create role crewmate_admin nologin/i);
+  // Confinement by ownership, not SET ROLE (illegal in definer frames).
+  assert.match(prop, /alter function public\.crewmate_admin_sql_execute\(uuid, uuid, uuid, text, jsonb\) owner to crewmate_admin/);
+  assert.match(prop, /revoke create on schema public from crewmate_admin/);
+  // Never executable by clients; only the definer frame + service.
+  assert.match(prop, /revoke all on function public\.crewmate_admin_sql_execute\(uuid, uuid, uuid, text, jsonb\) from public, authenticated/);
+  assert.match(prop, /grant execute on function public\.crewmate_admin_sql_execute\(uuid, uuid, uuid, text, jsonb\) to postgres, service_role/);
+  // Statement shape: single DML, no comments, no DDL/helpers, table allowlist.
+  assert.match(prop, /Only INSERT, UPDATE, or DELETE statements are allowed/);
+  assert.match(prop, /Only a single statement is allowed/);
+  assert.match(prop, /Comments are not allowed/);
+  assert.match(prop, /not on the admin allowlist/);
+  assert.match(prop, /'\\mpg_' or v_sql ~\* '\\mlo_' or v_sql ~\* '\\mdblink'/);
+  // Group scoping via RLS with-check — rows can never be re-pointed.
+  const withCheck = prop.match(/with check \(group_id = current_setting\('app\.crewmate_group', true\)::uuid\)/g) ?? [];
+  assert.ok(withCheck.length >= 12, `expected >= 12 with-check policies, found ${withCheck.length}`);
+  // BEFORE/AFTER rows are captured for the audit.
+  assert.match(prop, /returning \*/);
+  assert.match(prop, /before_preview/);
+  assert.match(prop, /crewmate_admin_sql_executed/);
+  // Groups and chat tables are NOT on the write allowlist.
+  assert.ok(!/grant select, insert, update, delete on public\.groups/.test(prop));
+  assert.ok(!/grant select, insert, update, delete[\s\S]{0,120}public\.chat_proposals/.test(prop));
 });
