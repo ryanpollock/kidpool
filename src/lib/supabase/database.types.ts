@@ -279,7 +279,9 @@ export type ChatParticipantRow = {
   created_at: string;
 };
 
-export type ChatMention = { profile_id: string; label: string; start: number; end: number };
+// profile_id is null for the one non-parent mention: the @Crewmate tag
+// (Crewmate AI has no profile row by design — see migrations 202609150001).
+export type ChatMention = { profile_id: string | null; label: string; start: number; end: number };
 export type ChatNotificationMode = "all" | "mentions" | "muted";
 
 export type CrewmateRunStatus =

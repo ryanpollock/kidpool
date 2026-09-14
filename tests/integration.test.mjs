@@ -3288,3 +3288,48 @@ test("Crewmate 2: in-thread consent executes only for the required confirmer's o
   cleanupAllTestData();
   for (const u of [parent, driver, other]) deleteTestUser(u.userId);
 });
+
+// ── Crewmate @Crewmate mentions ─────────────────────────────────
+// One sanctioned null-profile mention form (label '@Crewmate'); every
+// other null mention rejects. Tagged messages are explicit invocations
+// (function-level behavior verified live on staging).
+
+test("Crewmate mentions: '@Crewmate' passes validation, other null-profile labels reject", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(1160, "MentionA");
+  const b = setupHousehold(1161, "MentionB");
+  const aJwt = signInUser("mentiona@test.kidpool").access_token;
+  const bJwt = signInUser("mentionb@test.kidpool").access_token;
+
+  const threadId = rpcCall(aJwt, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+
+  // A real @Crewmate mention: offsets are Unicode code points, zero-based,
+  // end-exclusive — exactly what the trigger re-checks against the body.
+  const body = "hey @Crewmate who drives Monday?";
+  const at = Array.from(body).indexOf("@");
+  const end = at + "@Crewmate".length;
+  const posted = restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: a.userId,
+    body,
+    mentions: [{ profile_id: null, label: "@Crewmate", start: at, end }],
+  });
+  assert.ok(Array.isArray(posted) && posted.length === 1, `@Crewmate mention must validate: ${JSON.stringify(posted).slice(0, 160)}`);
+  assert.equal(posted[0].mentions[0].label, "@Crewmate");
+  assert.equal(posted[0].mentions[0].profile_id, null);
+
+  // Any other null-profile label rejects.
+  const forged = restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: a.userId,
+    body: "hello @Crewmate",
+    mentions: [{ profile_id: null, label: "@Crewmate", start: 0, end: 9 }],
+  });
+  assert.ok(!Array.isArray(forged) || forged.length === 0, "misaligned span must reject");
+  const wrongLabel = restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: a.userId,
+    body: "hello @Bob",
+    mentions: [{ profile_id: null, label: "@Bob", start: 6, end: 10 }],
+  });
+  assert.ok(!Array.isArray(wrongLabel) || wrongLabel.length === 0, "null-profile '@Bob' must reject");
+
+  cleanupAllTestData();
+  for (const u of [a, b]) deleteTestUser(u.userId);
+});

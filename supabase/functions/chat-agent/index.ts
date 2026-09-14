@@ -611,13 +611,20 @@ Deno.serve(async (req)=>{
     if (!group?.crewmate_enabled) return jsonResponse({
       skipped: "disabled"
     });
-    const { data: message } = await admin.from("chat_messages").select("id,thread_id,sender_profile_id,sender_kind,sender_name,body,created_at").eq("id", messageId).maybeSingle();
+    const { data: message } = await admin.from("chat_messages").select("id,thread_id,sender_profile_id,sender_kind,sender_name,body,created_at,mentions").eq("id", messageId).maybeSingle();
     if (!message || message.thread_id !== threadId || message.sender_kind !== "parent" || !message.sender_profile_id) {
       return jsonResponse({
         skipped: "message_not_applicable"
       });
     }
-    // Per-thread coalescing.
+    // @Crewmate is an explicit invocation: the validation trigger sanctions
+  // exactly one null-profile mention form (label "@Crewmate"), so a null
+  // profile_id here means the parent tagged the agent on purpose. Tagged
+  // messages always run the planner — no triage silence, no NOREPLY gate —
+  // exactly like the private Crewmate thread.
+  const taggedCrewmate = ((message.mentions as any[] | null) ?? []).some((m) => m && !m.profile_id);
+
+  // Per-thread coalescing.
     const { data: runId } = await admin.rpc("claim_crewmate_run", {
       p_group_id: thread.group_id,
       p_thread_id: threadId,
@@ -696,7 +703,7 @@ Deno.serve(async (req)=>{
     const transcript = [
       ...priorMessages ?? []
     ].reverse();
-    if (thread.kind !== "agent") {
+    if (thread.kind !== "agent" && !taggedCrewmate) {
       const triageResult = await generateText({
         model: together(TRIAGE_MODEL),
         maxOutputTokens: 1500,
@@ -918,7 +925,7 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
           `Conversation so far (oldest first):`,
           recentTranscript(currentTranscript),
           ``,
-          `Reply to ${message.sender_name}'s latest message.`
+          `Reply to ${message.sender_name}'s latest message${taggedCrewmate ? " — they explicitly tagged you with @Crewmate, so respond even if it is casual: a friendly one-liner about what you can help with is perfect" : ""}.`
         ].join("\n"),
         tools,
         stopWhen: isStepCount(6),
@@ -952,7 +959,7 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
     // Second chatter gate: triage can miss chatty interrogatives on busy
     // threads, but the planner reliably recognizes off-topic. NOREPLY =
     // stay silent, exactly as if triage had caught it.
-    if (!block && /^NOREPLY\b/i.test(answer)) {
+    if (!block && !taggedCrewmate && /^NOREPLY\b/i.test(answer)) {
       await finishRun("chatter", { second_gate: true, category, topic: triageTopic }, { triage: triageUsage, planner: planned.usage });
       return jsonResponse({ skipped: "chatter_second_gate" });
     }

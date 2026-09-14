@@ -458,3 +458,34 @@ test("Phase 2: admin_sql is owner-confined, single-statement, DML-only, group-sc
   assert.ok(!/grant select, insert, update, delete on public\.groups/.test(prop));
   assert.ok(!/grant select, insert, update, delete[\s\S]{0,120}public\.chat_proposals/.test(prop));
 });
+
+const mentionsMigrationUrl = new URL(
+  "../supabase/migrations/202609150001_crewmate_mentions.sql",
+  import.meta.url,
+);
+
+test("@Crewmate mentions: one sanctioned null-profile form, honored as an explicit invocation", async () => {
+  const sql = await readFile(mentionsMigrationUrl, "utf8");
+  const screens = await readFile(chatScreensUrl, "utf8");
+
+  // The trigger accepts EXACTLY label '@Crewmate' for a null-profile mention
+  // — any other null label still rejects.
+  assert.match(sql, /\(item->>'profile_id'\) is null\s+and item->>'label' = '@Crewmate'/);
+  assert.match(sql, /substring\(new\.body from start_pos\+1 for end_pos-start_pos\)='@Crewmate'/);
+  // The parent-mention branch is preserved.
+  assert.match(sql, /item->>'label' = '@' \|\| p\.full_name/);
+
+  // The composer offers the option in non-agent threads and stores the
+  // null-profile mention.
+  assert.match(screens, /key: "crewmate", name: "Crewmate AI", crewmate: true/);
+  assert.match(screens, /thread && thread\.kind !== "agent" && "crewmate ai"\.includes\(q\)/);
+  assert.match(screens, /const label = option\.crewmate \? "@Crewmate" : `@\$\{option\.participant!\.name\}`/);
+
+  // The agent treats the tag as an explicit invocation.
+  const fn = await readFile(agentFnUrl, "utf8");
+  assert.match(fn, /sender_name,body,created_at,mentions/);
+  assert.match(fn, /const taggedCrewmate = \(\(message\.mentions as any\[\] \| null\) \?\? \[\]\)\.some\(\(m\) => m && !m\.profile_id\)/);
+  assert.match(fn, /thread\.kind !== "agent" && !taggedCrewmate/);
+  assert.match(fn, /!block && !taggedCrewmate && \/\^NOREPLY\\b\/i\.test\(answer\)/);
+  assert.match(fn, /explicitly tagged you with @Crewmate/);
+});

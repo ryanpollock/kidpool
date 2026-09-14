@@ -764,18 +764,34 @@ export function ChatThreadScreen({
   const [extras, setExtras] = useState<ChatExtras>({ reactions: [], previews: [] });
   const requestedPreviews = useRef(new Set<string>());
   const messageIds = useRef<string[]>([]);
-  const mentionOptions = (thread?.participants ?? []).filter(p => p.id !== myProfileId && p.name.toLocaleLowerCase().includes(mentionQuery?.query.toLocaleLowerCase() ?? "")).slice(0, 6);
+  type MentionOption = { key: string; name: string; crewmate?: boolean; participant?: ChatParticipantSummary };
+  const mentionOptions: MentionOption[] = (() => {
+    const q = mentionQuery?.query.toLocaleLowerCase() ?? "";
+    const people = (thread?.participants ?? [])
+      .filter(p => p.id !== myProfileId && p.name.toLocaleLowerCase().includes(q))
+      .slice(0, 6)
+      .map((p): MentionOption => ({ key: p.id, name: p.name, participant: p }));
+    // @Crewmate is an explicit invocation — the agent always responds to a
+    // tagged message. Pointless in its own private thread, useful everywhere
+    // else.
+    const crewmate: MentionOption | null =
+      thread && thread.kind !== "agent" && "crewmate ai".includes(q) ? { key: "crewmate", name: "Crewmate AI", crewmate: true } : null;
+    return crewmate ? [crewmate, ...people] : people;
+  })();
   const updateMentionQuery = (text: string, cursor: number) => {
     const match = text.slice(0, cursor).match(/(?:^|\s)@([^@\n]{0,60})$/);
     setMentionQuery(match ? { start: cursor - match[1].length - 1, end: cursor, query: match[1] } : null);
     setMentionIndex(0);
   };
-  const insertMention = (person: ChatParticipantSummary) => {
+  const insertMention = (option: { key: string; crewmate?: boolean; participant?: ChatParticipantSummary }) => {
     if (!mentionQuery) return;
-    const label = `@${person.name}`;
+    // The Crewmate tag is the one sanctioned null-profile mention; the
+    // validation trigger accepts exactly label "@Crewmate".
+    const label = option.crewmate ? "@Crewmate" : `@${option.participant!.name}`;
+    const profileId = option.crewmate ? null : option.participant!.id;
     const next = draft.slice(0,mentionQuery.start) + label + " " + draft.slice(mentionQuery.end);
     const start = Array.from(draft.slice(0,mentionQuery.start)).length;
-    setMentions([...editMentions(draft,next,mentions), { profile_id: person.id, label, start, end: start + Array.from(label).length }].sort((a,b)=>a.start-b.start));
+    setMentions([...editMentions(draft,next,mentions), { profile_id: profileId, label, start, end: start + Array.from(label).length }].sort((a,b)=>a.start-b.start));
     setDraft(next); setMentionQuery(null);
     requestAnimationFrame(()=>{const el=document.querySelector<HTMLTextAreaElement>('[data-testid="chat-composer-input"]');el?.focus();el?.setSelectionRange(mentionQuery.start+label.length+1,mentionQuery.start+label.length+1);});
   };
@@ -1094,13 +1110,13 @@ export function ChatThreadScreen({
         {/* Enter sends, Shift+Enter inserts a newline (product decision).
             The isComposing guard keeps IME/emoji-picker confirmation
             presses from sending mid-composition. */}
-        {mentionQuery && mentionOptions.length ? <div className="chat-mention-options" role="listbox" id="chat-mention-list" aria-label="Mention a parent">{mentionOptions.map((p,i)=><button type="button" key={p.id} id={`mention-${p.id}`} role="option" aria-selected={i===mentionIndex} onPointerDown={e=>e.preventDefault()} onClick={()=>insertMention(p)}>{p.name}</button>)}</div>:null}
+        {mentionQuery && mentionOptions.length ? <div className="chat-mention-options" role="listbox" id="chat-mention-list" aria-label="Mention a parent or Crewmate">{mentionOptions.map((p,i)=><button type="button" key={p.key} id={`mention-${p.key}`} role="option" aria-selected={i===mentionIndex} onPointerDown={e=>e.preventDefault()} onClick={()=>insertMention(p)}>{p.crewmate ? <><ChatBubbleIcon width="11" height="11" /> {p.name} <span className="chat-thread-badge">AI</span></> : p.name}</button>)}</div>:null}
         <KeyboardTextarea
           role="combobox"
           aria-autocomplete="list"
           aria-expanded={!!mentionQuery && mentionOptions.length > 0}
           aria-controls={mentionQuery ? "chat-mention-list" : undefined}
-          aria-activedescendant={mentionQuery && mentionOptions[mentionIndex] ? `mention-${mentionOptions[mentionIndex].id}` : undefined}
+          aria-activedescendant={mentionQuery && mentionOptions[mentionIndex] ? `mention-${mentionOptions[mentionIndex].key}` : undefined}
           placeholder="Message…"
           value={draft}
           maxLength={4000}
