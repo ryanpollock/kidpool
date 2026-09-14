@@ -6,7 +6,7 @@
   "scripts": {
     "check:runtime": "node scripts/check-mobile-runtime.mjs",
     "check:schema": "node scripts/check-schema-drift.mjs",
-    "check:contracts": "node --test tests/foundation.test.mjs tests/chat.test.mjs tests/custom-drives.test.mjs tests/auth-flow.test.mjs tests/household-setup.test.mjs tests/weekly-checkin.test.mjs tests/confirmation.test.mjs tests/security.test.mjs tests/audit.test.mjs tests/reliability.test.mjs tests/admin-automation.test.mjs && node --experimental-strip-types --test tests/scheduling.test.mjs tests/scheduling-afternoon.test.mjs tests/pressure-test.test.mjs tests/adversarial.test.mjs && npm run test:chat:unit",
+    "check:contracts": "node --test tests/foundation.test.mjs tests/chat.test.mjs tests/crewmate.test.mjs tests/custom-drives.test.mjs tests/auth-flow.test.mjs tests/household-setup.test.mjs tests/weekly-checkin.test.mjs tests/confirmation.test.mjs tests/security.test.mjs tests/audit.test.mjs tests/reliability.test.mjs tests/admin-automation.test.mjs && node --experimental-strip-types --test tests/scheduling.test.mjs tests/scheduling-afternoon.test.mjs tests/pressure-test.test.mjs tests/adversarial.test.mjs && npm run test:chat:unit",
     "update:runtime-lock": "node scripts/update-mobile-runtime-lock.mjs",
     "db:reset": "supabase db reset",
     "db:start": "supabase start",
@@ -38,7 +38,9 @@
     "test:chat:unit": "node --experimental-strip-types --test tests/chat-enhancements.test.mjs",
     "test:chat:integration": "TEST_DB_TARGET=local node --experimental-strip-types --test tests/chat-enhancements.integration.mjs",
     "test:chat:preview": "TEST_DB_TARGET=local node --experimental-strip-types --test tests/chat-preview.integration.mjs",
-    "test:chat:staging": "TEST_DB_TARGET=staging playwright test --config=playwright.staging.config.ts"
+    "test:chat:staging": "TEST_DB_TARGET=staging playwright test --config=playwright.staging.config.ts",
+    "eval:crewmate": "node scripts/crewmate-eval.mjs",
+    "eval:crewmate:e2e": "node scripts/crewmate-eval.mjs --mode e2e"
   },
   "dependencies": {
     "@fontsource/roboto": "5.2.10",

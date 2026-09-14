@@ -3476,13 +3476,19 @@ ${cta}
       // Read authoritative content/mentions after the insert transaction commits.
       const saved = await supaFetch("chat_messages", "id,thread_id,sender_profile_id,sender_name,body,mentions,sender_kind", { id: `eq.${body.message_id}` });
       const message = saved[0];
-      if (!message || message.thread_id !== thread_id || message.sender_kind !== "parent") return jsonError("Chat message not found", 404);
-      const senderName: string = message.sender_name;
-      const messageBody: string = message.body.slice(0, 300);
-
+      if (!message || message.thread_id !== thread_id) return jsonError("Chat message not found", 404);
       const threadRows = await supaFetch("chat_threads", "id,group_id,kind,title", { id: `eq.${thread_id}` });
       if (threadRows.length === 0) return jsonError("Chat thread not found", 404);
       const thread = threadRows[0];
+      // Parent messages push everywhere. Agent messages (Crewmate AI
+      // replies) push ONLY inside private kind='agent' threads, where the
+      // sole human participant is the one person who asked — chat-agent
+      // calls this branch with the service key. Everywhere else agent
+      // replies arrive silently via Realtime.
+      const isAgentReply = message.sender_kind === "agent";
+      if (message.sender_kind !== "parent" && !(isAgentReply && thread.kind === "agent")) {
+        return jsonError("Chat message not found", 404);
+      }
 
       const participants = await supaFetch("chat_participants", "profile_id,notifications_muted,notification_mode", { thread_id: `eq.${thread_id}` });
       const activeMemberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${thread.group_id}`, status: `eq.active` });
@@ -3495,8 +3501,10 @@ ${cta}
 
       // Notification title: DM → sender name; group/everyone → "Sender · label".
       // Body: the message preview (already truncated to 300 chars by the trigger).
+      const senderName: string = message.sender_name;
+      const messageBody: string = message.body.slice(0, 300);
       const threadLabel = thread.kind === "everyone" ? "Everyone" : thread.kind === "group" ? (thread.title ?? "Group") : senderName;
-      const notifTitle = thread.kind === "dm" ? senderName : `${senderName.split(" ")[0]} · ${threadLabel}`;
+      const notifTitle = thread.kind === "dm" || thread.kind === "agent" ? senderName : `${senderName.split(" ")[0]} · ${threadLabel}`;
       const notifBody = messageBody ?? "New message";
       const deepLink = `${APP_URL ?? ""}/#thread=${thread_id}`;
 

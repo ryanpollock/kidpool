@@ -132,6 +132,7 @@ function ChatAvatar({
 }
 
 function threadTitle(thread: ChatThreadSummary, myProfileId: string): string {
+  if (thread.kind === "agent") return "Crewmate AI";
   if (thread.kind === "everyone") return "Everyone";
   if (thread.kind === "group") return thread.title ?? "Group conversation";
   const other = thread.participants.find((p) => p.id !== myProfileId) ?? thread.participants[0];
@@ -139,6 +140,7 @@ function threadTitle(thread: ChatThreadSummary, myProfileId: string): string {
 }
 
 function threadSubtitle(thread: ChatThreadSummary, myProfileId: string): string {
+  if (thread.kind === "agent") return "AI carpool assistant";
   if (thread.kind === "everyone") {
     return `${thread.participants.length} parent${thread.participants.length === 1 ? "" : "s"}`;
   }
@@ -319,6 +321,7 @@ export function NewChatSheet({
   working,
   error,
   onCreate,
+  onCrewmate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -328,6 +331,7 @@ export function NewChatSheet({
   working: boolean;
   error: string | null;
   onCreate: (profileIds: string[], title: string) => void;
+  onCrewmate: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -406,6 +410,22 @@ export function NewChatSheet({
         ) : null}
 
         <div className="chat-newchat-list">
+          {/* Pinned Crewmate entry — always present, never search-filtered,
+              and it opens immediately rather than joining the selection. */}
+          <button
+            type="button"
+            className="chat-newchat-row chat-newchat-row--crewmate"
+            onClick={onCrewmate}
+            data-testid="chat-new-chat-crewmate"
+          >
+            <span className="chat-avatar chat-avatar--agent" aria-label="Crewmate AI">
+              <ChatBubbleIcon width="16" height="16" />
+            </span>
+            <span className="chat-newchat-row-info">
+              <strong>Crewmate AI</strong>
+              <small>Ask the carpool assistant anything</small>
+            </span>
+          </button>
           {loading ? (
             <p className="helper-copy">Loading parents…</p>
           ) : candidates.length === 0 ? (
@@ -553,8 +573,23 @@ export function ChatInboxScreen({
     }
   };
 
+  const createCrewmateThread = async () => {
+    setNewChatWorking(true);
+    setNewChatError(null);
+    try {
+      const threadId = await repository.ensureAgentThread(groupId);
+      setNewChatOpen(false);
+      onOpenThread(threadId);
+    } catch (e) {
+      setNewChatError(readableChatError(e));
+    } finally {
+      setNewChatWorking(false);
+    }
+  };
+
   const everyone = threads.find((t) => t.kind === "everyone");
-  const rest = threads.filter((t) => t.kind !== "everyone");
+  const agentThread = threads.find((t) => t.kind === "agent");
+  const rest = threads.filter((t) => t.kind !== "everyone" && t.kind !== "agent");
 
   const renderRow = (thread: ChatThreadSummary) => {
     const unread = thread.unread_count > 0;
@@ -568,6 +603,10 @@ export function ChatInboxScreen({
         <span className="chat-thread-avatars">
           {thread.kind === "everyone" ? (
             <span className="chat-avatar chat-avatar--everyone" aria-label="Everyone">
+              <ChatBubbleIcon width="16" height="16" />
+            </span>
+          ) : thread.kind === "agent" ? (
+            <span className="chat-avatar chat-avatar--agent" aria-label="Crewmate AI">
               <ChatBubbleIcon width="16" height="16" />
             </span>
           ) : (
@@ -594,6 +633,7 @@ export function ChatInboxScreen({
               </span>
             ) : null}
             {thread.kind === "everyone" ? <span className="chat-thread-badge">All parents</span> : null}
+            {thread.kind === "agent" ? <span className="chat-thread-badge">AI</span> : null}
           </span>
           <span className="chat-thread-preview">{inboxPreview(thread)}</span>
         </span>
@@ -652,6 +692,7 @@ export function ChatInboxScreen({
         </div>
       ) : (
         <div className="chat-thread-list">
+          {agentThread ? renderRow(agentThread) : null}
           {everyone ? renderRow(everyone) : null}
           {rest.map(renderRow)}
         </div>
@@ -666,6 +707,7 @@ export function ChatInboxScreen({
         working={newChatWorking}
         error={newChatError}
         onCreate={(ids, title) => void createConversation(ids, title)}
+        onCrewmate={() => void createCrewmateThread()}
       />
     </div>
   );
@@ -955,7 +997,8 @@ export function ChatThreadScreen({
               <span className="chat-header-sub">
                 {thread ? threadSubtitle(thread, myProfileId) : ""}
                 {thread?.kind === "everyone" ? " · Crewmate AI is in this chat" : ""}
-                {thread?.kind !== "everyone" && thread ? " · Crewmate AI will join to help" : ""}
+                {thread?.kind === "agent" ? " · ask it anything about the schedule" : ""}
+                {thread?.kind !== "everyone" && thread?.kind !== "agent" && thread ? " · Crewmate AI will join to help" : ""}
               </span>
               {thread?.notifications_muted ? <span className="chat-muted-flag">Muted</span> : thread?.notification_mode === "mentions" ? <span className="chat-muted-flag">Mentions only</span> : null}
             </small>
