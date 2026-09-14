@@ -358,11 +358,198 @@ async function runE2eMode() {
   console.log("\nPASS: e2e eval gate.");
 }
 
+async function runE2e2Mode() {
+  verifyLinkedProject();
+  const SERVICE_KEY = getServiceKey();
+  if (!SERVICE_KEY) {
+    console.error("Could not resolve Supabase service key.");
+    process.exit(1);
+  }
+
+  const rest = (table, query, tok = SERVICE_KEY) =>
+    fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
+      headers: { apikey: tok, Authorization: `Bearer ${tok}` },
+    }).then((r) => r.json());
+
+  const jwtFor = async (email) => {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: SERVICE_KEY },
+      body: JSON.stringify({ email, password: DEMO_PASSWORD }),
+    });
+    if (!res.ok) {
+      console.error(`Sign-in failed for ${email}: ${await res.text()}. Run \`npm run seed-demo\` first.`);
+      process.exit(1);
+    }
+    return (await res.json()).access_token;
+  };
+
+  const chenJwt = await jwtFor(DEMO_EMAIL);
+  const chenProfileId = JSON.parse(atob(chenJwt.split(".")[1])).sub;
+  const authHeaders = { apikey: SERVICE_KEY, Authorization: `Bearer ${chenJwt}`, "Content-Type": "application/json" };
+
+  const rpcAs = async (name, args, jwt = chenJwt) => {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${name}`, {
+      method: "POST",
+      headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify(args ?? {}),
+    });
+    const body = await res.text();
+    return res.ok ? JSON.parse(body) : { error: body.slice(0, 200) };
+  };
+
+  const agentThreadId = await rpcAs("ensure_agent_thread", { target_group_id: GROUP_ID });
+  const everyoneThreadId = await rpcAs("ensure_everyone_thread", { target_group_id: GROUP_ID });
+
+  // The Chen children — grounds the proposal param assertions.
+  const [household] = await rest("households", `name=eq.${encodeURIComponent("Chen Family")}&select=id`);
+  const kids = await rest("children", `household_id=eq.${household.id}&select=id,first_name&order=first_name`);
+  const maxKid = kids.find((k) => k.first_name === "Max");
+  const lilyKid = kids.find((k) => k.first_name === "Lily");
+  if (!maxKid || !lilyKid) {
+    console.error("Could not find Max/Lily Chen in seed data. Run `npm run seed-demo`.");
+    process.exit(1);
+  }
+
+  const postMessage = async (threadId, body) => {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?select=id,created_at`, {
+      method: "POST",
+      headers: { ...authHeaders, "Prefer": "return=representation" },
+      body: JSON.stringify({ thread_id: threadId, sender_kind: "parent", sender_profile_id: chenProfileId, body: `[eval2] ${body}` }),
+    });
+    if (!res.ok) throw new Error(`post failed: ${(await res.text()).slice(0, 160)}`);
+    return (await res.json())[0];
+  };
+
+  const waitFor = async (desc, timeoutMs, poll) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 4000));
+      const value = await poll();
+      if (value) return value;
+    }
+    return null;
+  };
+
+  const postedIds = [];
+  let passed = 0, failed = 0;
+  const check = (ok, label, detail = "") => {
+    if (ok) { passed++; console.log(`PASS ${label}${detail ? " — " + detail : ""}`); }
+    else { failed++; console.log(`FAIL ${label}${detail ? " — " + detail : ""}`); }
+  };
+
+  console.log(`\nPhase 2 e2e against ${SUPABASE_URL} as ${DEMO_EMAIL} (${TRIAGE_MODEL} → ${PLANNER_MODEL})\n`);
+
+  // ── S1: Q&A regression (Phase 1 must still work) ──
+  {
+    const msg = await postMessage(agentThreadId, "Who is driving Monday September 21 in the morning?");
+    postedIds.push(msg.id);
+    const reply = await waitFor("qa reply", 90_000, async () => {
+      const rows = await rest("chat_messages", `thread_id=eq.${agentThreadId}&sender_kind=eq.agent&created_at=gt.${encodeURIComponent(msg.created_at)}&select=body`);
+      return rows.length > 0 ? rows[0].body : null;
+    });
+    check(!!reply, "[qa] question gets a reply", reply ? reply.slice(0, 110) : "(no reply)");
+  }
+
+  // ── S2: change request → pending card → BUTTON confirm executes ──
+  {
+    const msg = await postMessage(agentThreadId, `Please take Max off the morning ride on Monday September 21.`);
+    postedIds.push(msg.id);
+    const proposal = await waitFor("proposal card", 120_000, async () => {
+      const rows = await rest("chat_proposals", `thread_id=eq.${agentThreadId}&status=eq.pending&select=id,kind,params,required_confirmer_profile_id&created_at=gt.${encodeURIComponent(msg.created_at)}`);
+      return rows.length > 0 ? rows[0] : null;
+    });
+    if (!proposal) {
+      check(false, "[button] change request produces a pending card", "(none within 120s)");
+    } else {
+      const params = typeof proposal.params === "string" ? JSON.parse(proposal.params) : proposal.params;
+      const kindOk = ["cancel_ride", "cancel_ride_range"].includes(proposal.kind);
+      check(kindOk, "[button] card kind is a cancel", `${proposal.kind}`);
+      check(params.child_id === maxKid.id, "[button] card names the right child", params.child_id === maxKid.id ? "Max" : JSON.stringify(params.child_id));
+      check(proposal.required_confirmer_profile_id === chenProfileId, "[button] required confirmer is the asking parent");
+
+      const confirmed = await rpcAs("confirm_chat_proposal", { p_proposal_id: proposal.id });
+      const statusOk = confirmed && confirmed.status === "executed" && !confirmed.error;
+      check(statusOk, "[button] confirm executes", statusOk ? "executed" : JSON.stringify(confirmed).slice(0, 140));
+
+      // DB effect: no rider_assignment for Max on the Sep-21 morning trip.
+      const [amTrip] = await rest("trips", `service_date=eq.2026-09-21&slot=eq.am&select=id`);
+      if (amTrip) {
+        const still = await rest("rider_assignments", `trip_id=eq.${amTrip.id}&child_id=eq.${maxKid.id}&select=id`);
+        check(still.length === 0, "[button] Max is off the Sep-21 morning roster");
+      } else {
+        check(false, "[button] Sep-21 morning trip exists in seed data");
+      }
+    }
+  }
+
+  // ── S3: change request → pending card → IN-THREAD "yes" executes ──
+  {
+    const msg = await postMessage(agentThreadId, `Please take Lily off the morning ride on Tuesday September 22.`);
+    postedIds.push(msg.id);
+    const proposal = await waitFor("proposal card", 120_000, async () => {
+      const rows = await rest("chat_proposals", `thread_id=eq.${agentThreadId}&status=eq.pending&select=id,kind,params,required_confirmer_profile_id&created_at=gt.${encodeURIComponent(msg.created_at)}`);
+      return rows.length > 0 ? rows[0] : null;
+    });
+    if (!proposal) {
+      check(false, "[consent] change request produces a pending card", "(none within 120s)");
+    } else {
+      const params = typeof proposal.params === "string" ? JSON.parse(proposal.params) : proposal.params;
+      check(params.child_id === lilyKid.id, "[consent] card names the right child", params.child_id === lilyKid.id ? "Lily" : JSON.stringify(params.child_id));
+
+      const yes = await postMessage(agentThreadId, "Yes, go ahead and cancel it.");
+      postedIds.push(yes.id);
+      const executed = await waitFor("in-thread consent execution", 90_000, async () => {
+        const rows = await rest("chat_proposals", `id=eq.${proposal.id}&select=id,status`);
+        return rows[0]?.status === "executed" ? rows[0] : null;
+      });
+      check(!!executed, "[consent] in-thread yes executes the card");
+
+      const [amTue] = await rest("trips", `service_date=eq.2026-09-22&slot=eq.am&select=id`);
+      if (amTue) {
+        const still = await rest("rider_assignments", `trip_id=eq.${amTue.id}&child_id=eq.${lilyKid.id}&select=id`);
+        check(still.length === 0, "[consent] Lily is off the Sep-22 morning roster");
+      }
+      const audits = await rest("audit_events", `action=eq.chat_proposal_confirmed&entity_id=eq.${proposal.id}&select=details`);
+      const detail = audits[0] ? (typeof audits[0].details === "string" ? JSON.parse(audits[0].details) : audits[0].details) : {};
+      check(detail.via === "in_thread_consent", "[consent] audit records the consent path");
+    }
+  }
+
+  // ── S4: chatter stays silent (regression) ──
+  {
+    const msg = await postMessage(everyoneThreadId, "Anyone else's kid obsessed with Bluey rn");
+    postedIds.push(msg.id);
+    await new Promise((r) => setTimeout(r, 30_000));
+    const replies = await rest("chat_messages", `thread_id=eq.${everyoneThreadId}&sender_kind=eq.agent&created_at=gt.${encodeURIComponent(msg.created_at)}&select=id`);
+    check(replies.length === 0, "[chatter] agent stays silent");
+  }
+
+  // Cleanup eval messages so staging threads stay reviewable.
+  if (postedIds.length > 0) {
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?id=in.(${postedIds.join(",")})`, {
+        method: "DELETE",
+        headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      });
+    } catch {}
+  }
+
+  console.log(`\nPhase 2 e2e: ${passed}/${passed + failed} passed`);
+  if (failed > 0) {
+    console.error("\nFAIL: inspect crewmate_runs + chat_proposals on staging.");
+    process.exit(1);
+  }
+  console.log("\nPASS: Phase 2 e2e gate.");
+}
+
 if (MODE === "e2e") {
   await runE2eMode();
+} else if (MODE === "e2e2") {
+  await runE2e2Mode();
 } else if (MODE === "triage") {
   await runTriageMode();
 } else {
-  console.error(`Unknown mode "${MODE}". Use --mode triage|e2e.`);
+  console.error(`Unknown mode "${MODE}". Use --mode triage|e2e|e2e2.`);
   process.exit(1);
 }

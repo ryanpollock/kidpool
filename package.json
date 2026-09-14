@@ -40,7 +40,8 @@
     "test:chat:preview": "TEST_DB_TARGET=local node --experimental-strip-types --test tests/chat-preview.integration.mjs",
     "test:chat:staging": "TEST_DB_TARGET=staging playwright test --config=playwright.staging.config.ts",
     "eval:crewmate": "node scripts/crewmate-eval.mjs",
-    "eval:crewmate:e2e": "node scripts/crewmate-eval.mjs --mode e2e"
+    "eval:crewmate:e2e": "node scripts/crewmate-eval.mjs --mode e2e",
+    "eval:crewmate:proposals": "node scripts/crewmate-eval.mjs --mode e2e2"
   },
   "dependencies": {
     "@fontsource/roboto": "5.2.10",
