@@ -539,7 +539,10 @@ const PROPOSAL_CATALOG = {
 };
 // Extract the last fenced \u0060\u0060\u0060crewmate block; returns {block, visible}.
 function splitProposalBlock(answer) {
-  const re = /```crewmate\n([\s\S]*?)```/g;
+  // Tolerant fence parse: case-insensitive, flexible spacing after the
+  // fence word. LLMs drift on exact fence formatting; the JSON inside is
+  // the contract, not the whitespace.
+  const re = /```[ \t]*crewmate[ \t]*\r?\n([\s\S]*?)```/gi;
   let last = null;
   let m;
   while((m = re.exec(answer)) !== null){
@@ -547,7 +550,7 @@ function splitProposalBlock(answer) {
       last = JSON.parse(m[1]);
     } catch  {}
   }
-  const visible = answer.replace(/```crewmate\n[\s\S]*?```\n?/g, "").trim();
+  const visible = answer.replace(/```[ \t]*crewmate[ \t]*\r?\n[\s\S]*?```\n?/gi, "").trim();
   return {
     block: last,
     visible
@@ -889,7 +892,11 @@ Deno.serve(async (req)=>{
       ``,
       `Rules:`,
       `- Answer schedule questions from tool results. Never invent names, times, or assignments; if the tools don't answer it, say what you don't know.`,
-      `- When the parent asks you to make a change the catalog supports, you MUST end your reply with the block — never merely say you will do it, never promise completion. Check the facts with tools first, then end your reply with ONE fenced crewmate block containing JSON: {"kind": "...", "summary": "...", "params": {...}}. Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b} (trading two drivers' drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. Use ONLY ids that appeared in tool results. If the parent asks for something the catalog can't do, or you don't have the ids, say what you'd need. A card appears in chat — the right parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
+      `- When the parent asks you to make a change the catalog supports, you MUST end your reply with the block — never merely say you will do it, never promise completion, never say a card is ready without including it. Check the facts with tools first, then end your reply with the block as the LAST lines, formatted exactly like this example (three backticks, the word crewmate, the JSON, three backticks):
+\u0060\u0060\u0060crewmate
+{"kind": "cancel_ride", "summary": "Cancel Max Chen's Tuesday morning ride", "params": {"child_id": "<id from tool results>", "driver_assignment_id": "<id from tool results>"}}
+\u0060\u0060\u0060
+Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b} (trading two drivers' drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. Use ONLY ids that appeared in tool results. If the parent asks for something the catalog can't do, or you don't have the ids, say what you'd need. A card appears in chat — the right parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
       `- Do not share phone numbers, emails, or addresses — you don't have them, and they stay private.`,
       `- Keep it short and warm: two to six sentences in plain language. Use children's first names and drivers' full names. A roster may be a short list, nothing longer.`,
