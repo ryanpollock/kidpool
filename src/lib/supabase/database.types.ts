@@ -19,7 +19,7 @@ export type ScheduleStatus = "draft" | "published" | "superseded";
 export type AssignmentStatus = "tentative" | "confirmed" | "declined" | "expired" | "released";
 export type ConfirmationResponse = "confirmed" | "declined";
 export type ReassignmentStatus = "pending" | "accepted" | "declined" | "cancelled";
-export type ChatThreadKind = "dm" | "group" | "everyone";
+export type ChatThreadKind = "dm" | "group" | "everyone" | "agent";
 export type ChatSenderKind = "parent" | "agent" | "system";
 export type ChatProposalKind = "cancel_ride" | "switch_slot" | "swap_drive" | "coverage_fill";
 export type ChatProposalStatus = "pending" | "confirmed" | "executed" | "declined" | "expired" | "failed";
@@ -70,6 +70,8 @@ export type GroupRow = Timestamps & {
   meeting_point: string;
   school_name: string;
   coordinator_chat_access: boolean;
+  crewmate_enabled: boolean;
+  crewmate_monthly_token_budget: number;
 };
 
 export type HouseholdRow = Timestamps & {
@@ -279,6 +281,34 @@ export type ChatParticipantRow = {
 
 export type ChatMention = { profile_id: string; label: string; start: number; end: number };
 export type ChatNotificationMode = "all" | "mentions" | "muted";
+
+export type CrewmateRunStatus =
+  | "running"
+  | "coalesced"
+  | "skipped_budget"
+  | "chatter"
+  | "answered"
+  | "action_deferred"
+  | "failed";
+
+export type CrewmateRunRow = {
+  id: string;
+  group_id: string;
+  thread_id: string;
+  trigger_message_id: string | null;
+  status: CrewmateRunStatus;
+  coalesced_count: number;
+  triage_model: string | null;
+  planner_model: string | null;
+  triage_tokens_in: number;
+  triage_tokens_out: number;
+  planner_tokens_in: number;
+  planner_tokens_out: number;
+  tool_calls: Json;
+  outcome_detail: Json;
+  started_at: string;
+  finished_at: string | null;
+};
 
 export type ChatMessageRow = {
   mentions?: ChatMention[];
@@ -672,6 +702,27 @@ export type Database = {
           updated_at?: string;
         }
       >;
+      crewmate_runs: Table<
+        CrewmateRunRow,
+        {
+          id?: string;
+          group_id: string;
+          thread_id: string;
+          trigger_message_id?: string | null;
+          status: CrewmateRunStatus;
+          coalesced_count?: number;
+          triage_model?: string | null;
+          planner_model?: string | null;
+          triage_tokens_in?: number;
+          triage_tokens_out?: number;
+          planner_tokens_in?: number;
+          planner_tokens_out?: number;
+          tool_calls?: Json;
+          outcome_detail?: Json;
+          started_at?: string;
+          finished_at?: string | null;
+        }
+      >;
     };
     Views: Record<string, never>;
     Functions: {
@@ -880,6 +931,10 @@ export type Database = {
       count_unread_chat: {
         Args: { target_profile_id: string };
         Returns: number;
+      };
+      ensure_agent_thread: {
+        Args: { target_group_id: string };
+        Returns: string;
       };
     };
     Enums: {
