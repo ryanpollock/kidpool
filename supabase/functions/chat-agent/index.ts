@@ -78,13 +78,18 @@ function humanNow(tz: string): string {
 
 type CarSummary = {
   driver: string;
+  driver_profile_id: string;
   vehicle: string;
+  vehicle_id: string | null;
+  driver_assignment_id: string;
   capacity: number;
   status: string;
   children: string[];
+  riders: { id: string; name: string }[];
 };
 
 type TripSummary = {
+  trip_id: string;
   service_date: string;
   slot: string;
   direction: string;
@@ -225,10 +230,16 @@ async function buildRosters(
         .filter((da) => da.trip_id === t.id)
         .map((da) => ({
           driver: driversById.get(da.driver_profile_id) ?? "a driver",
+          driver_profile_id: da.driver_profile_id,
           vehicle: vehiclesById.get(da.vehicle_id) ?? "",
+          vehicle_id: da.vehicle_id,
+          driver_assignment_id: da.id,
           capacity: da.child_passenger_capacity,
           status: da.status,
           children: ridersByDa.get(da.id) ?? [],
+          riders: (riderAssignments.filter((ra: any) => ra.driver_assignment_id === da.id) as any[])
+            .map((ra) => ({ id: ra.child_id, name: childrenById.get(ra.child_id) ? childName(childrenById.get(ra.child_id)!) : "" }))
+            .filter((r) => r.name),
         }));
 
       const demand = demandByTrip.get(t.id) ?? [];
@@ -239,6 +250,7 @@ async function buildRosters(
         .filter(Boolean);
 
       const summary: TripSummary = {
+        trip_id: t.id,
         service_date: t.service_date,
         slot: SLOT_LABELS[t.slot] ?? t.slot,
         direction: t.direction,
@@ -249,6 +261,7 @@ async function buildRosters(
         cars,
         children_needing_rides: demand,
         unassigned_children: unassigned,
+        unassigned_child_ids: demandChildIds.filter((cid) => !seatedChildIds.has(cid)),
       };
       summaries.push(summary);
       byTripId.set(t.id, summary);
@@ -401,12 +414,17 @@ async function householdSnapshot(ctx: ToolCtx, admin: SupabaseClient) {
           });
           for (const a of myAssignments) {
             const t = byTripId.get(a.trip_id);
+            const myCar = t?.cars.find((c) => c.driver_profile_id === ctx.senderProfileId);
             myDrives.push({
               date: t?.service_date,
               slot: t?.slot,
               meeting_time: t?.meeting_time,
               status: a.status,
-              children: t?.cars.find((c) => c.driver === profile.full_name)?.children ?? [],
+              driver_assignment_id: a.id,
+              trip_id: a.trip_id,
+              vehicle: myCar?.vehicle ?? "",
+              vehicle_id: myCar?.vehicle_id ?? null,
+              children: myCar?.children ?? [],
             });
           }
         }
@@ -442,9 +460,9 @@ async function householdSnapshot(ctx: ToolCtx, admin: SupabaseClient) {
     profile: { full_name: profile.full_name, household: household?.name },
     adults: (adults ?? []).map((a: any) => a.full_name),
     children: (children ?? []).map((c: any) => ({
-      name: childName(c), is_priority: c.is_priority, active: c.active,
+      id: c.id, name: childName(c), is_priority: c.is_priority, active: c.active,
     })),
-    vehicles: (vehicles ?? []).map((v: any) => ({ label: v.label, seats: v.child_passenger_capacity, active: v.active })),
+    vehicles: (vehicles ?? []).map((v: any) => ({ id: v.id, label: v.label, seats: v.child_passenger_capacity, active: v.active })),
     my_drives_this_week: myDrives,
     our_rides_this_week: ourRides,
   };
@@ -459,6 +477,137 @@ const TriageSchema = z.object({
   confidence: z.number().min(0).max(1),
   topic: z.string().describe("A few words on what the message is about."),
 });
+
+// ── Phase 2: proposal catalog ──────────────────────────────────────────
+// The planner may end its reply with ONE fenced \u0060\u0060\u0060crewmate block:
+//   \u0060\u0060\u0060crewmate
+//   {"kind": "cancel_ride_range", "summary": "...", "params": {...}}
+//   \u0060\u0060\u0060
+// The FUNCTION validates the block against this catalog (zod per kind),
+// resolves required_confirmer from database facts, and creates the
+// proposal row(s). The model never writes the schedule; it can only
+// request a card. IDs come from tool outputs, never from the model's
+// imagination.
+
+type CatalogEntry = { schema: any; confirmer: string };
+
+const PROPOSAL_CATALOG: Record<string, CatalogEntry> = {
+  cancel_ride: {
+    confirmer: "child_parent",
+    schema: z.object({
+      child_id: z.string().uuid(),
+      driver_assignment_id: z.string().uuid(),
+    }),
+  },
+  cancel_ride_range: {
+    confirmer: "child_parent",
+    schema: z.object({
+      child_id: z.string().uuid(),
+      from_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      to_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    }),
+  },
+  switch_slot: {
+    confirmer: "child_parent",
+    schema: z.object({
+      child_id: z.string().uuid(),
+      driver_assignment_id: z.string().uuid(),
+    }),
+  },
+  add_ride: {
+    confirmer: "child_parent",
+    schema: z.object({ child_id: z.string().uuid(), trip_id: z.string().uuid() }),
+  },
+  place_child: {
+    confirmer: "child_parent",
+    schema: z.object({
+      child_id: z.string().uuid(),
+      trip_id: z.string().uuid(),
+      driver_assignment_id: z.string().uuid(),
+    }),
+  },
+  decline_drive: {
+    confirmer: "asker",
+    schema: z.object({
+      assignment_id: z.string().uuid(),
+      decline_reason: z.string().max(500).optional(),
+    }),
+  },
+  volunteer_drive: {
+    confirmer: "asker",
+    schema: z.object({
+      trip_id: z.string().uuid(),
+      schedule_version_id: z.string().uuid(),
+      driver_assignment_id: z.string().uuid().optional(),
+    }),
+  },
+  swap_drive: {
+    confirmer: "swap_pair",
+    schema: z.object({
+      assignment_a: z.string().uuid(),
+      assignment_b: z.string().uuid(),
+    }),
+  },
+  change_vehicle: {
+    confirmer: "asker",
+    schema: z.object({
+      driver_assignment_id: z.string().uuid(),
+      vehicle_id: z.string().uuid(),
+    }),
+  },
+  adjust_times: {
+    confirmer: "coordinator_asker",
+    schema: z.object({
+      trip_id: z.string().uuid(),
+      meeting_time: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/),
+      departure_time: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/),
+    }),
+  },
+  cancel_trip: {
+    confirmer: "coordinator_asker",
+    schema: z.object({ trip_id: z.string().uuid() }),
+  },
+  admin_sql: {
+    confirmer: "coordinator_asker",
+    schema: z.object({
+      sql: z.string().min(8).max(4000),
+      preview_sql: z.string().max(4000).optional(),
+    }),
+  },
+  offer_custom_drive: {
+    confirmer: "asker",
+    schema: z.object({
+      service_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      direction: z.enum(["morning", "afternoon"]),
+      meeting_time: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/),
+      child_ids: z.array(z.string().uuid()).default([]),
+    }),
+  },
+  join_custom_drive: {
+    confirmer: "asker",
+    schema: z.object({ trip_id: z.string().uuid(), child_ids: z.array(z.string().uuid()).default([]) }),
+  },
+  leave_custom_drive: {
+    confirmer: "child_parent",
+    schema: z.object({ trip_id: z.string().uuid(), child_id: z.string().uuid() }),
+  },
+  cancel_custom_drive: {
+    confirmer: "asker",
+    schema: z.object({ trip_id: z.string().uuid() }),
+  },
+};
+
+// Extract the last fenced \u0060\u0060\u0060crewmate block; returns {block, visible}.
+function splitProposalBlock(answer: string): { block: any | null; visible: string } {
+  const re = /```crewmate\n([\s\S]*?)```/g;
+  let last: any = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(answer)) !== null) {
+    try { last = JSON.parse(m[1]); } catch { /* malformed block — ignored */ }
+  }
+  const visible = answer.replace(/```crewmate\n[\s\S]*?```\n?/g, "").trim();
+  return { block: last, visible };
+}
 
 function recentTranscript(messages: any[]): string {
   return messages
@@ -660,6 +809,51 @@ Deno.serve(async (req) => {
       }
     }
 
+    // ── In-thread consent detection (Phase 2) ──
+    // When triage says consent (or a pending proposal names the sender in a
+    // private thread), classify affirmative vs not; an affirmative from the
+    // required confirmer executes through the server-validating RPC.
+    {
+      const { data: pendingForSender } = await admin.from("chat_proposals")
+        .select("id,kind,summary,required_confirmer_profile_id,thread_id")
+        .eq("thread_id", threadId)
+        .eq("status", "pending")
+        .eq("required_confirmer_profile_id", message.sender_profile_id)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const pending = (pendingForSender ?? [])[0];
+
+      if (pending && (category === "consent" || thread.kind === "agent")) {
+        const consentResult = await generateText({
+          model: together(TRIAGE_MODEL),
+          maxOutputTokens: 1500,
+          prompt: [
+            `A carpool parent may be confirming a pending proposal in chat.`,
+            `The proposal card says: "${pending.summary}".`,
+            `The parent's message is: "${message.body}"`,
+            `Reply with JSON only: {"affirmative": true|false, "confidence": number}.`,
+            `affirmative=true only if the parent clearly says yes/ok/confirmed/go ahead to that specific proposal. Declines, hesitations, or topic changes are false.`,
+          ].join("\n"),
+        });
+        const consentParsed = parseJsonish(consentResult.text);
+        if (consentParsed?.affirmative === true) {
+          const { error: consentError } = await admin.rpc("confirm_chat_proposal_via_consent", {
+            p_proposal_id: pending.id,
+            p_evidence_message_id: messageId,
+          });
+          if (!consentError) {
+            await finishRun("answered", { via_in_thread_consent: true, proposal_id: pending.id, kind: pending.kind }, {
+              triage: triageUsage,
+            });
+            return jsonResponse({ ok: true, via_consent: pending.id });
+          }
+          // Validation failed (stale, wrong confirmer, executor refused) —
+          // fall through to the planner, which will answer in plain text.
+          console.error("[chat-agent] consent rejected:", consentError?.message);
+        }
+      }
+    }
+
     // ── Planner with read-only tools ──
     const ctx: ToolCtx = { groupId: thread.group_id, senderProfileId: message.sender_profile_id, calls: [] };
 
@@ -722,7 +916,7 @@ Deno.serve(async (req) => {
       ``,
       `Rules:`,
       `- Answer schedule questions from tool results. Never invent names, times, or assignments; if the tools don't answer it, say what you don't know.`,
-      `- You CANNOT change the schedule. If the parent asks for a change (cancel a ride, switch a car, volunteer to drive, add a child, change a time), briefly state the current state and point them to where it's done in the app: the Next Week tab for check-in and ride-need changes, Home to confirm/decline a drive or volunteer for an open one, the Account screen for vehicles and children — or offer to flag the coordinator. Never say a change has been made. Never promise to make it.`,
+      `- You CAN propose schedule changes, and only propose: check the facts with tools first, then end your reply with ONE fenced crewmate block containing JSON: {"kind": "...", "summary": "...", "params": {...}}. Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b} (trading two drivers' drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. Use ONLY ids that appeared in tool results. If the parent asks for something the catalog can't do, or you don't have the ids, say what you'd need. A card appears in chat — the right parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
       `- Do not share phone numbers, emails, or addresses — you don't have them, and they stay private.`,
       `- Keep it short and warm: two to six sentences in plain language. Use children's first names and drivers' full names. A roster may be a short list, nothing longer.`,
@@ -778,19 +972,205 @@ Deno.serve(async (req) => {
       planned = await planOnce();
     }
 
-    const answer = (planned.answer ?? "").trim();
-    if (!answer) {
+    const { block, visible } = splitProposalBlock(planned.answer ?? "");
+    const answer = visible.trim();
+    if (!answer && !block) {
       await finishRun("failed", { error: "empty_answer" }, { triage: triageUsage, planner: planned.usage });
       return jsonResponse({ skipped: "empty_answer" });
     }
 
-    // ── Post the agent message (the function's only schedule-adjacent write) ──
+    // ── Phase 2: create the proposal card(s) ──
+    // The model only requests a card; every fact below is re-derived from
+    // the database. Required confirmers are resolved from ownership facts,
+    // never from the model.
+    let linkedProposalId: string | null = null;
+    let proposalsCreated = 0;
+    let proposalNote = "";
+
+    if (block && typeof block.kind === "string" && PROPOSAL_CATALOG[block.kind]) {
+      const entry = PROPOSAL_CATALOG[block.kind]!;
+      const parsed = entry.schema.safeParse(block.params ?? {});
+      if (!parsed.success) {
+        proposalNote = " (I could not validate that request — missing or malformed details. Ask me again with the specific trip or child.)";
+        console.error("[chat-agent] proposal block rejected:", parsed.error.message);
+      } else {
+        const params = parsed.data as Record<string, unknown>;
+        const summary = String(block.summary ?? "").slice(0, 500);
+
+        // Coordinator-gated kinds: only coordinators may even propose.
+        if (entry.confirmer === "coordinator_asker") {
+          const { data: askerMembership } = await admin.from("memberships")
+            .select("role")
+            .eq("group_id", thread.group_id)
+            .eq("profile_id", message.sender_profile_id)
+            .eq("status", "active")
+            .maybeSingle();
+          if (askerMembership?.role !== "coordinator") {
+            proposalNote = " (That change needs a coordinator — I can flag one if you'd like.)";
+          }
+        }
+
+        if (!proposalNote) {
+          if (block.kind === "admin_sql") {
+            // The coordinator tier: dry-run the preview SELECT and embed
+            // the affected rows on the card. Execution happens only in
+            // Postgres at confirm time.
+            let preview: unknown = null;
+            if (typeof params.preview_sql === "string" && params.preview_sql.trim()) {
+              const { data: previewRows } = await admin.rpc("crewmate_readonly_query", {
+                p_group_id: thread.group_id,
+                p_sql: params.preview_sql,
+              });
+              preview = previewRows ?? { error: "preview failed" };
+            }
+            const { data: proposalRow, error: proposalError } = await admin.from("chat_proposals")
+              .insert({
+                group_id: thread.group_id,
+                thread_id: threadId,
+                kind: block.kind,
+                params: { sql: params.sql, preview },
+                summary: summary || "Admin data change",
+                required_confirmer_profile_id: message.sender_profile_id,
+                status: "pending",
+              })
+              .select("id")
+              .single();
+            if (!proposalError && proposalRow) {
+              linkedProposalId = proposalRow.id;
+              proposalsCreated = 1;
+            } else {
+              console.error("[chat-agent] admin_sql proposal insert failed:", proposalError?.message);
+              proposalNote = " (I could not create that card.)";
+            }
+          } else if (block.kind === "swap_drive") {
+            // Dual consent: two linked cards, one per driver. Nothing
+            // executes until both confirm.
+            const { data: daA } = await admin.from("driver_assignments")
+              .select("driver_profile_id, trip_id, status")
+              .eq("id", params.assignment_a).maybeSingle();
+            const { data: daB } = await admin.from("driver_assignments")
+              .select("driver_profile_id, trip_id, status")
+              .eq("id", params.assignment_b).maybeSingle();
+            const canBothSeeThread = async () => {
+              const { count } = await admin.from("chat_participants")
+                .select("profile_id", { count: "exact", head: true })
+                .eq("thread_id", threadId)
+                .in("profile_id", [daA?.driver_profile_id, daB?.driver_profile_id].filter(Boolean));
+              return (count ?? 0) >= 2;
+            };
+            if (daA && daB && daA.driver_profile_id !== daB.driver_profile_id && await canBothSeeThread()) {
+              const { data: driverA } = await admin.from("profiles").select("full_name").eq("id", daA.driver_profile_id).maybeSingle();
+              const { data: driverB } = await admin.from("profiles").select("full_name").eq("id", daB.driver_profile_id).maybeSingle();
+              const { data: proposalB, error: errB } = await admin.from("chat_proposals")
+                .insert({
+                  group_id: thread.group_id,
+                  thread_id: threadId,
+                  kind: "swap_drive",
+                  params: { assignment_a: params.assignment_a, assignment_b: params.assignment_b, sibling_proposal_id: null },
+                  summary: `${driverA?.full_name ?? "Driver A"} and ${driverB?.full_name ?? "Driver B"} swap these drives — this card needs ${driverB?.full_name ?? "the other driver"}'s OK too`,
+                  required_confirmer_profile_id: daB.driver_profile_id,
+                  status: "pending",
+                })
+                .select("id")
+                .single();
+              if (!errB && proposalB) {
+                const { data: proposalA, error: errA } = await admin.from("chat_proposals")
+                  .insert({
+                    group_id: thread.group_id,
+                    thread_id: threadId,
+                    kind: "swap_drive",
+                    params: { assignment_a: params.assignment_a, assignment_b: params.assignment_b, sibling_proposal_id: proposalB.id },
+                    summary: `${driverA?.full_name ?? "Driver A"} and ${driverB?.full_name ?? "Driver B"} swap these drives — this card needs ${driverA?.full_name ?? "you"}'s OK too`,
+                    required_confirmer_profile_id: daA.driver_profile_id,
+                    status: "pending",
+                  })
+                  .select("id")
+                  .single();
+                if (!errA && proposalA) {
+                  await admin.from("chat_proposals")
+                    .update({ params: { assignment_a: params.assignment_a, assignment_b: params.assignment_b, sibling_proposal_id: proposalA.id } })
+                    .eq("id", proposalB.id);
+                  linkedProposalId = proposalA.id;
+                  proposalsCreated = 2;
+                } else {
+                  await admin.from("chat_proposals").delete().eq("id", proposalB.id);
+                  console.error("[chat-agent] swap proposal A failed:", errA?.message);
+                  proposalNote = " (I could not create the swap card.)";
+                }
+              } else {
+                console.error("[chat-agent] swap proposal B failed:", errB?.message);
+                proposalNote = " (I could not create the swap card.)";
+              }
+            } else {
+              // Dual consent is useless if the other driver cannot see the
+              // card: both drivers must participate in this thread.
+              proposalNote = " (A swap needs a card both drivers can see — ask again in a chat you both are in, like the Everyone thread.)";
+            }
+          } else {
+            // Single-confirmer kinds. The confirmer is resolved from
+            // ownership facts; the model never picks it.
+            let requiredConfirmer: string | null = null;
+            if (entry.confirmer === "asker") {
+              requiredConfirmer = message.sender_profile_id;
+            } else if (entry.confirmer === "child_parent") {
+              const childId = params.child_id as string | undefined;
+              if (childId) {
+                const { data: childRow } = await admin.from("children")
+                  .select("household_id")
+                  .eq("id", childId)
+                  .eq("group_id", thread.group_id)
+                  .maybeSingle();
+                if (childRow) {
+                  const { data: membershipRow } = await admin.from("memberships")
+                    .select("profile_id")
+                    .eq("household_id", childRow.household_id)
+                    .eq("profile_id", message.sender_profile_id)
+                    .eq("status", "active")
+                    .maybeSingle();
+                  requiredConfirmer = membershipRow?.profile_id ?? null;
+                }
+              }
+            }
+            if (!requiredConfirmer) {
+              proposalNote = " (Only that child's parent can make this change — please ask them to.)";
+            } else {
+              const insertParams: Record<string, unknown> = { ...params };
+              const { data: proposalRow, error: proposalError } = await admin.from("chat_proposals")
+                .insert({
+                  group_id: thread.group_id,
+                  thread_id: threadId,
+                  kind: block.kind,
+                  params: insertParams,
+                  summary: summary || "Schedule change",
+                  required_confirmer_profile_id: requiredConfirmer,
+                  triggered_by_message_id: messageId,
+                  status: "pending",
+                })
+                .select("id")
+                .single();
+              if (!proposalError && proposalRow) {
+                linkedProposalId = proposalRow.id;
+                proposalsCreated = 1;
+              } else {
+                console.error("[chat-agent] proposal insert failed:", proposalError?.message);
+                proposalNote = " (I could not create that card.)";
+              }
+            }
+          }
+        }
+      }
+    } else if (block) {
+      proposalNote = " (That request is outside what I can propose right now.)";
+    }
+
+    const body = (answer + proposalNote).slice(0, MAX_AGENT_BODY) || "Done — see the card below.";
     const { data: agentMessage, error: insertError } = await admin.from("chat_messages")
       .insert({
         thread_id: threadId,
         sender_kind: "agent",
         sender_name: "Crewmate AI",
-        body: answer.slice(0, MAX_AGENT_BODY),
+        body,
+        proposal_id: linkedProposalId,
       })
       .select("id")
       .single();
@@ -820,14 +1200,16 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Gap-log signal: triage labeled the ask as a schedule CHANGE.
-    const requestedAction = category === "action" ? (triageTopic || "schedule change request") : null;
+    // Gap-log signal: a classified CHANGE that produced no card is the
+    // catalog gap that Phase 3+ should close.
+    const requestedAction = proposalsCreated === 0 && category === "action" ? (triageTopic || "schedule change request") : null;
     await finishRun(
       requestedAction ? "action_deferred" : "answered",
       {
         category,
         topic: triageTopic,
         requested_action: requestedAction,
+        proposals_created: proposalsCreated,
         coalesced_window_ms: COALESCE_WINDOW_MS,
       },
       { triage: triageUsage, planner: planned.usage },

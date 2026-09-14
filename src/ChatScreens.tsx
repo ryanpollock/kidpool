@@ -161,9 +161,22 @@ function inboxPreview(thread: ChatThreadSummary): string {
 
 const PROPOSAL_LABELS: Record<string, string> = {
   cancel_ride: "Cancel a ride",
+  cancel_ride_range: "Cancel rides",
   switch_slot: "Change pickup time",
+  add_ride: "Add a ride",
+  place_child: "Change car",
+  decline_drive: "Decline a drive",
+  volunteer_drive: "Cover a drive",
   swap_drive: "Swap a drive",
+  change_vehicle: "Change car",
+  adjust_times: "Change times",
+  cancel_trip: "Cancel trip",
   coverage_fill: "Cover a drive",
+  admin_sql: "Data change",
+  offer_custom_drive: "Extra drive",
+  join_custom_drive: "Join extra drive",
+  leave_custom_drive: "Leave extra drive",
+  cancel_custom_drive: "Cancel extra drive",
 };
 
 const PROPOSAL_STATUS_LABELS: Record<ChatProposalStatus, string> = {

@@ -3067,3 +3067,224 @@ test("Crewmate: chat-agent skips disabled groups and fail-soft records missing A
   cleanupAllTestData();
   deleteTestUser(a.userId);
 });
+
+// ── Crewmate AI Phase 2 (proposal engine) ──────────────────────
+// Spec: CREWMATE_REQUIREMENTS.md §6–§8. The safety-critical paths:
+// catalog execution, dual consent for swaps, admin_sql confinement +
+// group scoping, and the in-thread consent evidence checks.
+
+// ONE published schedule_version per week (partial unique index) — the
+// caller creates it via seedWeekVersion() and all assignments share it.
+function seedPublishedAssignment(n, versionId, tripId, driverUserId, householdId, vehicleLabel, capacity, kidId) {
+  const vehicleId = UID(2200 + n);
+  const assignmentId = UID(2300 + n);
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleId}', '${GROUP_ID}', '${householdId}', '${vehicleLabel}', ${capacity}, true, '${driverUserId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_assignments (id, group_id, schedule_version_id, trip_id, driver_profile_id, vehicle_id, child_passenger_capacity, status) VALUES ('${assignmentId}', '${GROUP_ID}', '${versionId}', '${tripId}', '${driverUserId}', '${vehicleId}', ${capacity}, 'confirmed') ON CONFLICT DO NOTHING;
+    INSERT INTO public.rider_assignments (group_id, schedule_version_id, trip_id, driver_assignment_id, child_id) VALUES ('${GROUP_ID}', '${versionId}', '${tripId}', '${assignmentId}', '${kidId}') ON CONFLICT DO NOTHING;
+  `);
+  return { versionId, vehicleId, assignmentId };
+}
+
+test("Crewmate 2: cancel_ride_range executes a multi-day absence through a proposal", { skip: !SERVICE_KEY }, async () => {
+  const parent = setupHousehold(1110, "RangeParent");
+  const driver = setupHousehold(1111, "RangeDriver");
+  const kid = UID(2400);
+  const { weekId, tripIds, dates } = setupWeekAndTrips();
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kid}', '${GROUP_ID}', '${parent.householdId}', 'Romy', 'Ranger', '${parent.userId}') ON CONFLICT DO NOTHING;`);
+  const rangeVersion = UID(2450);
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${rangeVersion}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
+  seedPublishedAssignment(1, rangeVersion, tripIds[0], driver.userId, driver.householdId, "Rover", 4, kid);
+  seedPublishedAssignment(2, rangeVersion, tripIds[2], driver.userId, driver.householdId, "Rover", 4, kid);
+
+  const parentJwt = signInUser("rangeparent@test.kidpool").access_token;
+  const threadId = rpcCall(parentJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+  const proposalId = UID(2500);
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${proposalId}', '${GROUP_ID}', '${threadId}', 'cancel_ride_range', jsonb_build_object('child_id','${kid}','from_date','${dates[0]}','to_date','${dates[4]}'), 'Cancel Romy Ranges rides Mon-Fri', '${parent.userId}', 'pending');
+  `);
+
+  // Only the child's parent can confirm.
+  const other = setupHousehold(1112, "RangeOther");
+  const otherJwt = signInUser("rangeother@test.kidpool").access_token;
+  const denied = rpcCall(otherJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.ok(chatSqlError(denied), "non-parent confirm must fail");
+
+  const confirmed = rpcCall(parentJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.equal(confirmed.status, "executed", `confirm should execute: ${JSON.stringify(confirmed).slice(0, 160)}`);
+
+  const remaining = restGet("rider_assignments", { child_id: kid });
+  assert.equal(remaining.length, 0, "all range rides cancelled");
+  const audit = restGet("audit_events", { entity_id: kid });
+  assert.ok(audit.some((a) => a.action === "cancel_ride_range"), "range cancellation audited");
+
+  cleanupAllTestData();
+  for (const u of [parent, driver, other]) deleteTestUser(u.userId);
+});
+
+test("Crewmate 2: swap_drive needs BOTH drivers' OK (dual consent)", { skip: !SERVICE_KEY }, async () => {
+  const driverA = setupHousehold(1120, "SwapA");
+  const driverB = setupHousehold(1121, "SwapB");
+  const riderA = setupHousehold(1122, "SwapRiderA");
+  const riderB = setupHousehold(1123, "SwapRiderB");
+  const kidA = UID(2410);
+  const kidB = UID(2411);
+  const { weekId, tripIds } = setupWeekAndTrips();
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidA}', '${GROUP_ID}', '${riderA.householdId}', 'Swa', 'One', '${riderA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidB}', '${GROUP_ID}', '${riderB.householdId}', 'Swb', 'Two', '${riderB.userId}') ON CONFLICT DO NOTHING;
+  `);
+  const swapVersion = UID(2515);
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${swapVersion}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
+  const a = seedPublishedAssignment(11, swapVersion, tripIds[0], driverA.userId, driverA.householdId, "AlphaCar", 4, kidA);
+  const b = seedPublishedAssignment(12, swapVersion, tripIds[4], driverB.userId, driverB.householdId, "BetaCar", 4, kidB);
+
+  const threadId = rpcCall(signInUser("swapa@test.kidpool").access_token, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+  const pA = UID(2510);
+  const pB = UID(2511);
+  const params = jsonb => jsonb;
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${pB}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${a.assignmentId}','assignment_b','${b.assignmentId}','sibling_proposal_id','${pA}'), 'Swap — B side', '${driverB.userId}', 'pending');
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${pA}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${a.assignmentId}','assignment_b','${b.assignmentId}','sibling_proposal_id','${pB}'), 'Swap — A side', '${driverA.userId}', 'pending');
+  `);
+
+  const jwtA = signInUser("swapa@test.kidpool").access_token;
+  const jwtB = signInUser("swapb@test.kidpool").access_token;
+
+  // First confirm parks: nothing changes yet.
+  const first = rpcCall(jwtA, "confirm_chat_proposal", { p_proposal_id: pA });
+  assert.equal(first.status, "confirmed", `first swap confirm parks: ${JSON.stringify(first).slice(0, 140)}`);
+  let assignA = restGet("driver_assignments", { id: a.assignmentId })[0];
+  assert.equal(assignA.driver_profile_id, driverA.userId, "no swap after one consent");
+
+  // Second confirm executes both.
+  const second = rpcCall(jwtB, "confirm_chat_proposal", { p_proposal_id: pB });
+  assert.equal(second.status, "executed", `second swap confirm executes: ${JSON.stringify(second).slice(0, 140)}`);
+  assignA = restGet("driver_assignments", { id: a.assignmentId })[0];
+  const assignB = restGet("driver_assignments", { id: b.assignmentId })[0];
+  assert.equal(assignA.driver_profile_id, driverB.userId, "driver B now owns trip A");
+  assert.equal(assignB.driver_profile_id, driverA.userId, "driver A now owns trip B");
+  const executedA = restGet("chat_proposals", { id: pA })[0];
+  assert.equal(executedA.status, "executed", "both linked proposals are executed");
+
+  cleanupAllTestData();
+  for (const u of [driverA, driverB, riderA, riderB]) deleteTestUser(u.userId);
+});
+
+test("Crewmate 2: admin_sql is coordinator-only, group-scoped, single-DML, and audited", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(1130, "AdminCoord", "member", true);
+  const member = setupHousehold(1131, "AdminMember");
+  const otherGroup = UID(2600);
+  const kidPilot = UID(2420);
+  const kidOther = UID(2421);
+
+  runSql(`
+    DELETE FROM public.groups WHERE id = '${otherGroup}';
+    INSERT INTO public.groups (id, name, slug, timezone, meeting_point, school_name) VALUES ('${otherGroup}', 'Admin Other Group', 'admin-other-x', 'America/Los_Angeles', 'X', 'Y') ON CONFLICT DO NOTHING;
+    INSERT INTO public.households (id, group_id, name, created_by) VALUES ('${UID(2610)}', '${otherGroup}', 'OtherHouse', '${coord.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidPilot}', '${GROUP_ID}', '${member.householdId}', 'Target', 'AdminKid', '${member.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidOther}', '${otherGroup}', '${UID(2610)}', 'Target', 'OtherAdminKid', '${coord.userId}') ON CONFLICT DO NOTHING;
+  `);
+
+  const coordJwt = signInUser("admincoord@test.kidpool").access_token;
+  const memberJwt = signInUser("adminmember@test.kidpool").access_token;
+  const threadId = rpcCall(coordJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+
+  const sqlLiteral = (text) => `'${text.replace(/'/g, "''")}'`;
+  const mkProposal = (id, sql, confirmerId) => runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${id}', '${GROUP_ID}', '${threadId}', 'admin_sql', jsonb_build_object('sql', ${sqlLiteral(sql)}, 'preview', null), 'Admin data change', '${confirmerId}', 'pending');
+  `);
+
+  // Non-coordinator cannot confirm an admin proposal.
+  const badProposer = UID(2620);
+  mkProposal(badProposer, "update children set first_name = 'Nope' where last_name = 'AdminKid'", coord.userId);
+  const denied = rpcCall(memberJwt, "confirm_chat_proposal", { p_proposal_id: badProposer });
+  assert.ok(chatSqlError(denied), `member confirm must fail: ${JSON.stringify(denied).slice(0, 120)}`);
+
+  // Forbidden shapes are rejected at confirm time, even for the coordinator.
+  for (const [id, badSql] of [
+    [UID(2621), "select 1"],
+    [UID(2622), "drop table public.children"],
+    [UID(2623), "update children set first_name = 'x'; update children set last_name = 'y'"],
+    [UID(2624), "update groups set name = 'hacked'"],
+    [UID(2625), "update public.chat_proposals set status = 'executed'"],
+  ]) {
+    mkProposal(id, badSql, coord.userId);
+    const res = rpcCall(coordJwt, "confirm_chat_proposal", { p_proposal_id: id });
+    assert.ok(chatSqlError(res) || res.status === "failed", `must reject: ${badSql.slice(0, 40)} → ${JSON.stringify(res).slice(0, 100)}`);
+    const row = restGet("chat_proposals", { id })[0];
+    assert.ok(row, `proposal ${id} should exist for ${badSql.slice(0, 30)}`);
+    assert.ok(row.status === "pending" || row.status === "failed", `proposal not executed for ${badSql.slice(0, 30)}`);
+  }
+
+  // A legal UPDATE: group-scoped — the other group's matching row is untouched.
+  const goodId = UID(2630);
+  mkProposal(goodId, "update children set first_name = 'Renamed' where last_name = 'AdminKid'", coord.userId);
+  const done = rpcCall(coordJwt, "confirm_chat_proposal", { p_proposal_id: goodId });
+  assert.equal(done.status, "executed", `admin UPDATE executes: ${JSON.stringify(done).slice(0, 140)}`);
+
+  const pilotKid = restGet("children", { id: kidPilot })[0];
+  assert.equal(pilotKid.first_name, "Renamed", "pilot-group row updated");
+  const { rows: otherRows } = runSql(`SELECT first_name FROM public.children WHERE id = '${kidOther}'`);
+  assert.equal(otherRows[0].first_name, "Target", "cross-group row untouched by the group-scoped executor");
+
+  const audit = restGet("audit_events", { action: "crewmate_admin_sql_executed" });
+  assert.ok(audit.length >= 1, "admin execution audited");
+  const detail = typeof audit[0].details === "string" ? JSON.parse(audit[0].details) : audit[0].details;
+  assert.match(detail.sql, /update children set first_name/);
+
+  runSql(`DELETE FROM public.groups WHERE id = '${otherGroup}';`);
+  cleanupAllTestData();
+  for (const u of [coord, member]) deleteTestUser(u.userId);
+});
+
+test("Crewmate 2: in-thread consent executes only for the required confirmer's own message", { skip: !SERVICE_KEY }, async () => {
+  const parent = setupHousehold(1140, "ConsentParent");
+  const driver = setupHousehold(1141, "ConsentDriver");
+  const other = setupHousehold(1142, "ConsentOther");
+  const kid = UID(2430);
+  const { weekId, tripIds } = setupWeekAndTrips();
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kid}', '${GROUP_ID}', '${parent.householdId}', 'Cora', 'Consenter', '${parent.userId}') ON CONFLICT DO NOTHING;`);
+  const consentVersion = UID(2635);
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${consentVersion}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
+  const seeded = seedPublishedAssignment(21, consentVersion, tripIds[0], driver.userId, driver.householdId, "ConsentCar", 4, kid);
+
+  const parentJwt = signInUser("consentparent@test.kidpool").access_token;
+  const threadId = rpcCall(parentJwt, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+  const proposalId = UID(2640);
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${proposalId}', '${GROUP_ID}', '${threadId}', 'cancel_ride', jsonb_build_object('child_id','${kid}','driver_assignment_id','${seeded.assignmentId}'), 'Cancel Coras Monday ride', '${parent.userId}', 'pending');
+  `);
+
+  // Another parent says "yes" in the thread — must be rejected.
+  const otherJwt = signInUser("consentother@test.kidpool").access_token;
+  const otherMsg = restPostAs(otherJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: other.userId, body: "yes, go ahead",
+  })[0];
+  const wrongSender = serviceRpcCall("confirm_chat_proposal_via_consent", {
+    p_proposal_id: proposalId, p_evidence_message_id: otherMsg.id,
+  });
+  assert.ok(chatSqlError(wrongSender) || wrongSender.error, `wrong-sender consent must fail: ${JSON.stringify(wrongSender).slice(0, 120)}`);
+
+  // The required confirmer's own message executes.
+  const parentMsg = restPostAs(parentJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: parent.userId, body: "yes please, cancel it",
+  })[0];
+  const good = serviceRpcCall("confirm_chat_proposal_via_consent", {
+    p_proposal_id: proposalId, p_evidence_message_id: parentMsg.id,
+  });
+  assert.equal(good.status, "executed", `consent execution: ${JSON.stringify(good).slice(0, 140)}`);
+  const remaining = restGet("rider_assignments", { child_id: kid });
+  assert.equal(remaining.length, 0, "ride cancelled via in-thread consent");
+  const audit = restGet("audit_events", { action: "chat_proposal_confirmed" });
+  const detail = typeof audit[0].details === "string" ? JSON.parse(audit[0].details) : audit[0].details;
+  assert.equal(detail.via, "in_thread_consent", "consent path audited");
+
+  cleanupAllTestData();
+  for (const u of [parent, driver, other]) deleteTestUser(u.userId);
+});
