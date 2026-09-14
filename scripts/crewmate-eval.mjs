@@ -408,21 +408,55 @@ async function runE2e2Mode() {
   const agentThreadId = await rpcAs("ensure_agent_thread", { target_group_id: GROUP_ID });
   const everyoneThreadId = await rpcAs("ensure_everyone_thread", { target_group_id: GROUP_ID });
 
-  // Fresh state: drop pending eval proposals so prior runs don't interfere.
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/chat_proposals?thread_id=eq.${agentThreadId}&status=eq.pending`, {
-      method: "DELETE", headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-    });
-  } catch {}
+  // Fresh state: the agent thread accumulates residue that poisons both
+  // triage (mixed history flips chatter) and the planner (it reads prior
+  // cancellations as already-done). Scrub it: messages + proposals.
+  for (const table of ["chat_messages", "chat_proposals"]) {
+    try {
+      await fetch(`${SUPABASE_URL}/rest/v1/${table}?thread_id=eq.${agentThreadId}`, {
+        method: "DELETE", headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      });
+    } catch {}
+  }
+  // The everyone thread carries eval chatter + replies; scrub them. NOTE:
+  // PostgREST like-patterns use % wildcards (a trailing * matches NOTHING —
+  // the Phase 1 cleanup silently no-opped that way) and the leading [
+  // must be URL-encoded so it is not parsed as an IN-list.
+  const evalPrefix = encodeURIComponent("[eval%");
+  for (const table of ["chat_messages", "chat_proposals"]) {
+    try {
+      const filter = table === "chat_messages" ? `&body=like.${evalPrefix}` : "";
+      await fetch(`${SUPABASE_URL}/rest/v1/${table}?thread_id=eq.${everyoneThreadId}${filter}`, {
+        method: "DELETE", headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+      });
+    } catch {}
+  }
 
   // Stateless targets: pick seats that CURRENTLY exist on upcoming trips —
   // prior eval runs may have already cancelled the obvious ones.
   const [household] = await rest("households", `name=eq.${encodeURIComponent("Chen Family")}&select=id`);
-  const seats = (await rest(
+  const seatRows = (await rest(
     "rider_assignments",
-    `select=child_id,driver_assignment_id,children(first_name),trips(service_date,slot)` +
+    `select=child_id,driver_assignment_id,driver_assignments(schedule_version_id),children(first_name),trips(service_date,slot,week_id)` +
     `&children.household_id=eq.${household.id}&trips.service_date=gte.2026-09-21&limit=200`,
   )).sort((a, b) => String(a.trips?.service_date).localeCompare(String(b.trips?.service_date)));
+  // Current-version resolution per week: published wins, else the
+  // highest draft. Superseded rosters are not the live schedule — asking
+  // to cancel a seat there makes the (correct) model say "not on roster".
+  const versions = await rest(
+    "schedule_versions",
+    `select=id,week_id,status,version_number&status=in.(published,draft)&order=version_number.desc`,
+  );
+  const currentVersionByWeek = new Map();
+  for (const v of versions ?? []) {
+    if (v.status === "published" || !currentVersionByWeek.has(v.week_id)) {
+      currentVersionByWeek.set(v.week_id, v.id);
+    }
+  }
+  const seats = seatRows
+    .filter((seat) => seat.children?.first_name)
+    .filter((seat) => currentVersionByWeek.get(seat.trips?.week_id) === seat.driver_assignments?.schedule_version_id)
+    .sort((a, b) => String(a.trips?.service_date).localeCompare(String(b.trips?.service_date)));
   const seenChild = new Set();
   const targets = [];
   for (const seat of seats ?? []) {
@@ -570,16 +604,18 @@ async function runE2e2Mode() {
       (replies ?? [])[0] ? `replied: ${(replies[0].body ?? "").slice(0, 80)}` : "");
   }
 
-  // Cleanup eval messages (parent prompts AND agent replies) so staging
-  // threads stay reviewable.
-  const cleanupIds = [...new Set([...postedIds, ...agentMessageIds])];
-  if (cleanupIds.length > 0) {
-    try {
-      await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?id=in.(${cleanupIds.join(",")})`, {
-        method: "DELETE",
-        headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
-      });
-    } catch {}
+  // Cleanup eval messages so staging threads stay reviewable — only on a
+  // clean pass; failures keep the full residue for diagnosis.
+  if (failed === 0) {
+    const cleanupIds = [...new Set([...postedIds, ...agentMessageIds])];
+    if (cleanupIds.length > 0) {
+      try {
+        await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?id=in.(${cleanupIds.join(",")})`, {
+          method: "DELETE",
+          headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+        });
+      } catch {}
+    }
   }
 
   console.log(`\nPhase 2 e2e: ${passed}/${passed + failed} passed`);

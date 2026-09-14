@@ -893,7 +893,7 @@ Deno.serve(async (req)=>{
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
       `- Do not share phone numbers, emails, or addresses — you don't have them, and they stay private.`,
       `- Keep it short and warm: two to six sentences in plain language. Use children's first names and drivers' full names. A roster may be a short list, nothing longer.`,
-      `- If the message is completely unrelated to the carpool, say in one sentence that you're here for carpool questions.`
+      `- If the message is social or completely unrelated to the carpool — kid TV shows, birthdays, sports, weather, traffic, school events, small talk — reply with ONLY the token NOREPLY and nothing else. Never engage, never deflect politely, never add explanation.`
     ].join("\n");
     // Reload the transcript fresh on every planning pass so coalesced
     // messages (and the agent's own earlier replies) are always in context.
@@ -941,6 +941,15 @@ Deno.serve(async (req)=>{
     }
     const { block, visible } = splitProposalBlock(planned.answer ?? "");
     const answer = visible.trim();
+
+    // Second chatter gate: triage can miss chatty interrogatives on busy
+    // threads, but the planner reliably recognizes off-topic. NOREPLY =
+    // stay silent, exactly as if triage had caught it.
+    if (!block && /^NOREPLY\b/i.test(answer)) {
+      await finishRun("chatter", { second_gate: true, category, topic: triageTopic }, { triage: triageUsage, planner: planned.usage });
+      return jsonResponse({ skipped: "chatter_second_gate" });
+    }
+
     if (!answer && !block) {
       await finishRun("failed", {
         error: "empty_answer"
