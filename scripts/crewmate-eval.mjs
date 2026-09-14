@@ -245,7 +245,7 @@ async function runE2eMode() {
   // Sign in as a demo parent.
   const tokenRes = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "apikey": SERVICE_KEY },
     body: JSON.stringify({ email: DEMO_EMAIL, password: DEMO_PASSWORD }),
   });
   if (!tokenRes.ok) {
@@ -254,6 +254,9 @@ async function runE2eMode() {
     process.exit(1);
   }
   const { access_token: jwt } = await tokenRes.json();
+  // PostgREST inserts don't auto-populate sender_profile_id (the app sets it
+  // explicitly) — pull the profile id from the JWT sub claim.
+  const senderProfileId = JSON.parse(atob(jwt.split(".")[1])).sub;
 
   const authHeaders = { "apikey": SERVICE_KEY, "Authorization": `Bearer ${jwt}`, "Content-Type": "application/json" };
   const serviceHeaders = { "apikey": SERVICE_KEY, "Authorization": `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" };
@@ -288,7 +291,7 @@ async function runE2eMode() {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/chat_messages`, {
       method: "POST",
       headers: { ...authHeaders, "Prefer": "return=representation" },
-      body: JSON.stringify({ thread_id: threadId, sender_kind: "parent", body: `[eval] ${body}` }),
+      body: JSON.stringify({ thread_id: threadId, sender_kind: "parent", sender_profile_id: senderProfileId, body: `[eval] ${body}` }),
     });
     if (!res.ok) throw new Error(`post failed: ${await res.text()}`);
     const row = (await res.json())[0];

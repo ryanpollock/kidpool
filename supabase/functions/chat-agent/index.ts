@@ -17,7 +17,7 @@
 
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2.111.0";
 import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@3.0.48";
-import { generateText, generateObject, tool, Output, isStepCount } from "npm:ai@7.0.99";
+import { generateText, tool, isStepCount } from "npm:ai@7.0.99";
 import { z } from "npm:zod@4.6.5";
 import { corsHeaders } from "../_shared/cors.ts";
 
@@ -28,7 +28,7 @@ const TOGETHER_API_KEY = Deno.env.get("TOGETHER_API_KEY");
 // Model IDs are config values (CREWMATE_REQUIREMENTS.md §10): swap freely,
 // qualified by the Phase 1 eval gate (scripts/crewmate-eval.mjs).
 const TRIAGE_MODEL = Deno.env.get("CREWMATE_TRIAGE_MODEL") ?? "zai-org/GLM-5.3-Flash";
-const PLANNER_MODEL = Deno.env.get("CREWMATE_PLANNER_MODEL") ?? "deepseek-ai/DeepSeek-V4.1-Flash";
+const PLANNER_MODEL = Deno.env.get("CREWMATE_PLANNER_MODEL") ?? "zai-org/GLM-5.3-Flash";
 
 const MAX_AGENT_BODY = 3900; // chat_messages caps body at 4000
 const COALESCE_WINDOW_MS = 90_000;
@@ -485,6 +485,10 @@ Deno.serve(async (req) => {
     global: { headers: { apikey: SERVICE_ROLE_KEY } },
   });
 
+  // Claimed run id, hoisted so the error path can always record the failure
+  // in the ledger instead of leaving a 'running' row for the reaper.
+  let claimedRunId: string | null = null;
+
   let body: { thread_id?: string; message_id?: string };
   try {
     body = await req.json();
@@ -523,6 +527,7 @@ Deno.serve(async (req) => {
       p_trigger_message_id: messageId,
     });
     if (!runId) return jsonResponse({ coalesced: true });
+    claimedRunId = runId;
 
     const finishRun = async (status: string, detail: Record<string, unknown>, usage?: {
       triage?: { in: number; out: number };
@@ -619,9 +624,8 @@ Deno.serve(async (req) => {
     const transcript = [...(priorMessages ?? [])].reverse();
 
     if (thread.kind !== "agent") {
-      const triageResult = await generateObject({
+      const triageResult = await generateText({
         model: together(TRIAGE_MODEL),
-        schema: TriageSchema,
         maxOutputTokens: 1500, // reasoning models think first — budget must cover thinking + JSON
         prompt: [
           `Classify the LATEST message in a parent carpool group's chat.`,
@@ -629,16 +633,28 @@ Deno.serve(async (req) => {
           ``,
           `Recent earlier messages (for context, do not classify these):`,
           recentTranscript(transcript.slice(0, -1)),
+          ``,
+          `Reply with JSON only: {"category": "question" | "action" | "consent" | "chatter", "confidence": number, "topic": string}.`,
+          `question: asks about the schedule, rosters, coverage, times, who drives/rides, or the weekly cycle.`,
+          `action: requests a schedule change (cancel a ride, switch cars, volunteer, add a drive, change seat count).`,
+          `consent: confirms or declines a pending proposal card.`,
+          `chatter: social conversation or anything unrelated to the carpool schedule.`,
         ].join("\n"),
       });
+      const parsedTriage = parseJsonish(triageResult.text);
+      const triageCategory = parsedTriage?.category;
+      if (triageCategory === "question" || triageCategory === "action" || triageCategory === "consent") {
+        category = triageCategory;
+      }
+      if (parsedTriage?.topic) triageTopic = parsedTriage.topic;
+      const parsedConfidence = typeof parsedTriage?.confidence === "number" ? parsedTriage.confidence : null;
       triageUsage = {
         in: triageResult.usage.promptTokens ?? 0,
         out: triageResult.usage.completionTokens ?? 0,
       };
-      category = triageResult.object.category;
-      triageTopic = triageResult.object.topic;
+      void parsedConfidence;
 
-      if (category === "chatter") {
+      if (category === "chatter" || !parsedTriage) {
         await finishRun("chatter", { category, topic: triageTopic }, { triage: triageUsage });
         return jsonResponse({ skipped: "chatter" });
       }
@@ -735,18 +751,13 @@ Deno.serve(async (req) => {
         tools,
         stopWhen: isStepCount(6),
         maxOutputTokens: 4000,
-        timeout: { stepMs: 25_000 },
-        output: Output.object({
-          schema: z.object({
-            answer: z.string().min(1).describe("The reply posted into the chat."),
-            requested_action: z.string().nullable().describe(
-              "If the parent asked for a schedule CHANGE, a short label like 'cancel Ava ride Tuesday'; otherwise null.",
-            ),
-          }),
-        }),
+        timeout: { stepMs: 45_000 },
       });
       return {
-        output: result.output,
+        // The final assistant text is the chat answer. Structured-output
+        // modes are unreliable with Together's reasoning models (see
+        // parseJsonish note); the action signal comes from triage instead.
+        answer: (result.text ?? "").trim(),
         usage: {
           in: result.usage.promptTokens ?? 0,
           out: result.usage.completionTokens ?? 0,
@@ -767,7 +778,7 @@ Deno.serve(async (req) => {
       planned = await planOnce();
     }
 
-    const answer = (planned.output?.answer ?? "").trim();
+    const answer = (planned.answer ?? "").trim();
     if (!answer) {
       await finishRun("failed", { error: "empty_answer" }, { triage: triageUsage, planner: planned.usage });
       return jsonResponse({ skipped: "empty_answer" });
@@ -809,7 +820,8 @@ Deno.serve(async (req) => {
       }
     }
 
-    const requestedAction = planned.output?.requested_action ?? null;
+    // Gap-log signal: triage labeled the ask as a schedule CHANGE.
+    const requestedAction = category === "action" ? (triageTopic || "schedule change request") : null;
     await finishRun(
       requestedAction ? "action_deferred" : "answered",
       {
@@ -827,6 +839,19 @@ Deno.serve(async (req) => {
     return jsonResponse({ ok: true, message_id: agentMessage.id });
   } catch (e) {
     console.error("[chat-agent] run failed:", e);
+    // Record the failure in the ledger so the run row never lingers as
+    // 'running' (observability without dashboard access).
+    if (claimedRunId) {
+      try {
+        await admin.from("crewmate_runs").update({
+          status: "failed",
+          finished_at: new Date().toISOString(),
+          outcome_detail: { error: String(e?.message ?? e).slice(0, 500) },
+        }).eq("id", claimedRunId);
+      } catch {
+        // never error from the error path
+      }
+    }
     return jsonResponse({ error: "agent_failed" }, 200); // never error to pg_net
   }
 });
