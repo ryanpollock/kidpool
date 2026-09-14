@@ -147,6 +147,12 @@ async function runTriageMode() {
       `action: requests a schedule change (cancel a ride, switch cars, volunteer, add a drive, change seat count).`,
       `consent: confirms or declines a pending proposal card.`,
       `chatter: social conversation or anything unrelated to the carpool schedule.`,
+      ``,
+      // Mirrors the deployed chat-agent triage prompt (supabase/functions/
+      // chat-agent/index.ts) — keep the two in sync.
+      `Chatter takes priority: if the latest message is social or unrelated to rides and schedules — even when phrased as a question — it is chatter. Classify ONLY the latest message; earlier messages are context, never a category signal.`,
+      `Examples of chatter: "Anyone else's kid obsessed with Bluey rn" → chatter; "Great game last night!" → chatter; "Happy birthday Priya!!" → chatter; "See everyone at the potluck Saturday" → chatter.`,
+      `Example question: "Who is driving Wednesday morning?" → question. Example action: "Take Zoe off Thursday's ride" → action.`,
     ].join("\n");
 
   let correct = 0;
@@ -412,11 +418,11 @@ async function runE2e2Mode() {
   // Stateless targets: pick seats that CURRENTLY exist on upcoming trips —
   // prior eval runs may have already cancelled the obvious ones.
   const [household] = await rest("households", `name=eq.${encodeURIComponent("Chen Family")}&select=id`);
-  const seats = await rest(
+  const seats = (await rest(
     "rider_assignments",
     `select=child_id,driver_assignment_id,children(first_name),trips(service_date,slot)` +
-    `&children.household_id=eq.${household.id}&trips.service_date=gte.2026-09-21&order=trips.service_date.asc`,
-  );
+    `&children.household_id=eq.${household.id}&trips.service_date=gte.2026-09-21&limit=200`,
+  )).sort((a, b) => String(a.trips?.service_date).localeCompare(String(b.trips?.service_date)));
   const seenChild = new Set();
   const targets = [];
   for (const seat of seats ?? []) {
@@ -558,8 +564,10 @@ async function runE2e2Mode() {
     const msg = await postMessage(everyoneThreadId, "Anyone else's kid obsessed with Bluey rn");
     postedIds.push(msg.id);
     await new Promise((r) => setTimeout(r, 30_000));
-    const replies = await rest("chat_messages", `thread_id=eq.${everyoneThreadId}&sender_kind=eq.agent&created_at=gt.${encodeURIComponent(msg.created_at)}&select=id`);
-    check(replies.length === 0, "[chatter] agent stays silent");
+    const replies = await rest("chat_messages", `thread_id=eq.${everyoneThreadId}&sender_kind=eq.agent&created_at=gt.${encodeURIComponent(msg.created_at)}&select=id,body`);
+    for (const r of replies ?? []) agentMessageIds.push(r.id);
+    check((replies ?? []).length === 0, "[chatter] agent stays silent",
+      (replies ?? [])[0] ? `replied: ${(replies[0].body ?? "").slice(0, 80)}` : "");
   }
 
   // Cleanup eval messages (parent prompts AND agent replies) so staging
