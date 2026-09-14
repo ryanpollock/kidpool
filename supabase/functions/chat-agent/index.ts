@@ -470,13 +470,21 @@ async function householdSnapshot(ctx: ToolCtx, admin: SupabaseClient) {
 
 // ── Triage (fast model; structured output) ────────────────────────────
 
-const TriageSchema = z.object({
-  category: z.enum(["question", "action", "consent", "chatter"]).describe(
-    "question: asks about the schedule/rosters/coverage/times. action: requests a schedule change. consent: confirms or declines a pending proposal. chatter: social or unrelated.",
-  ),
-  confidence: z.number().min(0).max(1),
-  topic: z.string().describe("A few words on what the message is about."),
-});
+// Triage + consent-classifier output is prompted-for JSON and parsed
+// leniently — the SDK's structured-output modes (response_format) are
+// unreliable with Together's reasoning models, which emit hidden thinking
+// before any content. The eval gates exercise this exact path.
+function parseJsonish(text: string): { category?: string; confidence?: number; topic?: string; affirmative?: boolean } | null {
+  const cleaned = (text ?? "").replace(/```json|```/g, "").trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
 
 // ── Phase 2: proposal catalog ──────────────────────────────────────────
 // The planner may end its reply with ONE fenced \u0060\u0060\u0060crewmate block:

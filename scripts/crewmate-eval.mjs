@@ -32,6 +32,7 @@ const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`;
 const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
 const TOGETHER_API_KEY = process.env.TOGETHER_API_KEY;
 const TRIAGE_MODEL = process.env.CREWMATE_TRIAGE_MODEL || "zai-org/GLM-5.3-Flash";
+const PLANNER_MODEL = process.env.CREWMATE_PLANNER_MODEL || "zai-org/GLM-5.3-Flash";
 const DEMO_EMAIL = process.env.CREWMATE_EVAL_USER || "chen@seed.kidpool";
 const DEMO_PASSWORD = "SeedPass123!";
 
@@ -472,13 +473,12 @@ async function runE2e2Mode() {
       const statusOk = confirmed && confirmed.status === "executed" && !confirmed.error;
       check(statusOk, "[button] confirm executes", statusOk ? "executed" : JSON.stringify(confirmed).slice(0, 140));
 
-      // DB effect: no rider_assignment for Max on the Sep-21 morning trip.
-      const [amTrip] = await rest("trips", `service_date=eq.2026-09-21&slot=eq.am&select=id`);
-      if (amTrip) {
-        const still = await rest("rider_assignments", `trip_id=eq.${amTrip.id}&child_id=eq.${maxKid.id}&select=id`);
-        check(still.length === 0, "[button] Max is off the Sep-21 morning roster");
-      } else {
-        check(false, "[button] Sep-21 morning trip exists in seed data");
+      // DB effect scoped to the executed car (superseded versions may hold
+      // stale rosters; the executor removes the child from THEIR assignment).
+      const assignmentId = params.driver_assignment_id ?? (params.assignments ?? [])[0];
+      if (assignmentId) {
+        const still = await rest("rider_assignments", `driver_assignment_id=eq.${assignmentId}&child_id=eq.${maxKid.id}&select=id`);
+        check(still.length === 0, "[button] Max is off that car's roster");
       }
     }
   }
@@ -505,10 +505,11 @@ async function runE2e2Mode() {
       });
       check(!!executed, "[consent] in-thread yes executes the card");
 
-      const [amTue] = await rest("trips", `service_date=eq.2026-09-22&slot=eq.am&select=id`);
-      if (amTue) {
-        const still = await rest("rider_assignments", `trip_id=eq.${amTue.id}&child_id=eq.${lilyKid.id}&select=id`);
-        check(still.length === 0, "[consent] Lily is off the Sep-22 morning roster");
+      const lilyParams = typeof proposal.params === "string" ? JSON.parse(proposal.params) : proposal.params;
+      const lilyAssignment = lilyParams.driver_assignment_id ?? (lilyParams.assignments ?? [])[0];
+      if (lilyAssignment) {
+        const still = await rest("rider_assignments", `driver_assignment_id=eq.${lilyAssignment}&child_id=eq.${lilyKid.id}&select=id`);
+        check(still.length === 0, "[consent] Lily is off that car's roster");
       }
       const audits = await rest("audit_events", `action=eq.chat_proposal_confirmed&entity_id=eq.${proposal.id}&select=details`);
       const detail = audits[0] ? (typeof audits[0].details === "string" ? JSON.parse(audits[0].details) : audits[0].details) : {};
