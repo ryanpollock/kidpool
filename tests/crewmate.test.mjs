@@ -239,6 +239,14 @@ test("chat-agent function: trigger-authenticated, ledger-first, and Phase 1 writ
   assert.match(src, /CREWMATE_PLANNER_MODEL/);
   // Chat notifications are push-only — no email from the agent.
   assert.doesNotMatch(src, /api\.resend\.com/);
+  // Deploy transpiles without type-checking, so every helper invoked in
+  // the function must be defined in the file (a missing definition ships
+  // silently and crashes at runtime — production incident 2026-09-14).
+  for (const helper of ["parseJsonish", "splitProposalBlock", "recentTranscript", "humanNow", "dateInTz", "mondayOf", "childName", "buildRosters", "weekOverview", "tripDetail", "customDrives", "householdSnapshot", "verifyAuth", "jsonResponse", "threadKindLabel"]) {
+    assert.match(src, new RegExp(`(function ${helper}\\(|const ${helper} =)`), `helper ${helper} must be defined in chat-agent`);
+  }
+  // Dead scaffolding from the Phase 2 insertion must not linger.
+  assert.doesNotMatch(src, /TriageSchema/);
 
   // Phase 2 boundary: the agent CREATES pending proposal cards (that is its
   // only write path beyond chat_messages/crewmate_runs) but never executes
