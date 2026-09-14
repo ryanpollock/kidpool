@@ -31,7 +31,7 @@ const PROJECT_REF = process.env.SUPABASE_PROJECT_REF || "jfyjgmhqnlbdcafoarrg"; 
 const SUPABASE_URL = `https://${PROJECT_REF}.supabase.co`;
 const GROUP_ID = "c1000000-0000-4000-8000-000000000001";
 const TOGETHER_API_KEY = process.env.TOGETHER_API_KEY;
-const TRIAGE_MODEL = process.env.CREWMATE_TRIAGE_MODEL || "google/gemma-4-31b-it";
+const TRIAGE_MODEL = process.env.CREWMATE_TRIAGE_MODEL || "zai-org/GLM-5.3-Flash";
 const DEMO_EMAIL = process.env.CREWMATE_EVAL_USER || "chen@seed.kidpool";
 const DEMO_PASSWORD = "SeedPass123!";
 
@@ -150,33 +150,45 @@ async function runTriageMode() {
 
   let correct = 0;
   const failures = [];
-  for (const sample of TRIAGE_SAMPLES) {
-    let got = null;
-    let raw = "";
-    try {
-      const res = await fetch("https://api.together.xyz/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${TOGETHER_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: TRIAGE_MODEL,
-          max_tokens: 200,
-          temperature: 0,
-          messages: [{ role: "user", content: prompt(sample) }],
-        }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-      const data = await res.json();
-      raw = data.choices?.[0]?.message?.content ?? "";
-      got = parseJsonish(raw).category;
-    } catch (e) {
-      failures.push({ sample, got: `ERROR: ${e.message}`, raw });
-      continue;
+  // Together's 31B triage model can take ~20s per call; run with bounded
+  // concurrency and a hard per-call timeout so one hang can't stall the gate.
+  const CONCURRENCY = 5;
+  const results = new Array(TRIAGE_SAMPLES.length);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next++;
+      if (i >= TRIAGE_SAMPLES.length) return;
+      const sample = TRIAGE_SAMPLES[i];
+      try {
+        const res = await fetch("https://api.together.xyz/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${TOGETHER_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          signal: AbortSignal.timeout(90_000),
+          body: JSON.stringify({
+            model: TRIAGE_MODEL,
+            max_tokens: 1000, // reasoning models think before emitting JSON — 200 was consumed by thinking alone
+            temperature: 0,
+            messages: [{ role: "user", content: prompt(sample) }],
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+        const data = await res.json();
+        results[i] = { got: parseJsonish(data.choices?.[0]?.message?.content ?? "").category ?? null, raw: "" };
+      } catch (e) {
+        results[i] = { got: `ERROR: ${e.message}`, raw: "" };
+      }
     }
-    if (got === sample.expected) correct++;
-    else failures.push({ sample, got, raw: raw.slice(0, 200) });
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+  for (let i = 0; i < TRIAGE_SAMPLES.length; i++) {
+    const got = results[i].got;
+    if (got === TRIAGE_SAMPLES[i].expected) correct++;
+    else failures.push({ sample: TRIAGE_SAMPLES[i], got, raw: results[i].raw });
   }
 
   const accuracy = correct / TRIAGE_SAMPLES.length;
