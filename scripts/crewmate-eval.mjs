@@ -402,15 +402,41 @@ async function runE2e2Mode() {
   const agentThreadId = await rpcAs("ensure_agent_thread", { target_group_id: GROUP_ID });
   const everyoneThreadId = await rpcAs("ensure_everyone_thread", { target_group_id: GROUP_ID });
 
-  // The Chen children — grounds the proposal param assertions.
+  // Fresh state: drop pending eval proposals so prior runs don't interfere.
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/chat_proposals?thread_id=eq.${agentThreadId}&status=eq.pending`, {
+      method: "DELETE", headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+    });
+  } catch {}
+
+  // Stateless targets: pick seats that CURRENTLY exist on upcoming trips —
+  // prior eval runs may have already cancelled the obvious ones.
   const [household] = await rest("households", `name=eq.${encodeURIComponent("Chen Family")}&select=id`);
-  const kids = await rest("children", `household_id=eq.${household.id}&select=id,first_name&order=first_name`);
-  const maxKid = kids.find((k) => k.first_name === "Max");
-  const lilyKid = kids.find((k) => k.first_name === "Lily");
-  if (!maxKid || !lilyKid) {
-    console.error("Could not find Max/Lily Chen in seed data. Run `npm run seed-demo`.");
+  const seats = await rest(
+    "rider_assignments",
+    `select=child_id,driver_assignment_id,children(first_name),trips(service_date,slot)` +
+    `&children.household_id=eq.${household.id}&trips.service_date=gte.2026-09-21&order=trips.service_date.asc`,
+  );
+  const seenChild = new Set();
+  const targets = [];
+  for (const seat of seats ?? []) {
+    if (seenChild.has(seat.child_id)) continue;
+    seenChild.add(seat.child_id);
+    targets.push({
+      childId: seat.child_id,
+      firstName: seat.children?.first_name ?? "your child",
+      date: seat.trips?.service_date,
+      slot: seat.trips?.slot,
+      assignmentId: seat.driver_assignment_id,
+    });
+    if (targets.length === 2) break;
+  }
+  if (targets.length < 2) {
+    console.error("Fewer than two seated Chen kids on upcoming trips. Run `npm run seed-demo`.");
     process.exit(1);
   }
+  const slotPhrase = (slot) => slot === "am" ? "morning" : slot === "pm_early" ? "early afternoon" : "late afternoon";
+  const prettyDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
   const postMessage = async (threadId, body) => {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?select=id,created_at`, {
@@ -422,6 +448,7 @@ async function runE2e2Mode() {
     return (await res.json())[0];
   };
 
+  const agentMessageIds = [];
   const waitFor = async (desc, timeoutMs, poll) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -446,17 +473,21 @@ async function runE2e2Mode() {
     const msg = await postMessage(agentThreadId, "Who is driving Monday September 21 in the morning?");
     postedIds.push(msg.id);
     const reply = await waitFor("qa reply", 90_000, async () => {
-      const rows = await rest("chat_messages", `thread_id=eq.${agentThreadId}&sender_kind=eq.agent&created_at=gt.${encodeURIComponent(msg.created_at)}&select=body`);
-      return rows.length > 0 ? rows[0].body : null;
+      const rows = await rest("chat_messages", `thread_id=eq.${agentThreadId}&sender_kind=eq.agent&created_at=gt.${encodeURIComponent(msg.created_at)}&select=id,body`);
+      if (rows.length > 0) { agentMessageIds.push(rows[0].id); return rows[0].body; }
+      return null;
     });
     check(!!reply, "[qa] question gets a reply", reply ? reply.slice(0, 110) : "(no reply)");
   }
 
   // ── S2: change request → pending card → BUTTON confirm executes ──
   {
-    const msg = await postMessage(agentThreadId, `Please take Max off the morning ride on Monday September 21.`);
+    const t = targets[0];
+    const msg = await postMessage(agentThreadId, `Please take ${t.firstName} off the ${slotPhrase(t.slot)} ride on ${prettyDate(t.date)}.`);
     postedIds.push(msg.id);
     const proposal = await waitFor("proposal card", 120_000, async () => {
+      const agentRows = await rest("chat_messages", `thread_id=eq.${agentThreadId}&sender_kind=eq.agent&created_at=gt.${encodeURIComponent(msg.created_at)}&select=id`);
+      for (const r of agentRows ?? []) agentMessageIds.push(r.id);
       const rows = await rest("chat_proposals", `thread_id=eq.${agentThreadId}&status=eq.pending&select=id,kind,params,required_confirmer_profile_id&created_at=gt.${encodeURIComponent(msg.created_at)}`);
       return rows.length > 0 ? rows[0] : null;
     });
@@ -466,7 +497,7 @@ async function runE2e2Mode() {
       const params = typeof proposal.params === "string" ? JSON.parse(proposal.params) : proposal.params;
       const kindOk = ["cancel_ride", "cancel_ride_range"].includes(proposal.kind);
       check(kindOk, "[button] card kind is a cancel", `${proposal.kind}`);
-      check(params.child_id === maxKid.id, "[button] card names the right child", params.child_id === maxKid.id ? "Max" : JSON.stringify(params.child_id));
+      check(params.child_id === t.childId, "[button] card names the right child", params.child_id === t.childId ? t.firstName : JSON.stringify(params.child_id));
       check(proposal.required_confirmer_profile_id === chenProfileId, "[button] required confirmer is the asking parent");
 
       const confirmed = await rpcAs("confirm_chat_proposal", { p_proposal_id: proposal.id });
@@ -475,19 +506,22 @@ async function runE2e2Mode() {
 
       // DB effect scoped to the executed car (superseded versions may hold
       // stale rosters; the executor removes the child from THEIR assignment).
-      const assignmentId = params.driver_assignment_id ?? (params.assignments ?? [])[0];
+      const assignmentId = params.driver_assignment_id ?? t.assignmentId;
       if (assignmentId) {
-        const still = await rest("rider_assignments", `driver_assignment_id=eq.${assignmentId}&child_id=eq.${maxKid.id}&select=id`);
-        check(still.length === 0, "[button] Max is off that car's roster");
+        const still = await rest("rider_assignments", `driver_assignment_id=eq.${assignmentId}&child_id=eq.${t.childId}&select=id`);
+        check(still.length === 0, `[button] ${t.firstName} is off that car's roster`);
       }
     }
   }
 
   // ── S3: change request → pending card → IN-THREAD "yes" executes ──
   {
-    const msg = await postMessage(agentThreadId, `Please take Lily off the morning ride on Tuesday September 22.`);
+    const t = targets[1];
+    const msg = await postMessage(agentThreadId, `Please take ${t.firstName} off the ${slotPhrase(t.slot)} ride on ${prettyDate(t.date)}.`);
     postedIds.push(msg.id);
     const proposal = await waitFor("proposal card", 120_000, async () => {
+      const agentRows = await rest("chat_messages", `thread_id=eq.${agentThreadId}&sender_kind=eq.agent&created_at=gt.${encodeURIComponent(msg.created_at)}&select=id`);
+      for (const r of agentRows ?? []) agentMessageIds.push(r.id);
       const rows = await rest("chat_proposals", `thread_id=eq.${agentThreadId}&status=eq.pending&select=id,kind,params,required_confirmer_profile_id&created_at=gt.${encodeURIComponent(msg.created_at)}`);
       return rows.length > 0 ? rows[0] : null;
     });
@@ -495,21 +529,23 @@ async function runE2e2Mode() {
       check(false, "[consent] change request produces a pending card", "(none within 120s)");
     } else {
       const params = typeof proposal.params === "string" ? JSON.parse(proposal.params) : proposal.params;
-      check(params.child_id === lilyKid.id, "[consent] card names the right child", params.child_id === lilyKid.id ? "Lily" : JSON.stringify(params.child_id));
+      check(params.child_id === t.childId, "[consent] card names the right child", params.child_id === t.childId ? t.firstName : JSON.stringify(params.child_id));
 
       const yes = await postMessage(agentThreadId, "Yes, go ahead and cancel it.");
       postedIds.push(yes.id);
       const executed = await waitFor("in-thread consent execution", 90_000, async () => {
+        const agentRows = await rest("chat_messages", `thread_id=eq.${agentThreadId}&sender_kind=eq.agent&created_at=gt.${encodeURIComponent(yes.created_at)}&select=id`);
+        for (const r of agentRows ?? []) agentMessageIds.push(r.id);
         const rows = await rest("chat_proposals", `id=eq.${proposal.id}&select=id,status`);
         return rows[0]?.status === "executed" ? rows[0] : null;
       });
       check(!!executed, "[consent] in-thread yes executes the card");
 
-      const lilyParams = typeof proposal.params === "string" ? JSON.parse(proposal.params) : proposal.params;
-      const lilyAssignment = lilyParams.driver_assignment_id ?? (lilyParams.assignments ?? [])[0];
-      if (lilyAssignment) {
-        const still = await rest("rider_assignments", `driver_assignment_id=eq.${lilyAssignment}&child_id=eq.${lilyKid.id}&select=id`);
-        check(still.length === 0, "[consent] Lily is off that car's roster");
+      const tParams = typeof proposal.params === "string" ? JSON.parse(proposal.params) : proposal.params;
+      const tAssignment = tParams.driver_assignment_id ?? t.assignmentId;
+      if (tAssignment) {
+        const still = await rest("rider_assignments", `driver_assignment_id=eq.${tAssignment}&child_id=eq.${t.childId}&select=id`);
+        check(still.length === 0, `[consent] ${t.firstName} is off that car's roster`);
       }
       const audits = await rest("audit_events", `action=eq.chat_proposal_confirmed&entity_id=eq.${proposal.id}&select=details`);
       const detail = audits[0] ? (typeof audits[0].details === "string" ? JSON.parse(audits[0].details) : audits[0].details) : {};
@@ -526,10 +562,12 @@ async function runE2e2Mode() {
     check(replies.length === 0, "[chatter] agent stays silent");
   }
 
-  // Cleanup eval messages so staging threads stay reviewable.
-  if (postedIds.length > 0) {
+  // Cleanup eval messages (parent prompts AND agent replies) so staging
+  // threads stay reviewable.
+  const cleanupIds = [...new Set([...postedIds, ...agentMessageIds])];
+  if (cleanupIds.length > 0) {
     try {
-      await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?id=in.(${postedIds.join(",")})`, {
+      await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?id=in.(${cleanupIds.join(",")})`, {
         method: "DELETE",
         headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
       });
