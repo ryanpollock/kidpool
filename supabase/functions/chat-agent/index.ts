@@ -27,8 +27,8 @@ const CRON_SECRET = Deno.env.get("CRON_SECRET");
 const TOGETHER_API_KEY = Deno.env.get("TOGETHER_API_KEY");
 // Model IDs are config values (CREWMATE_REQUIREMENTS.md §10): swap freely,
 // qualified by the Phase 1 eval gate (scripts/crewmate-eval.mjs).
-const TRIAGE_MODEL = Deno.env.get("CREWMATE_TRIAGE_MODEL") ?? "google/gemma-4-31b-it";
-const PLANNER_MODEL = Deno.env.get("CREWMATE_PLANNER_MODEL") ?? "deepseek-ai/DeepSeek-V4-Flash";
+const TRIAGE_MODEL = Deno.env.get("CREWMATE_TRIAGE_MODEL") ?? "zai-org/GLM-5.3-Flash";
+const PLANNER_MODEL = Deno.env.get("CREWMATE_PLANNER_MODEL") ?? "deepseek-ai/DeepSeek-V4.1-Flash";
 
 const MAX_AGENT_BODY = 3900; // chat_messages caps body at 4000
 const COALESCE_WINDOW_MS = 90_000;
@@ -622,7 +622,7 @@ Deno.serve(async (req) => {
       const triageResult = await generateObject({
         model: together(TRIAGE_MODEL),
         schema: TriageSchema,
-        maxOutputTokens: 200,
+        maxOutputTokens: 1500, // reasoning models think first — budget must cover thinking + JSON
         prompt: [
           `Classify the LATEST message in a parent carpool group's chat.`,
           `Latest message from ${message.sender_name}: "${message.body}"`,
@@ -734,7 +734,7 @@ Deno.serve(async (req) => {
         ].join("\n"),
         tools,
         stopWhen: isStepCount(6),
-        maxOutputTokens: 1500,
+        maxOutputTokens: 4000,
         timeout: { stepMs: 25_000 },
         output: Output.object({
           schema: z.object({
