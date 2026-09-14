@@ -796,6 +796,9 @@ Deno.serve(async (req) => {
           `action: requests a schedule change (cancel a ride, switch cars, volunteer, add a drive, change seat count).`,
           `consent: confirms or declines a pending proposal card.`,
           `chatter: social conversation or anything unrelated to the carpool schedule.`,
+          ``,
+          `Examples of chatter (social, NOT about the schedule): "Anyone else's kid obsessed with Bluey rn" → chatter; "Great game last night!" → chatter; "Happy birthday Priya!!" → chatter; "See everyone at the potluck Saturday" → chatter; "Ugh, this traffic on 280 is brutal today" → chatter.`,
+          `Example question: "Who is driving Wednesday morning?" → question. Example action: "Take Zoe off Thursday's ride" → action.`,
         ].join("\n"),
       });
       const parsedTriage = parseJsonish(triageResult.text);
