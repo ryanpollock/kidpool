@@ -354,6 +354,17 @@
 
 /* ── Bubbles ─────────────────────────────────────────────── */
 
+/* Messages with proposals: the card renders BELOW the bubble, not beside it. */
+.chat-message-block {
+  display: block;
+  max-width: 100%;
+  margin-bottom: 2px;
+}
+
+.chat-message-block--mine {
+  text-align: right;
+}
+
 .chat-bubble-row {
   display: flex;
   align-items: flex-end;
@@ -365,16 +376,9 @@
   justify-content: flex-end;
 }
 
-.chat-bubble-row--mine .chat-bubble-wrap,
-.chat-bubble-row--mine .chat-proposal-wrap {
-  display: flex;
-  justify-content: flex-end;
-  width: 100%;
-}
-
-.chat-bubble-row .chat-proposal-wrap {
-  flex: 1 1 auto;
-}
+/* The old flex-row rules are gone — the proposal card now lives in
+   .chat-message-block BELOW the flex row, not inside it (which put
+   it to the right of the bubble). */
 
 .chat-bubble {
   max-width: 78%;
@@ -448,7 +452,14 @@
 /* ── Proposal cards ─────────────────────────────────────── */
 
 .chat-proposal-wrap {
-  max-width: 92%;
+  max-width: 100%;
+  margin-top: 6px;
+  padding-left: 36px;  /* aligns below the bubble content (avatar + gap) */
+}
+
+.chat-message-block--mine .chat-proposal-wrap {
+  padding-left: 0;
+  padding-right: 36px;  /* mirror alignment for sent messages */
 }
 
 .chat-proposal {

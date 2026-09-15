@@ -280,26 +280,28 @@ function MessageBubble({
   const isAgent = message.sender_kind === "agent";
 
   return (
-    <div className={mine ? "chat-bubble-row chat-bubble-row--mine" : "chat-bubble-row"}>
-      {!mine ? (
-        <ChatAvatar
-          url={isAgent ? null : message.sender_avatar_url}
-          name={isAgent ? "Crewmate AI" : message.sender_name}
-          size={28}
-          className={isAgent ? "chat-avatar--agent" : undefined}
-        />
-      ) : null}
-      <div className={mine ? "chat-bubble chat-bubble--mine" : isAgent ? "chat-bubble chat-bubble--agent" : "chat-bubble"}>
-        {showName && !mine ? (
-          <span className={`chat-bubble-name ${isAgent ? "chat-bubble-name--agent" : ""}`}>
-            {isAgent ? <><ChatBubbleIcon width="11" height="11" /> Crewmate AI</> : message.sender_name}
-          </span>
+    <div className={mine ? "chat-message-block chat-message-block--mine" : "chat-message-block"}>
+      <div className={mine ? "chat-bubble-row chat-bubble-row--mine" : "chat-bubble-row"}>
+        {!mine ? (
+          <ChatAvatar
+            url={isAgent ? null : message.sender_avatar_url}
+            name={isAgent ? "Crewmate AI" : message.sender_name}
+            size={28}
+            className={isAgent ? "chat-avatar--agent" : undefined}
+          />
         ) : null}
-        <p className="chat-bubble-body"><MessageText message={message}/></p>
-        <span className="chat-bubble-time">{formatBubbleTime(message.created_at)}</span>
+        <div className={mine ? "chat-bubble chat-bubble--mine" : isAgent ? "chat-bubble chat-bubble--agent" : "chat-bubble"}>
+          {showName && !mine ? (
+            <span className={`chat-bubble-name ${isAgent ? "chat-bubble-name--agent" : ""}`}>
+              {isAgent ? <><ChatBubbleIcon width="11" height="11" /> Crewmate AI</> : message.sender_name}
+            </span>
+          ) : null}
+          <p className="chat-bubble-body"><MessageText message={message}/></p>
+          <span className="chat-bubble-time">{formatBubbleTime(message.created_at)}</span>
+        </div>
       </div>
       {proposal ? (
-        <div className="chat-proposal-wrap">
+        <div className={`chat-proposal-wrap ${mine ? "chat-proposal-wrap--mine" : ""}`}>
           <ProposalCard
             proposal={proposal}
             myProfileId={myProfileId}
