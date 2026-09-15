@@ -106,13 +106,39 @@ When any text-entry control loses focus, dismiss the simulated keyboard. If the 
 Run these before considering any change complete:
 
 ```bash
-npm run check:contracts       # 166 static contract checks (no live DB, ~1s)
-npm run test:integration:local # 25 integration tests against local Supabase (~19s)
-npm run test:runtime          # Playwright: 8 mobile-runtime + 22 E2E + 5 journeys + 4 exploratory = 39 tests
+npm run check:contracts       # static contract checks (no live DB, ~1s)
+npm run test:integration:local # integration tests against local Supabase (~19s)
+npm run test:runtime          # Playwright: full suite
 npx tsc --noEmit              # TypeScript check
 npm run check:runtime         # Mobile runtime integrity (28 protected files)
-npm run build                 # Full production build (uploads source maps to Sentry if SENTRY_AUTH_TOKEN is set)
+npm run build                 # Full production build
 ```
+
+### Running Playwright from the agent (timeout guidance)
+
+The full Playwright suite takes 20–40+ minutes and WILL exceed the agent's command timeout. Never run the full suite in a single command. Instead:
+
+1. Run spec files individually, or in small groups (2-3 files max)
+2. For specs that take >5 minutes, background them and poll:
+   ```bash
+   # Launch in background (fully detached)
+   (TEST_DB_TARGET=local npx playwright test <spec>.spec.ts --retries=1 > /tmp/pw.log 2>&1 && echo PASS > /tmp/pw.done || echo FAIL > /tmp/pw.done) & disown
+   # Then poll from a short command:
+   ls /tmp/pw.done 2>/dev/null && cat /tmp/pw.done
+   ```
+3. Alternatively, use the chunked approach for the full suite:
+   ```bash
+   # Chunk 1: chat + crewmate (~3 min)
+   TEST_DB_TARGET=local npx playwright test chat.spec.ts chat-enhancements.spec.ts chat-multi-user.spec.ts crewmate.spec.ts --retries=1
+   # Chunk 2: scheduling flows (~8 min)
+   TEST_DB_TARGET=local npx playwright test custom-drive.spec.ts reassignment.spec.ts afternoon-trip.spec.ts afternoon-cycle.spec.ts --retries=1
+   # Chunk 3: journeys + cross-family + exploratory (~15 min, run individually)
+   TEST_DB_TARGET=local npx playwright test cross-family.spec.ts --retries=1
+   TEST_DB_TARGET=local npx playwright test app-journeys.spec.ts --retries=1
+   TEST_DB_TARGET=local npx playwright test app-exploratory.spec.ts --retries=1
+   ```
+4. The critical pre-deploy check is `npm run test:runtime:local -- --grep "Chat|Crewmate"` (the surfaces Crewmate touches), not the full suite.
+5. Always `pkill -f "vite --mode"` before launching to avoid the stale-server reuse trap (see the spec/dev-server pairing note below).
 
 All behavioral tests must pass before pushing to `main`: `npm run test:all`.
 - `check:contracts` (166 static checks) + `test:integration:local` (25) + `test:sites` (4) + `test:runtime` (Playwright) + `tsc` + `check:runtime`

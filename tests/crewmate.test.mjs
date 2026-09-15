@@ -489,3 +489,20 @@ test("@Crewmate mentions: one sanctioned null-profile form, honored as an explic
   assert.match(fn, /!block && !taggedCrewmate && \/\^NOREPLY\\b\/i\.test\(answer\)/);
   assert.match(fn, /explicitly tagged you with @Crewmate/);
 });
+
+const swapFixUrl = new URL(
+  "../supabase/migrations/202609150002_swap_capacity_fix.sql",
+  import.meta.url,
+);
+
+test("Swap fix: capacity is updated to the incoming car, legible error when no big-enough car", async () => {
+  const sql = await readFile(swapFixUrl, "utf8");
+  // Both vehicle_id AND child_passenger_capacity are set from the resolved vehicle.
+  assert.match(sql, /set driver_profile_id = v_b\.driver_profile_id,\s+vehicle_id = v_vehicle_a,\s+child_passenger_capacity = v_capacity_a/i);
+  assert.match(sql, /set driver_profile_id = v_a\.driver_profile_id,\s+vehicle_id = v_vehicle_b,\s+child_passenger_capacity = v_capacity_b/i);
+  // Clear error when a driver has no car with enough seats.
+  assert.match(sql, /does not have an active car with enough seats/);
+  // Seat count comes from the resolved vehicle, not the old assignment.
+  assert.match(sql, /v_capacity_a := \(\s*select child_passenger_capacity from public\.vehicles where id = v_vehicle_a\s*\)/i);
+  assert.match(sql, /v_capacity_b := \(\s*select child_passenger_capacity from public\.vehicles where id = v_vehicle_b\s*\)/i);
+});
