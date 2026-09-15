@@ -132,6 +132,7 @@ function ChatAvatar({
 }
 
 function threadTitle(thread: ChatThreadSummary, myProfileId: string): string {
+  if (thread.kind === "agent") return "Crewmate AI";
   if (thread.kind === "everyone") return "Everyone";
   if (thread.kind === "group") return thread.title ?? "Group conversation";
   const other = thread.participants.find((p) => p.id !== myProfileId) ?? thread.participants[0];
@@ -139,6 +140,7 @@ function threadTitle(thread: ChatThreadSummary, myProfileId: string): string {
 }
 
 function threadSubtitle(thread: ChatThreadSummary, myProfileId: string): string {
+  if (thread.kind === "agent") return "AI carpool assistant";
   if (thread.kind === "everyone") {
     return `${thread.participants.length} parent${thread.participants.length === 1 ? "" : "s"}`;
   }
@@ -159,9 +161,22 @@ function inboxPreview(thread: ChatThreadSummary): string {
 
 const PROPOSAL_LABELS: Record<string, string> = {
   cancel_ride: "Cancel a ride",
+  cancel_ride_range: "Cancel rides",
   switch_slot: "Change pickup time",
+  add_ride: "Add a ride",
+  place_child: "Change car",
+  decline_drive: "Decline a drive",
+  volunteer_drive: "Cover a drive",
   swap_drive: "Swap a drive",
+  change_vehicle: "Change car",
+  adjust_times: "Change times",
+  cancel_trip: "Cancel trip",
   coverage_fill: "Cover a drive",
+  admin_sql: "Data change",
+  offer_custom_drive: "Extra drive",
+  join_custom_drive: "Join extra drive",
+  leave_custom_drive: "Leave extra drive",
+  cancel_custom_drive: "Cancel extra drive",
 };
 
 const PROPOSAL_STATUS_LABELS: Record<ChatProposalStatus, string> = {
@@ -319,6 +334,7 @@ export function NewChatSheet({
   working,
   error,
   onCreate,
+  onCrewmate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -328,6 +344,7 @@ export function NewChatSheet({
   working: boolean;
   error: string | null;
   onCreate: (profileIds: string[], title: string) => void;
+  onCrewmate: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -406,6 +423,22 @@ export function NewChatSheet({
         ) : null}
 
         <div className="chat-newchat-list">
+          {/* Pinned Crewmate entry — always present, never search-filtered,
+              and it opens immediately rather than joining the selection. */}
+          <button
+            type="button"
+            className="chat-newchat-row chat-newchat-row--crewmate"
+            onClick={onCrewmate}
+            data-testid="chat-new-chat-crewmate"
+          >
+            <span className="chat-avatar chat-avatar--agent" aria-label="Crewmate AI">
+              <ChatBubbleIcon width="16" height="16" />
+            </span>
+            <span className="chat-newchat-row-info">
+              <strong>Crewmate AI</strong>
+              <small>Ask the carpool assistant anything</small>
+            </span>
+          </button>
           {loading ? (
             <p className="helper-copy">Loading parents…</p>
           ) : candidates.length === 0 ? (
@@ -553,8 +586,23 @@ export function ChatInboxScreen({
     }
   };
 
+  const createCrewmateThread = async () => {
+    setNewChatWorking(true);
+    setNewChatError(null);
+    try {
+      const threadId = await repository.ensureAgentThread(groupId);
+      setNewChatOpen(false);
+      onOpenThread(threadId);
+    } catch (e) {
+      setNewChatError(readableChatError(e));
+    } finally {
+      setNewChatWorking(false);
+    }
+  };
+
   const everyone = threads.find((t) => t.kind === "everyone");
-  const rest = threads.filter((t) => t.kind !== "everyone");
+  const agentThread = threads.find((t) => t.kind === "agent");
+  const rest = threads.filter((t) => t.kind !== "everyone" && t.kind !== "agent");
 
   const renderRow = (thread: ChatThreadSummary) => {
     const unread = thread.unread_count > 0;
@@ -568,6 +616,10 @@ export function ChatInboxScreen({
         <span className="chat-thread-avatars">
           {thread.kind === "everyone" ? (
             <span className="chat-avatar chat-avatar--everyone" aria-label="Everyone">
+              <ChatBubbleIcon width="16" height="16" />
+            </span>
+          ) : thread.kind === "agent" ? (
+            <span className="chat-avatar chat-avatar--agent" aria-label="Crewmate AI">
               <ChatBubbleIcon width="16" height="16" />
             </span>
           ) : (
@@ -594,6 +646,7 @@ export function ChatInboxScreen({
               </span>
             ) : null}
             {thread.kind === "everyone" ? <span className="chat-thread-badge">All parents</span> : null}
+            {thread.kind === "agent" ? <span className="chat-thread-badge">AI</span> : null}
           </span>
           <span className="chat-thread-preview">{inboxPreview(thread)}</span>
         </span>
@@ -652,6 +705,7 @@ export function ChatInboxScreen({
         </div>
       ) : (
         <div className="chat-thread-list">
+          {agentThread ? renderRow(agentThread) : null}
           {everyone ? renderRow(everyone) : null}
           {rest.map(renderRow)}
         </div>
@@ -666,6 +720,7 @@ export function ChatInboxScreen({
         working={newChatWorking}
         error={newChatError}
         onCreate={(ids, title) => void createConversation(ids, title)}
+        onCrewmate={() => void createCrewmateThread()}
       />
     </div>
   );
@@ -709,18 +764,34 @@ export function ChatThreadScreen({
   const [extras, setExtras] = useState<ChatExtras>({ reactions: [], previews: [] });
   const requestedPreviews = useRef(new Set<string>());
   const messageIds = useRef<string[]>([]);
-  const mentionOptions = (thread?.participants ?? []).filter(p => p.id !== myProfileId && p.name.toLocaleLowerCase().includes(mentionQuery?.query.toLocaleLowerCase() ?? "")).slice(0, 6);
+  type MentionOption = { key: string; name: string; crewmate?: boolean; participant?: ChatParticipantSummary };
+  const mentionOptions: MentionOption[] = (() => {
+    const q = mentionQuery?.query.toLocaleLowerCase() ?? "";
+    const people = (thread?.participants ?? [])
+      .filter(p => p.id !== myProfileId && p.name.toLocaleLowerCase().includes(q))
+      .slice(0, 6)
+      .map((p): MentionOption => ({ key: p.id, name: p.name, participant: p }));
+    // @Crewmate is an explicit invocation — the agent always responds to a
+    // tagged message. Pointless in its own private thread, useful everywhere
+    // else.
+    const crewmate: MentionOption | null =
+      thread && thread.kind !== "agent" && "crewmate ai".includes(q) ? { key: "crewmate", name: "Crewmate AI", crewmate: true } : null;
+    return crewmate ? [crewmate, ...people] : people;
+  })();
   const updateMentionQuery = (text: string, cursor: number) => {
     const match = text.slice(0, cursor).match(/(?:^|\s)@([^@\n]{0,60})$/);
     setMentionQuery(match ? { start: cursor - match[1].length - 1, end: cursor, query: match[1] } : null);
     setMentionIndex(0);
   };
-  const insertMention = (person: ChatParticipantSummary) => {
+  const insertMention = (option: { key: string; crewmate?: boolean; participant?: ChatParticipantSummary }) => {
     if (!mentionQuery) return;
-    const label = `@${person.name}`;
+    // The Crewmate tag is the one sanctioned null-profile mention; the
+    // validation trigger accepts exactly label "@Crewmate".
+    const label = option.crewmate ? "@Crewmate" : `@${option.participant!.name}`;
+    const profileId = option.crewmate ? null : option.participant!.id;
     const next = draft.slice(0,mentionQuery.start) + label + " " + draft.slice(mentionQuery.end);
     const start = Array.from(draft.slice(0,mentionQuery.start)).length;
-    setMentions([...editMentions(draft,next,mentions), { profile_id: person.id, label, start, end: start + Array.from(label).length }].sort((a,b)=>a.start-b.start));
+    setMentions([...editMentions(draft,next,mentions), { profile_id: profileId, label, start, end: start + Array.from(label).length }].sort((a,b)=>a.start-b.start));
     setDraft(next); setMentionQuery(null);
     requestAnimationFrame(()=>{const el=document.querySelector<HTMLTextAreaElement>('[data-testid="chat-composer-input"]');el?.focus();el?.setSelectionRange(mentionQuery.start+label.length+1,mentionQuery.start+label.length+1);});
   };
@@ -955,7 +1026,8 @@ export function ChatThreadScreen({
               <span className="chat-header-sub">
                 {thread ? threadSubtitle(thread, myProfileId) : ""}
                 {thread?.kind === "everyone" ? " · Crewmate AI is in this chat" : ""}
-                {thread?.kind !== "everyone" && thread ? " · Crewmate AI will join to help" : ""}
+                {thread?.kind === "agent" ? " · ask it anything about the schedule" : ""}
+                {thread?.kind !== "everyone" && thread?.kind !== "agent" && thread ? " · Crewmate AI will join to help" : ""}
               </span>
               {thread?.notifications_muted ? <span className="chat-muted-flag">Muted</span> : thread?.notification_mode === "mentions" ? <span className="chat-muted-flag">Mentions only</span> : null}
             </small>
@@ -1038,13 +1110,13 @@ export function ChatThreadScreen({
         {/* Enter sends, Shift+Enter inserts a newline (product decision).
             The isComposing guard keeps IME/emoji-picker confirmation
             presses from sending mid-composition. */}
-        {mentionQuery && mentionOptions.length ? <div className="chat-mention-options" role="listbox" id="chat-mention-list" aria-label="Mention a parent">{mentionOptions.map((p,i)=><button type="button" key={p.id} id={`mention-${p.id}`} role="option" aria-selected={i===mentionIndex} onPointerDown={e=>e.preventDefault()} onClick={()=>insertMention(p)}>{p.name}</button>)}</div>:null}
+        {mentionQuery && mentionOptions.length ? <div className="chat-mention-options" role="listbox" id="chat-mention-list" aria-label="Mention a parent or Crewmate">{mentionOptions.map((p,i)=><button type="button" key={p.key} id={`mention-${p.key}`} role="option" aria-selected={i===mentionIndex} onPointerDown={e=>e.preventDefault()} onClick={()=>insertMention(p)}>{p.crewmate ? <><ChatBubbleIcon width="11" height="11" /> {p.name} <span className="chat-thread-badge">AI</span></> : p.name}</button>)}</div>:null}
         <KeyboardTextarea
           role="combobox"
           aria-autocomplete="list"
           aria-expanded={!!mentionQuery && mentionOptions.length > 0}
           aria-controls={mentionQuery ? "chat-mention-list" : undefined}
-          aria-activedescendant={mentionQuery && mentionOptions[mentionIndex] ? `mention-${mentionOptions[mentionIndex].id}` : undefined}
+          aria-activedescendant={mentionQuery && mentionOptions[mentionIndex] ? `mention-${mentionOptions[mentionIndex].key}` : undefined}
           placeholder="Message…"
           value={draft}
           maxLength={4000}

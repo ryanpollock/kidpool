@@ -2642,6 +2642,13 @@ async getLatestScheduleVersion(
     );
   }
 
+  /** Open (or create) the caller's private Crewmate AI thread. */
+  async ensureAgentThread(groupId: string): Promise<string> {
+    return unwrapRequired(
+      await this.client.rpc("ensure_agent_thread", { target_group_id: groupId }),
+    );
+  }
+
   /** Latest messages for a thread, oldest-first (a page is fetched
    * newest-first then reversed so "load older" pages with .lt(cursor)). */
   async listThreadMessages(

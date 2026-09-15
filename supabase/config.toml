@@ -415,3 +415,6 @@ enabled = true
 
 [functions.chat-link-preview]
 verify_jwt = false # The handler validates the user JWT and reads the message through RLS.
+
+[functions.chat-agent]
+verify_jwt = false # The DB trigger authenticates with the cron secret; the handler re-verifies the Bearer token itself.

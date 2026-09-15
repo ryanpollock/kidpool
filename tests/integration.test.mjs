@@ -318,9 +318,9 @@ beforeEach(() => {
   if (IS_LOCAL) {
     // psql handles multiple statements natively — send them all in one call.
     runSql(`
-      TRUNCATE public.chat_link_previews, public.chat_reactions, public.chat_messages, public.chat_proposals, public.chat_participants, public.chat_threads, public.reassignment_requests, public.drive_status, public.rider_assignments, public.driver_confirmations, public.driver_assignments, public.schedule_versions, public.ride_requests, public.driver_availability, public.weekly_checkins, public.trips, public.weeks, public.audit_events, public.vehicles, public.children, public.household_join_codes, public.memberships, public.households, public.push_subscriptions, public.profiles RESTART IDENTITY;
+      TRUNCATE public.crewmate_runs, public.chat_link_previews, public.chat_reactions, public.chat_messages, public.chat_proposals, public.chat_participants, public.chat_threads, public.reassignment_requests, public.drive_status, public.rider_assignments, public.driver_confirmations, public.driver_assignments, public.schedule_versions, public.ride_requests, public.driver_availability, public.weekly_checkins, public.trips, public.weeks, public.audit_events, public.vehicles, public.children, public.household_join_codes, public.memberships, public.households, public.push_subscriptions, public.profiles RESTART IDENTITY;
       DELETE FROM auth.users WHERE email LIKE '%@test.kidpool' OR email LIKE '%@e2e.kidpool' OR email LIKE '%@lib.test.kidpool';
-      INSERT INTO public.groups (id, name, slug, timezone, meeting_point, school_name) VALUES ('${GROUP_ID}', 'Midtown Terrace–Presidio Carpool', 'midtown-presidio', 'America/Los_Angeles', 'Midtown Terrace Playground', 'Presidio Middle School') ON CONFLICT (id) DO UPDATE SET name = excluded.name, slug = excluded.slug, timezone = excluded.timezone, meeting_point = excluded.meeting_point, school_name = excluded.school_name, coordinator_chat_access = true;
+      INSERT INTO public.groups (id, name, slug, timezone, meeting_point, school_name) VALUES ('${GROUP_ID}', 'Midtown Terrace–Presidio Carpool', 'midtown-presidio', 'America/Los_Angeles', 'Midtown Terrace Playground', 'Presidio Middle School') ON CONFLICT (id) DO UPDATE SET name = excluded.name, slug = excluded.slug, timezone = excluded.timezone, meeting_point = excluded.meeting_point, school_name = excluded.school_name, coordinator_chat_access = true, crewmate_enabled = false;
     `);
   } else {
     cleanupAllTestData();
@@ -2841,4 +2841,540 @@ test("either-dedup: manually_assign_driver skips a child already covered on the 
 
   cleanupAllTestData();
   for (const u of [coord, parentA, parentB]) deleteTestUser(u.userId);
+});
+
+// ── Crewmate AI Phase 1 (Q&A-only) ─────────────────────────────
+// Spec: CREWMATE_REQUIREMENTS.md §5/§13. Covers the private agent
+// threads, the run-ledger coalescing claim, the SELECT-only SQL tool,
+// and the chat-agent function's flag gate + fail-soft missing-key path.
+// The full trigger→pg_net→function loop (needs vault secrets) is
+// exercised below in local mode only; staging uses the deploy + eval
+// harness (scripts/crewmate-eval.mjs --mode e2e).
+
+function serviceRpcCall(rpcName, body) {
+  const result = execSync(
+    `curl -s -w "\\n%{http_code}" -X POST -H "apikey: ${SERVICE_KEY}" -H "Authorization: Bearer ${SERVICE_KEY}" -H "Content-Type: application/json" -d '${JSON.stringify(body)}' "${SUPABASE_URL}/rest/v1/rpc/${rpcName}"`,
+    { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
+  );
+  const lines = result.trim().split("\n");
+  const httpCode = lines[lines.length - 1];
+  const responseBody = lines.slice(0, -1).join("\n").trim();
+  if (httpCode === "204" || !responseBody) return {};
+  try {
+    return JSON.parse(responseBody);
+  } catch {
+    return { raw: responseBody, httpCode };
+  }
+}
+
+test("Crewmate: ensure_agent_thread creates a private thread with disclosure and is idempotent", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(810, "CrewmateA");
+  const b = setupHousehold(811, "CrewmateB");
+  const coord = setupHousehold(812, "CrewmateCoord", "member", true);
+
+  const aJwt = signInUser("crewmatea@test.kidpool").access_token;
+  const threadId = rpcCall(aJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+  assert.ok(typeof threadId === "string" && threadId.length > 20, `ensure_agent_thread should return a thread id, got: ${JSON.stringify(threadId)}`);
+
+  const threads = restGet("chat_threads", { id: threadId });
+  assert.equal(threads.length, 1);
+  assert.equal(threads[0].kind, "agent");
+  assert.equal(threads[0].group_id, GROUP_ID);
+
+  const participants = restGet("chat_participants", { thread_id: threadId });
+  assert.equal(participants.length, 1, "only the creator participates in a Crewmate thread");
+  assert.equal(participants[0].profile_id, a.userId);
+
+  const messages = restGet("chat_messages", { thread_id: threadId });
+  assert.equal(messages.length, 1, "the disclosure note is the first message");
+  assert.equal(messages[0].sender_kind, "system");
+  assert.match(messages[0].body, /Crewmate AI/i);
+  assert.match(messages[0].body, /nothing changes unless a parent confirms/i);
+
+  // Idempotent: a second call returns the same thread.
+  const again = rpcCall(aJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+  assert.equal(again, threadId);
+  assert.equal(restGet("chat_messages", { thread_id: threadId }).length, 1, "no duplicate disclosure on re-open");
+
+  // Visibility: A participates; a non-participating member cannot read it,
+  // but the coordinator can while the near-term oversight flag is on.
+  const bJwt = signInUser("crewmateb@test.kidpool").access_token;
+  const bRows = restGetAs(bJwt, "chat_threads", { id: threadId });
+  assert.equal(bRows.length, 0, "another member must not see a private Crewmate thread");
+  const coordJwt = signInUser("crewmatecoord@test.kidpool").access_token;
+  const coordRows = restGetAs(coordJwt, "chat_threads", { id: threadId });
+  assert.equal(coordRows.length, 1, "coordinator oversight reads the agent thread while the flag is on");
+
+  // Signed-out callers are rejected.
+  const anonResult = JSON.parse(execSync(
+    `curl -s -X POST -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"target_group_id":"${GROUP_ID}"}' "${SUPABASE_URL}/rest/v1/rpc/ensure_agent_thread"`,
+    { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.match(anonResult.message ?? "", /authenticated|jwt|permission denied/i, `anon call must be rejected, got: ${JSON.stringify(anonResult)}`);
+
+  cleanupAllTestData();
+  for (const u of [a, b, coord]) deleteTestUser(u.userId);
+});
+
+test("Crewmate: claim_crewmate_run coalesces concurrent triggers and reaps stale runs", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(820, "ClaimA");
+  const aJwt = signInUser("claima@test.kidpool").access_token;
+  const threadId = rpcCall(aJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+  // A real parent message (the trigger_message_id FK requires one).
+  const messageId = UID(821);
+  runSql(`INSERT INTO public.chat_messages (id, thread_id, sender_profile_id, sender_kind, body) VALUES ('${messageId}', '${threadId}', '${a.userId}', 'parent', 'claim test message') ON CONFLICT DO NOTHING;`);
+
+  // Authenticated clients must not be able to claim runs.
+  const denied = rpcCall(aJwt, "claim_crewmate_run", {
+    p_group_id: GROUP_ID, p_thread_id: threadId, p_trigger_message_id: messageId,
+  });
+  assert.ok(chatSqlError(denied), `authenticated claim must fail, got: ${JSON.stringify(denied)}`);
+  assert.match(denied.message ?? "", /Not allowed|permission denied/i);
+
+  const runId = serviceRpcCall("claim_crewmate_run", {
+    p_group_id: GROUP_ID, p_thread_id: threadId, p_trigger_message_id: messageId,
+  });
+  assert.ok(typeof runId === "string" && runId.length > 20, `first claim returns a run id, got: ${JSON.stringify(runId)}`);
+
+  // A second claim inside the window is coalesced into the live run.
+  const second = serviceRpcCall("claim_crewmate_run", {
+    p_group_id: GROUP_ID, p_thread_id: threadId, p_trigger_message_id: messageId,
+  });
+  assert.equal(second, null, `second claim must coalesce (null), got: ${JSON.stringify(second)}`);
+  const runs = restGet("crewmate_runs", { id: runId });
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].status, "running");
+  assert.equal(runs[0].coalesced_count, 1);
+
+  // A stale run (older than the window) is reaped and a fresh claim wins.
+  runSql(`UPDATE public.crewmate_runs SET started_at = now() - interval '5 minutes' WHERE id = '${runId}';`);
+  const freshId = serviceRpcCall("claim_crewmate_run", {
+    p_group_id: GROUP_ID, p_thread_id: threadId, p_trigger_message_id: messageId,
+  });
+  assert.ok(typeof freshId === "string" && freshId !== runId, "a fresh claim after the stale window creates a new run");
+  const reaped = restGet("crewmate_runs", { id: runId });
+  assert.equal(reaped[0].status, "failed", "stale run is reaped to failed");
+  const detail = typeof reaped[0].outcome_detail === "string" ? JSON.parse(reaped[0].outcome_detail) : reaped[0].outcome_detail;
+  assert.equal(detail.error, "stale_run_reaped");
+
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+});
+
+test("Crewmate: crewmate_readonly_query is single-SELECT, group-scoped, and service-only", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(830, "RoA");
+  const groupB = UID(840);
+
+  // Defensive cleanup, then a second group with one household + one child so
+  // group scoping is observable.
+  runSql(`
+    DELETE FROM public.groups WHERE id = '${groupB}';
+    INSERT INTO public.groups (id, name, slug, timezone, meeting_point, school_name) VALUES ('${groupB}', 'Other Group', 'other-group-x', 'America/Los_Angeles', 'Other Spot', 'Other School') ON CONFLICT DO NOTHING;
+    INSERT INTO public.households (id, group_id, name, created_by) VALUES ('${UID(841)}', '${groupB}', 'OtherHouse', '${a.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, phone, created_by) VALUES ('${UID(842)}', '${groupB}', '${UID(841)}', 'Other', 'Kid', '415-555-0000', '${a.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(843)}', '${GROUP_ID}', '${a.householdId}', 'Pilot', 'Kid', '${a.userId}') ON CONFLICT DO NOTHING;
+  `);
+
+  const query = (sql) => serviceRpcCall("crewmate_readonly_query", { p_group_id: GROUP_ID, p_sql: sql });
+
+  // Group scoping: count only sees the pilot group's child even with no WHERE.
+  const counted = query("select count(*) as n from children");
+  assert.equal(counted.row_count, 1);
+  assert.equal(counted.rows[0].n, 1, "cross-group rows must be invisible (RLS scoping)");
+
+  // WITH queries are allowed.
+  const withQ = query("with x as (select count(*) as n from children) select n from x");
+  assert.equal(withQ.rows[0].n, 1);
+
+  // Validation: multi-statement, comments, mutations, and dangerous calls are rejected.
+  for (const bad of [
+    "select 1; select 2",
+    "select 1 -- comment",
+    "update children set first_name = 'x'",
+    "insert into children (group_id, household_id, first_name, last_name, created_by) values ('" + GROUP_ID + "', '" + a.householdId + "', 'N', 'O', '" + a.userId + "')",
+    "delete from children",
+    "select set_config('app.crewmate_group', '00000000-0000-0000-0000-000000000000', true)",
+    "select current_setting('app.crewmate_group')",
+    "select pg_sleep(1)",
+    "truncate table children",
+  ]) {
+    const res = query(bad);
+    assert.ok(chatSqlError(res), `must reject: ${bad} — got: ${JSON.stringify(res)}`);
+  }
+
+  // Execute-time guards: un-granted tables and columns surface as tool errors,
+  // not data leaks.
+  const profileLeak = query("select count(*) as n from profiles");
+  assert.ok(profileLeak.error && /permission denied/i.test(profileLeak.error), `profiles must be unreadable, got: ${JSON.stringify(profileLeak)}`);
+  const phoneLeak = query("select phone from children limit 1");
+  assert.ok(phoneLeak.error && /permission denied/i.test(phoneLeak.error), `kid phone column must be unreadable, got: ${JSON.stringify(phoneLeak)}`);
+
+  // Authenticated clients cannot call the RPC at all.
+  const aJwt = signInUser("roa@test.kidpool").access_token;
+  const denied = rpcCall(aJwt, "crewmate_readonly_query", { p_group_id: GROUP_ID, p_sql: "select 1 as one" });
+  assert.ok(chatSqlError(denied), `authenticated call must fail, got: ${JSON.stringify(denied)}`);
+  assert.match(denied.message ?? "", /Not allowed|permission denied/i);
+
+  runSql(`DELETE FROM public.groups WHERE id = '${groupB}';`);
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+});
+
+test("Crewmate: chat-agent skips disabled groups and fail-soft records missing API key (local)", { skip: !IS_LOCAL || !SERVICE_KEY }, async () => {
+  const a = setupHousehold(850, "FnA");
+  const aJwt = signInUser("fna@test.kidpool").access_token;
+  const threadId = rpcCall(aJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+
+  // Post a real parent message (RLS allows the participant).
+  const postedRows = restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: a.userId, body: "Who is driving Wednesday?",
+  });
+  assert.ok(Array.isArray(postedRows) && postedRows.length === 1, "parent message should insert");
+  const posted = postedRows[0];
+
+  // Flag off (default): the function itself refuses, beyond the trigger gate.
+  const disabledRes = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${SERVICE_KEY}" -H "Content-Type: application/json" -d '{"thread_id":"${threadId}","message_id":"${posted.id}"}' "${SUPABASE_URL}/functions/v1/chat-agent"`,
+    { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.equal(disabledRes.skipped, "disabled", `flag-off invocation must skip, got: ${JSON.stringify(disabledRes)}`);
+  assert.equal(restGet("crewmate_runs", { thread_id: threadId }).length, 0, "no ledger row when disabled");
+
+  // Flag on, no TOGETHER_API_KEY locally: the run is claimed and recorded
+  // as failed with a legible reason, and no agent message is posted.
+  runSql(`UPDATE public.groups SET crewmate_enabled = true WHERE id = '${GROUP_ID}';`);
+  const enabledRes = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${SERVICE_KEY}" -H "Content-Type: application/json" -d '{"thread_id":"${threadId}","message_id":"${posted.id}"}' "${SUPABASE_URL}/functions/v1/chat-agent"`,
+    { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.equal(enabledRes.skipped, "missing_together_api_key", `no-key invocation must fail soft, got: ${JSON.stringify(enabledRes)}`);
+
+  const runs = restGet("crewmate_runs", { thread_id: threadId });
+  assert.equal(runs.length, 1, "the run is recorded in the ledger");
+  assert.equal(runs[0].status, "failed");
+  const detail = typeof runs[0].outcome_detail === "string" ? JSON.parse(runs[0].outcome_detail) : runs[0].outcome_detail;
+  assert.equal(detail.error, "missing_together_api_key");
+  assert.equal(restGet("chat_messages", { thread_id: threadId, sender_kind: "agent" }).length, 0, "no agent message without a working model");
+
+  // Unauthorized callers are rejected (no Bearer at all).
+  const unauth = JSON.parse(execSync(
+    `curl -s -X POST -H "Content-Type: application/json" -d '{"thread_id":"${threadId}","message_id":"${posted.id}"}' "${SUPABASE_URL}/functions/v1/chat-agent"`,
+    { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.match(unauth.error ?? "", /Unauthorized/i, `missing auth must 401, got: ${JSON.stringify(unauth)}`);
+
+  runSql(`UPDATE public.groups SET crewmate_enabled = false WHERE id = '${GROUP_ID}';`);
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+});
+
+// ── Crewmate AI Phase 2 (proposal engine) ──────────────────────
+// Spec: CREWMATE_REQUIREMENTS.md §6–§8. The safety-critical paths:
+// catalog execution, dual consent for swaps, admin_sql confinement +
+// group scoping, and the in-thread consent evidence checks.
+
+// ONE published schedule_version per week (partial unique index) — the
+// caller creates it via seedWeekVersion() and all assignments share it.
+function seedPublishedAssignment(n, versionId, tripId, driverUserId, householdId, vehicleLabel, capacity, kidId) {
+  const vehicleId = UID(2200 + n);
+  const assignmentId = UID(2300 + n);
+  runSql(`
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleId}', '${GROUP_ID}', '${householdId}', '${vehicleLabel}', ${capacity}, true, '${driverUserId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_assignments (id, group_id, schedule_version_id, trip_id, driver_profile_id, vehicle_id, child_passenger_capacity, status) VALUES ('${assignmentId}', '${GROUP_ID}', '${versionId}', '${tripId}', '${driverUserId}', '${vehicleId}', ${capacity}, 'confirmed') ON CONFLICT DO NOTHING;
+    INSERT INTO public.rider_assignments (group_id, schedule_version_id, trip_id, driver_assignment_id, child_id) VALUES ('${GROUP_ID}', '${versionId}', '${tripId}', '${assignmentId}', '${kidId}') ON CONFLICT DO NOTHING;
+  `);
+  return { versionId, vehicleId, assignmentId };
+}
+
+test("Crewmate 2: cancel_ride_range executes a multi-day absence through a proposal", { skip: !SERVICE_KEY }, async () => {
+  const parent = setupHousehold(1110, "RangeParent");
+  const driver = setupHousehold(1111, "RangeDriver");
+  const kid = UID(2400);
+  const { weekId, tripIds, dates } = setupWeekAndTrips();
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kid}', '${GROUP_ID}', '${parent.householdId}', 'Romy', 'Ranger', '${parent.userId}') ON CONFLICT DO NOTHING;`);
+  const rangeVersion = UID(2450);
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${rangeVersion}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
+  seedPublishedAssignment(1, rangeVersion, tripIds[0], driver.userId, driver.householdId, "Rover", 4, kid);
+  seedPublishedAssignment(2, rangeVersion, tripIds[2], driver.userId, driver.householdId, "Rover", 4, kid);
+
+  const parentJwt = signInUser("rangeparent@test.kidpool").access_token;
+  const threadId = rpcCall(parentJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+  const proposalId = UID(2500);
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${proposalId}', '${GROUP_ID}', '${threadId}', 'cancel_ride_range', jsonb_build_object('child_id','${kid}','from_date','${dates[0]}','to_date','${dates[4]}'), 'Cancel Romy Ranges rides Mon-Fri', '${parent.userId}', 'pending');
+  `);
+
+  // Only the child's parent can confirm.
+  const other = setupHousehold(1112, "RangeOther");
+  const otherJwt = signInUser("rangeother@test.kidpool").access_token;
+  const denied = rpcCall(otherJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.ok(chatSqlError(denied), "non-parent confirm must fail");
+
+  const confirmed = rpcCall(parentJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.equal(confirmed.status, "executed", `confirm should execute: ${JSON.stringify(confirmed).slice(0, 160)}`);
+
+  const remaining = restGet("rider_assignments", { child_id: kid });
+  assert.equal(remaining.length, 0, "all range rides cancelled");
+  const audit = restGet("audit_events", { entity_id: kid });
+  assert.ok(audit.some((a) => a.action === "cancel_ride_range"), "range cancellation audited");
+
+  cleanupAllTestData();
+  for (const u of [parent, driver, other]) deleteTestUser(u.userId);
+});
+
+test("Crewmate 2: swap_drive needs BOTH drivers' OK (dual consent)", { skip: !SERVICE_KEY }, async () => {
+  const driverA = setupHousehold(1120, "SwapA");
+  const driverB = setupHousehold(1121, "SwapB");
+  const riderA = setupHousehold(1122, "SwapRiderA");
+  const riderB = setupHousehold(1123, "SwapRiderB");
+  const kidA = UID(2410);
+  const kidB = UID(2411);
+  const { weekId, tripIds } = setupWeekAndTrips();
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidA}', '${GROUP_ID}', '${riderA.householdId}', 'Swa', 'One', '${riderA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidB}', '${GROUP_ID}', '${riderB.householdId}', 'Swb', 'Two', '${riderB.userId}') ON CONFLICT DO NOTHING;
+  `);
+  const swapVersion = UID(2515);
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${swapVersion}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
+  const a = seedPublishedAssignment(11, swapVersion, tripIds[0], driverA.userId, driverA.householdId, "AlphaCar", 4, kidA);
+  const b = seedPublishedAssignment(12, swapVersion, tripIds[4], driverB.userId, driverB.householdId, "BetaCar", 4, kidB);
+
+  const threadId = rpcCall(signInUser("swapa@test.kidpool").access_token, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+  const pA = UID(2510);
+  const pB = UID(2511);
+  const params = jsonb => jsonb;
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${pB}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${a.assignmentId}','assignment_b','${b.assignmentId}','sibling_proposal_id','${pA}'), 'Swap — B side', '${driverB.userId}', 'pending');
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${pA}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${a.assignmentId}','assignment_b','${b.assignmentId}','sibling_proposal_id','${pB}'), 'Swap — A side', '${driverA.userId}', 'pending');
+  `);
+
+  const jwtA = signInUser("swapa@test.kidpool").access_token;
+  const jwtB = signInUser("swapb@test.kidpool").access_token;
+
+  // First confirm parks: nothing changes yet.
+  const first = rpcCall(jwtA, "confirm_chat_proposal", { p_proposal_id: pA });
+  assert.equal(first.status, "confirmed", `first swap confirm parks: ${JSON.stringify(first).slice(0, 140)}`);
+  let assignA = restGet("driver_assignments", { id: a.assignmentId })[0];
+  assert.equal(assignA.driver_profile_id, driverA.userId, "no swap after one consent");
+
+  // Second confirm executes both.
+  const second = rpcCall(jwtB, "confirm_chat_proposal", { p_proposal_id: pB });
+  assert.equal(second.status, "executed", `second swap confirm executes: ${JSON.stringify(second).slice(0, 140)}`);
+  assignA = restGet("driver_assignments", { id: a.assignmentId })[0];
+  const assignB = restGet("driver_assignments", { id: b.assignmentId })[0];
+  assert.equal(assignA.driver_profile_id, driverB.userId, "driver B now owns trip A");
+  assert.equal(assignB.driver_profile_id, driverA.userId, "driver A now owns trip B");
+  // The capacity column matches the incoming driver's car, not the old one.
+  const carA = restGet("vehicles", { id: assignA.vehicle_id })[0];
+  assert.equal(assignA.child_passenger_capacity, carA.child_passenger_capacity,
+    "capacity follows the new vehicle after swap");
+  const carB = restGet("vehicles", { id: assignB.vehicle_id })[0];
+  assert.equal(assignB.child_passenger_capacity, carB.child_passenger_capacity,
+    "capacity follows the new vehicle after swap");
+  const executedA = restGet("chat_proposals", { id: pA })[0];
+  assert.equal(executedA.status, "executed", "both linked proposals are executed");
+
+  const smallDriver = setupHousehold(1124, "SwapSmall");
+  const smallRider = setupHousehold(1125, "SwapSmallRider");
+  // A swap where the incoming driver has no big-enough car must fail with a
+  // clear error and change nothing. Two NEW assignments: driverA's drive on
+  // trip[1] with 2 riders, and smallDriver's drive on trip[2] (0 riders).
+  // Swapping puts smallDriver onto the 2-rider drive — their 1-seat car
+  // can't hold those riders.
+  const bigKidA = UID(2415);
+  const bigKidB = UID(2416);
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${bigKidA}', '${GROUP_ID}', '${smallRider.householdId}', 'Big', 'One', '${smallRider.userId}') ON CONFLICT DO NOTHING;`);
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${bigKidB}', '${GROUP_ID}', '${smallRider.householdId}', 'Big', 'Two', '${smallRider.userId}') ON CONFLICT DO NOTHING;`);
+  const bigDrive = seedPublishedAssignment(13, swapVersion, tripIds[2], driverA.userId, driverA.householdId, "BigCar", 4, bigKidA);
+  runSql(`INSERT INTO public.rider_assignments (group_id, schedule_version_id, trip_id, driver_assignment_id, child_id) VALUES ('${GROUP_ID}', '${swapVersion}', '${tripIds[2]}', '${bigDrive.assignmentId}', '${bigKidB}') ON CONFLICT DO NOTHING;`);
+  const smallDrive = seedPublishedAssignment(14, swapVersion, tripIds[3], smallDriver.userId, smallDriver.householdId, "TinyCar", 1, null);
+  // smallDriver's ONLY car has 1 seat. Override the seed helper's 4-seat default.
+  runSql(`UPDATE public.vehicles SET child_passenger_capacity = 1 WHERE label = 'TinyCar';`);
+  // The swap: smallDriver takes driverA's 2-rider drive.
+  const smallSwapA = UID(2520); // bigDrive side — confirmed by driverA
+  const smallSwapB = UID(2521); // smallDrive side — confirmed by smallDriver
+  const smallJwt = signInUser("swapsmall@test.kidpool").access_token;
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${smallSwapB}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${bigDrive.assignmentId}','assignment_b','${smallDrive.assignmentId}','sibling_proposal_id','${smallSwapA}'), 'Small swap B', '${smallDriver.userId}', 'pending');
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${smallSwapA}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${bigDrive.assignmentId}','assignment_b','${smallDrive.assignmentId}','sibling_proposal_id','${smallSwapB}'), 'Small swap A', '${driverA.userId}', 'pending');
+  `);
+  // First confirm (driverA) parks. Second (smallDriver) triggers the swap,
+  // which fails because smallDriver's car can't hold the 2 riders on the
+  // incoming drive. The exception rolls the confirm transaction back.
+  const firstConfirm = rpcCall(jwtA, "confirm_chat_proposal", { p_proposal_id: smallSwapA });
+  assert.equal(firstConfirm.status, "confirmed", "first swap confirm parks (no seats error yet)");
+  const secondConfirm = rpcCall(smallJwt, "confirm_chat_proposal", { p_proposal_id: smallSwapB });
+  assert.ok(chatSqlError(secondConfirm), `too-small-car swap must fail: ${JSON.stringify(secondConfirm).slice(0, 200)}`);
+  assert.match(JSON.stringify(secondConfirm), /enough seats/i, `clear error message: ${JSON.stringify(secondConfirm).slice(0, 250)}`);
+  // Nothing changed.
+  const unchanged = restGet("driver_assignments", { id: bigDrive.assignmentId })[0];
+  assert.equal(unchanged.driver_profile_id, driverA.userId, "original driver stays when swap fails");
+
+  cleanupAllTestData();
+  for (const u of [driverA, driverB, riderA, riderB, smallDriver, smallRider]) deleteTestUser(u.userId);
+});
+
+test("Crewmate 2: admin_sql is coordinator-only, group-scoped, single-DML, and audited", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(1130, "AdminCoord", "member", true);
+  const member = setupHousehold(1131, "AdminMember");
+  const otherGroup = UID(2600);
+  const kidPilot = UID(2420);
+  const kidOther = UID(2421);
+
+  runSql(`
+    DELETE FROM public.groups WHERE id = '${otherGroup}';
+    INSERT INTO public.groups (id, name, slug, timezone, meeting_point, school_name) VALUES ('${otherGroup}', 'Admin Other Group', 'admin-other-x', 'America/Los_Angeles', 'X', 'Y') ON CONFLICT DO NOTHING;
+    INSERT INTO public.households (id, group_id, name, created_by) VALUES ('${UID(2610)}', '${otherGroup}', 'OtherHouse', '${coord.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidPilot}', '${GROUP_ID}', '${member.householdId}', 'Target', 'AdminKid', '${member.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidOther}', '${otherGroup}', '${UID(2610)}', 'Target', 'OtherAdminKid', '${coord.userId}') ON CONFLICT DO NOTHING;
+  `);
+
+  const coordJwt = signInUser("admincoord@test.kidpool").access_token;
+  const memberJwt = signInUser("adminmember@test.kidpool").access_token;
+  const threadId = rpcCall(coordJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+
+  const sqlLiteral = (text) => `'${text.replace(/'/g, "''")}'`;
+  const mkProposal = (id, sql, confirmerId) => runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${id}', '${GROUP_ID}', '${threadId}', 'admin_sql', jsonb_build_object('sql', ${sqlLiteral(sql)}, 'preview', null), 'Admin data change', '${confirmerId}', 'pending');
+  `);
+
+  // Non-coordinator cannot confirm an admin proposal.
+  const badProposer = UID(2620);
+  mkProposal(badProposer, "update children set first_name = 'Nope' where last_name = 'AdminKid'", coord.userId);
+  const denied = rpcCall(memberJwt, "confirm_chat_proposal", { p_proposal_id: badProposer });
+  assert.ok(chatSqlError(denied), `member confirm must fail: ${JSON.stringify(denied).slice(0, 120)}`);
+
+  // Forbidden shapes are rejected at confirm time, even for the coordinator.
+  for (const [id, badSql] of [
+    [UID(2621), "select 1"],
+    [UID(2622), "drop table public.children"],
+    [UID(2623), "update children set first_name = 'x'; update children set last_name = 'y'"],
+    [UID(2624), "update groups set name = 'hacked'"],
+    [UID(2625), "update public.chat_proposals set status = 'executed'"],
+  ]) {
+    mkProposal(id, badSql, coord.userId);
+    const res = rpcCall(coordJwt, "confirm_chat_proposal", { p_proposal_id: id });
+    assert.ok(chatSqlError(res) || res.status === "failed", `must reject: ${badSql.slice(0, 40)} → ${JSON.stringify(res).slice(0, 100)}`);
+    const row = restGet("chat_proposals", { id })[0];
+    assert.ok(row, `proposal ${id} should exist for ${badSql.slice(0, 30)}`);
+    assert.ok(row.status === "pending" || row.status === "failed", `proposal not executed for ${badSql.slice(0, 30)}`);
+  }
+
+  // A legal UPDATE: group-scoped — the other group's matching row is untouched.
+  const goodId = UID(2630);
+  mkProposal(goodId, "update children set first_name = 'Renamed' where last_name = 'AdminKid'", coord.userId);
+  const done = rpcCall(coordJwt, "confirm_chat_proposal", { p_proposal_id: goodId });
+  assert.equal(done.status, "executed", `admin UPDATE executes: ${JSON.stringify(done).slice(0, 140)}`);
+
+  const pilotKid = restGet("children", { id: kidPilot })[0];
+  assert.equal(pilotKid.first_name, "Renamed", "pilot-group row updated");
+  const { rows: otherRows } = runSql(`SELECT first_name FROM public.children WHERE id = '${kidOther}'`);
+  assert.equal(otherRows[0].first_name, "Target", "cross-group row untouched by the group-scoped executor");
+
+  const audit = restGet("audit_events", { action: "crewmate_admin_sql_executed" });
+  assert.ok(audit.length >= 1, "admin execution audited");
+  const detail = typeof audit[0].details === "string" ? JSON.parse(audit[0].details) : audit[0].details;
+  assert.match(detail.sql, /update children set first_name/);
+
+  runSql(`DELETE FROM public.groups WHERE id = '${otherGroup}';`);
+  cleanupAllTestData();
+  for (const u of [coord, member]) deleteTestUser(u.userId);
+});
+
+test("Crewmate 2: in-thread consent executes only for the required confirmer's own message", { skip: !SERVICE_KEY }, async () => {
+  const parent = setupHousehold(1140, "ConsentParent");
+  const driver = setupHousehold(1141, "ConsentDriver");
+  const other = setupHousehold(1142, "ConsentOther");
+  const kid = UID(2430);
+  const { weekId, tripIds } = setupWeekAndTrips();
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kid}', '${GROUP_ID}', '${parent.householdId}', 'Cora', 'Consenter', '${parent.userId}') ON CONFLICT DO NOTHING;`);
+  const consentVersion = UID(2635);
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${consentVersion}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
+  const seeded = seedPublishedAssignment(21, consentVersion, tripIds[0], driver.userId, driver.householdId, "ConsentCar", 4, kid);
+
+  const parentJwt = signInUser("consentparent@test.kidpool").access_token;
+  const threadId = rpcCall(parentJwt, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+  const proposalId = UID(2640);
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${proposalId}', '${GROUP_ID}', '${threadId}', 'cancel_ride', jsonb_build_object('child_id','${kid}','driver_assignment_id','${seeded.assignmentId}'), 'Cancel Coras Monday ride', '${parent.userId}', 'pending');
+  `);
+
+  // Another parent says "yes" in the thread — must be rejected.
+  const otherJwt = signInUser("consentother@test.kidpool").access_token;
+  const otherMsg = restPostAs(otherJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: other.userId, body: "yes, go ahead",
+  })[0];
+  const wrongSender = serviceRpcCall("confirm_chat_proposal_via_consent", {
+    p_proposal_id: proposalId, p_evidence_message_id: otherMsg.id,
+  });
+  assert.ok(chatSqlError(wrongSender) || wrongSender.error, `wrong-sender consent must fail: ${JSON.stringify(wrongSender).slice(0, 120)}`);
+
+  // The required confirmer's own message executes.
+  const parentMsg = restPostAs(parentJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: parent.userId, body: "yes please, cancel it",
+  })[0];
+  const good = serviceRpcCall("confirm_chat_proposal_via_consent", {
+    p_proposal_id: proposalId, p_evidence_message_id: parentMsg.id,
+  });
+  assert.equal(good.status, "executed", `consent execution: ${JSON.stringify(good).slice(0, 140)}`);
+  const remaining = restGet("rider_assignments", { child_id: kid });
+  assert.equal(remaining.length, 0, "ride cancelled via in-thread consent");
+  const audit = restGet("audit_events", { action: "chat_proposal_confirmed" });
+  const detail = typeof audit[0].details === "string" ? JSON.parse(audit[0].details) : audit[0].details;
+  assert.equal(detail.via, "in_thread_consent", "consent path audited");
+
+  cleanupAllTestData();
+  for (const u of [parent, driver, other]) deleteTestUser(u.userId);
+});
+
+// ── Crewmate @Crewmate mentions ─────────────────────────────────
+// One sanctioned null-profile mention form (label '@Crewmate'); every
+// other null mention rejects. Tagged messages are explicit invocations
+// (function-level behavior verified live on staging).
+
+test("Crewmate mentions: '@Crewmate' passes validation, other null-profile labels reject", { skip: !SERVICE_KEY }, async () => {
+  const a = setupHousehold(1160, "MentionA");
+  const b = setupHousehold(1161, "MentionB");
+  const aJwt = signInUser("mentiona@test.kidpool").access_token;
+  const bJwt = signInUser("mentionb@test.kidpool").access_token;
+
+  const threadId = rpcCall(aJwt, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+
+  // A real @Crewmate mention: offsets are Unicode code points, zero-based,
+  // end-exclusive — exactly what the trigger re-checks against the body.
+  const body = "hey @Crewmate who drives Monday?";
+  const at = Array.from(body).indexOf("@");
+  const end = at + "@Crewmate".length;
+  const posted = restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: a.userId,
+    body,
+    mentions: [{ profile_id: null, label: "@Crewmate", start: at, end }],
+  });
+  assert.ok(Array.isArray(posted) && posted.length === 1, `@Crewmate mention must validate: ${JSON.stringify(posted).slice(0, 160)}`);
+  assert.equal(posted[0].mentions[0].label, "@Crewmate");
+  assert.equal(posted[0].mentions[0].profile_id, null);
+
+  // Any other null-profile label rejects.
+  const forged = restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: a.userId,
+    body: "hello @Crewmate",
+    mentions: [{ profile_id: null, label: "@Crewmate", start: 0, end: 9 }],
+  });
+  assert.ok(!Array.isArray(forged) || forged.length === 0, "misaligned span must reject");
+  const wrongLabel = restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId, sender_kind: "parent", sender_profile_id: a.userId,
+    body: "hello @Bob",
+    mentions: [{ profile_id: null, label: "@Bob", start: 6, end: 10 }],
+  });
+  assert.ok(!Array.isArray(wrongLabel) || wrongLabel.length === 0, "null-profile '@Bob' must reject");
+
+  cleanupAllTestData();
+  for (const u of [a, b]) deleteTestUser(u.userId);
 });

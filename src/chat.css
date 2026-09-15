@@ -48,6 +48,8 @@
 }
 
 .chat-avatar--agent {
+  width: 34px;
+  height: 34px;
   background: var(--amber-pale);
   color: var(--amber);
   border-color: #f0dfc2;
@@ -714,6 +716,15 @@
 
 .chat-newchat-row--selected {
   background: var(--teal-pale);
+}
+
+/* Pinned Crewmate AI entry — always the first row, visually separated
+   from the parent list beneath it. Wins by specificity over the base row. */
+.chat-newchat-list .chat-newchat-row--crewmate {
+  border-bottom: 1px solid #e6e2da;
+  border-radius: 12px 12px 0 0;
+  margin-bottom: 2px;
+  padding-bottom: 14px;
 }
 
 .chat-newchat-row-info {

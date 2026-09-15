@@ -20,6 +20,7 @@ export type TestDb = {
 };
 
 const SCHEMA_TABLES_IN_FK_ORDER = [
+  "crewmate_runs",
   "chat_messages",
   "chat_proposals",
   "chat_participants",
