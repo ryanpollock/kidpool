@@ -3167,11 +3167,56 @@ test("Crewmate 2: swap_drive needs BOTH drivers' OK (dual consent)", { skip: !SE
   const assignB = restGet("driver_assignments", { id: b.assignmentId })[0];
   assert.equal(assignA.driver_profile_id, driverB.userId, "driver B now owns trip A");
   assert.equal(assignB.driver_profile_id, driverA.userId, "driver A now owns trip B");
+  // The capacity column matches the incoming driver's car, not the old one.
+  const carA = restGet("vehicles", { id: assignA.vehicle_id })[0];
+  assert.equal(assignA.child_passenger_capacity, carA.child_passenger_capacity,
+    "capacity follows the new vehicle after swap");
+  const carB = restGet("vehicles", { id: assignB.vehicle_id })[0];
+  assert.equal(assignB.child_passenger_capacity, carB.child_passenger_capacity,
+    "capacity follows the new vehicle after swap");
   const executedA = restGet("chat_proposals", { id: pA })[0];
   assert.equal(executedA.status, "executed", "both linked proposals are executed");
 
+  const smallDriver = setupHousehold(1124, "SwapSmall");
+  const smallRider = setupHousehold(1125, "SwapSmallRider");
+  // A swap where the incoming driver has no big-enough car must fail with a
+  // clear error and change nothing. Two NEW assignments: driverA's drive on
+  // trip[1] with 2 riders, and smallDriver's drive on trip[2] (0 riders).
+  // Swapping puts smallDriver onto the 2-rider drive — their 1-seat car
+  // can't hold those riders.
+  const bigKidA = UID(2415);
+  const bigKidB = UID(2416);
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${bigKidA}', '${GROUP_ID}', '${smallRider.householdId}', 'Big', 'One', '${smallRider.userId}') ON CONFLICT DO NOTHING;`);
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${bigKidB}', '${GROUP_ID}', '${smallRider.householdId}', 'Big', 'Two', '${smallRider.userId}') ON CONFLICT DO NOTHING;`);
+  const bigDrive = seedPublishedAssignment(13, swapVersion, tripIds[2], driverA.userId, driverA.householdId, "BigCar", 4, bigKidA);
+  runSql(`INSERT INTO public.rider_assignments (group_id, schedule_version_id, trip_id, driver_assignment_id, child_id) VALUES ('${GROUP_ID}', '${swapVersion}', '${tripIds[2]}', '${bigDrive.assignmentId}', '${bigKidB}') ON CONFLICT DO NOTHING;`);
+  const smallDrive = seedPublishedAssignment(14, swapVersion, tripIds[3], smallDriver.userId, smallDriver.householdId, "TinyCar", 1, null);
+  // smallDriver's ONLY car has 1 seat. Override the seed helper's 4-seat default.
+  runSql(`UPDATE public.vehicles SET child_passenger_capacity = 1 WHERE label = 'TinyCar';`);
+  // The swap: smallDriver takes driverA's 2-rider drive.
+  const smallSwapA = UID(2520); // bigDrive side — confirmed by driverA
+  const smallSwapB = UID(2521); // smallDrive side — confirmed by smallDriver
+  const smallJwt = signInUser("swapsmall@test.kidpool").access_token;
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${smallSwapB}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${bigDrive.assignmentId}','assignment_b','${smallDrive.assignmentId}','sibling_proposal_id','${smallSwapA}'), 'Small swap B', '${smallDriver.userId}', 'pending');
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${smallSwapA}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${bigDrive.assignmentId}','assignment_b','${smallDrive.assignmentId}','sibling_proposal_id','${smallSwapB}'), 'Small swap A', '${driverA.userId}', 'pending');
+  `);
+  // First confirm (driverA) parks. Second (smallDriver) triggers the swap,
+  // which fails because smallDriver's car can't hold the 2 riders on the
+  // incoming drive. The exception rolls the confirm transaction back.
+  const firstConfirm = rpcCall(jwtA, "confirm_chat_proposal", { p_proposal_id: smallSwapA });
+  assert.equal(firstConfirm.status, "confirmed", "first swap confirm parks (no seats error yet)");
+  const secondConfirm = rpcCall(smallJwt, "confirm_chat_proposal", { p_proposal_id: smallSwapB });
+  assert.ok(chatSqlError(secondConfirm), `too-small-car swap must fail: ${JSON.stringify(secondConfirm).slice(0, 200)}`);
+  assert.match(JSON.stringify(secondConfirm), /enough seats/i, `clear error message: ${JSON.stringify(secondConfirm).slice(0, 250)}`);
+  // Nothing changed.
+  const unchanged = restGet("driver_assignments", { id: bigDrive.assignmentId })[0];
+  assert.equal(unchanged.driver_profile_id, driverA.userId, "original driver stays when swap fails");
+
   cleanupAllTestData();
-  for (const u of [driverA, driverB, riderA, riderB]) deleteTestUser(u.userId);
+  for (const u of [driverA, driverB, riderA, riderB, smallDriver, smallRider]) deleteTestUser(u.userId);
 });
 
 test("Crewmate 2: admin_sql is coordinator-only, group-scoped, single-DML, and audited", { skip: !SERVICE_KEY }, async () => {

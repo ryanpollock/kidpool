@@ -733,8 +733,8 @@ Deno.serve(async (req)=>{
       if (parsedTriage?.topic) triageTopic = parsedTriage.topic;
       const parsedConfidence = typeof parsedTriage?.confidence === "number" ? parsedTriage.confidence : null;
       triageUsage = {
-        in: triageResult.usage.promptTokens ?? 0,
-        out: triageResult.usage.completionTokens ?? 0
+        in: triageResult.usage.promptTokens ?? triageResult.usage.inputTokens ?? 0,
+        out: triageResult.usage.completionTokens ?? triageResult.usage.outputTokens ?? 0
       };
       void parsedConfidence;
       if (category === "chatter" || !parsedTriage) {
@@ -940,10 +940,9 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
         // parseJsonish note); the action signal comes from triage instead.
         answer: (result.text ?? "").trim(),
         usage: {
-          in: result.usage.promptTokens ?? 0,
-          out: result.usage.completionTokens ?? 0
-        }
-      };
+in: result.usage.promptTokens ?? result.usage.inputTokens ?? 0,
+          out: result.usage.completionTokens ?? result.usage.outputTokens ?? 0
+        };
     };
     // Plan, then re-check for newer parent messages (coalesced bursts);
     // re-plan with a fresh transcript up to MAX_REPLAN_PASSES.
