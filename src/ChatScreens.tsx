@@ -385,10 +385,8 @@ export function NewChatSheet({
       setSheetError("Select at least one parent.");
       return;
     }
-    if (selectedCount >= 2 && !title.trim()) {
-      setSheetError("Give your group conversation a name.");
-      return;
-    }
+    // Group name is optional — the RPC auto-titles from participant
+    // names when empty, so parents don't have to name a group.
     onCreate(selected, title.trim());
   };
 
@@ -412,18 +410,6 @@ export function NewChatSheet({
             data-testid="chat-new-chat-search"
           />
         </div>
-
-        {selectedCount >= 2 ? (
-          <div className="chat-newchat-title">
-            <KeyboardInput
-              placeholder="Group name (required)"
-              value={title}
-              maxLength={80}
-              onChange={(e) => setTitle(e.target.value)}
-              data-testid="chat-new-chat-title"
-            />
-          </div>
-        ) : null}
 
         <div className="chat-newchat-list">
           {/* Pinned Crewmate entry — always present, never search-filtered,
