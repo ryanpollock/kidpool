@@ -120,13 +120,14 @@ function ChatAvatar({
   if (url) {
     return <img src={url} alt={name} width={size} height={size} className={`chat-avatar ${className ?? ""}`} />;
   }
+  const isAgentAvatar = (className ?? "").includes("chat-avatar--agent");
   return (
     <span
       aria-label={name}
-      className={`chat-avatar chat-avatar--initials ${className ?? ""}`}
-      style={{ width: size, height: size, fontSize: Math.max(11, Math.round(size * 0.36)) }}
+      className={`chat-avatar ${isAgentAvatar ? "chat-avatar--agent" : "chat-avatar--initials"} ${className ?? ""}`}
+      style={{ width: size, height: size, fontSize: isAgentAvatar ? Math.round(size * 0.5) : Math.max(11, Math.round(size * 0.36)) }}
     >
-      {initialsOf(name) || <AvatarIcon width={Math.round(size * 0.55)} height={Math.round(size * 0.55)} />}
+      {isAgentAvatar ? "☠️" : initialsOf(name) || <AvatarIcon width={Math.round(size * 0.55)} height={Math.round(size * 0.55)} />}
     </span>
   );
 }
@@ -293,7 +294,7 @@ function MessageBubble({
         <div className={mine ? "chat-bubble chat-bubble--mine" : isAgent ? "chat-bubble chat-bubble--agent" : "chat-bubble"}>
           {showName && !mine ? (
             <span className={`chat-bubble-name ${isAgent ? "chat-bubble-name--agent" : ""}`}>
-              {isAgent ? <><ChatBubbleIcon width="11" height="11" /> Crewmate AI</> : message.sender_name}
+              {isAgent ? <>☠️ Crewmate AI</> : message.sender_name}
             </span>
           ) : null}
           <p className="chat-bubble-body"><MessageText message={message}/></p>
@@ -433,8 +434,8 @@ export function NewChatSheet({
             onClick={onCrewmate}
             data-testid="chat-new-chat-crewmate"
           >
-            <span className="chat-avatar chat-avatar--agent" aria-label="Crewmate AI">
-              <ChatBubbleIcon width="16" height="16" />
+            <span className="chat-avatar chat-avatar--agent" aria-label="Crewmate AI" style={{ fontSize: 18 }}>
+              ☠️
             </span>
             <span className="chat-newchat-row-info">
               <strong>Crewmate AI</strong>
@@ -621,8 +622,8 @@ export function ChatInboxScreen({
               <ChatBubbleIcon width="16" height="16" />
             </span>
           ) : thread.kind === "agent" ? (
-            <span className="chat-avatar chat-avatar--agent" aria-label="Crewmate AI">
-              <ChatBubbleIcon width="16" height="16" />
+            <span className="chat-avatar chat-avatar--agent" aria-label="Crewmate AI" style={{ fontSize: 18 }}>
+              ☠️
             </span>
           ) : (
             thread.participants
@@ -1112,7 +1113,7 @@ export function ChatThreadScreen({
         {/* Enter sends, Shift+Enter inserts a newline (product decision).
             The isComposing guard keeps IME/emoji-picker confirmation
             presses from sending mid-composition. */}
-        {mentionQuery && mentionOptions.length ? <div className="chat-mention-options" role="listbox" id="chat-mention-list" aria-label="Mention a parent or Crewmate">{mentionOptions.map((p,i)=><button type="button" key={p.key} id={`mention-${p.key}`} role="option" aria-selected={i===mentionIndex} onPointerDown={e=>e.preventDefault()} onClick={()=>insertMention(p)}>{p.crewmate ? <><ChatBubbleIcon width="11" height="11" /> {p.name} <span className="chat-thread-badge">AI</span></> : p.name}</button>)}</div>:null}
+        {mentionQuery && mentionOptions.length ? <div className="chat-mention-options" role="listbox" id="chat-mention-list" aria-label="Mention a parent or Crewmate">{mentionOptions.map((p,i)=><button type="button" key={p.key} id={`mention-${p.key}`} role="option" aria-selected={i===mentionIndex} onPointerDown={e=>e.preventDefault()} onClick={()=>insertMention(p)}>{p.crewmate ? <>☠️ {p.name} <span className="chat-thread-badge">AI</span></> : p.name}</button>)}</div>:null}
         <KeyboardTextarea
           role="combobox"
           aria-autocomplete="list"
