@@ -160,7 +160,7 @@ test("Multi-User Chat: three-way group thread with interleaved sends", async ({ 
     await pageA.locator(".chat-newchat-row").first().waitFor({ timeout: 15_000 });
     await pageA.getByTestId(`chat-new-chat-member-${beta.userId}`).click();
     await pageA.getByTestId(`chat-new-chat-member-${gamma.userId}`).click();
-    await pageA.getByTestId("chat-new-chat-title").fill("Ride swap crew");
+    // Group name is auto-generated from participant names now (no input field)
     await pageA.getByTestId("chat-new-chat-start").click();
     await expect(pageA.getByTestId("chat-thread-screen")).toBeVisible();
 

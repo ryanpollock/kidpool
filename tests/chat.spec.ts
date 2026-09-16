@@ -233,7 +233,7 @@ test("Chat: new-chat sheet creates a group thread with selected parents", async 
     // Two selections promote the sheet to group mode with a title input
     await page.getByTestId(`chat-new-chat-member-${beta.userId}`).click();
     await page.getByTestId(`chat-new-chat-member-${gamma.userId}`).click();
-    await page.getByTestId("chat-new-chat-title").fill("Van crew");
+    // Group name is auto-generated from participant names now (no input field)
     await page.getByTestId("chat-new-chat-start").click();
 
     await expect(page.getByTestId("chat-thread-screen")).toBeVisible();
