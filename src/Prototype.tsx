@@ -1923,11 +1923,11 @@ function HomeScreen({
         <div className="push-banner" data-testid="push-banner">
           <BellIcon width="20" height="20" />
           <div className="push-banner-body">
-            <strong>Get notified</strong>
-            <small>We'll alert you when your child's drive changes.</small>
+            <strong>You're missing messages and notifications</strong>
+            <small>Parents can message you directly, and the carpool sends schedule change alerts — but without notifications, you won't know until you open the app.</small>
           </div>
           <button className="primary-button push-banner-allow" disabled={pushSubscribing} onClick={onAllowPush}>
-            {pushSubscribing ? "…" : "Allow"}
+            {pushSubscribing ? "…" : "Enable"}
           </button>
           <button className="text-button push-banner-dismiss" aria-label="Dismiss" onClick={onDismissPush}>
             <Cross2Icon width="14" height="14" />
@@ -1939,8 +1939,8 @@ function HomeScreen({
         <div className="push-banner push-banner--ios" data-testid="ios-install-banner">
           <BellIcon width="20" height="20" />
           <div className="push-banner-body">
-            <strong>Get notifications</strong>
-            <small>Tap <Share2Icon width="11" height="11" style={{ display: "inline", verticalAlign: "middle" }} /> Share, then &ldquo;Add to Home Screen&rdquo; to enable alerts.</small>
+            <strong>You're missing messages and notifications</strong>
+            <small>Tap <Share2Icon width="11" height="11" style={{ display: "inline", verticalAlign: "middle" }} /> Share, then &ldquo;Add to Home Screen&rdquo; to get messages from parents and schedule alerts.</small>
           </div>
           <button className="text-button push-banner-dismiss" aria-label="Dismiss" onClick={onDismissIOSInstall}>
             <Cross2Icon width="14" height="14" />
@@ -6216,6 +6216,10 @@ export default function Prototype() {
   const [chatInboxKey, setChatInboxKey] = useState(0);
   const [chatThreadFromLink, setChatThreadFromLink] = useState<string | null>(null);
   const [pushPermissionShown, setPushPermissionShown] = useState(false);
+  // DB-truth: does this profile have any push subscriptions? When 0, the
+  // notification banners re-appear even after dismissal — localStorage only
+  // suppresses within the current visit, not permanently.
+  const [hasPushSubscriptions, setHasPushSubscriptions] = useState<boolean | null>(null);
   const [adminDeclinedAlerts, setAdminDeclinedAlerts] = useState<DeclinedDriveAlert[]>([]);
   const [adminRoster, setAdminRoster] = useState<{ children: Tables<"children">[]; vehicles: Tables<"vehicles">[]; profiles: { id: string; full_name: string; avatar_url: string | null }[]; memberships: Tables<"memberships">[] } | null>(null);
   const [adminAssignTarget, setAdminAssignTarget] = useState<{ tripId: string; versionId: string } | null>(null);
@@ -6366,6 +6370,21 @@ setChatThreadId(chatThreadFromLink);
       if (!group) throw new Error("The Carpool Crew group has not been configured.");
       const membership = await repository.getCurrentMembership(group.id);
       setIdentity({ profile, group, membership });
+
+      // DB-truth check: does this parent have push subscriptions? Drives the
+      // notification banners on the Home screen (re-show after dismissal when
+      // push is still missing — parents who dismissed the prompt once and
+      // never enabled notifications need to see it again).
+      try {
+        const { count } = await supabase
+          .from("push_subscriptions")
+          .select("id", { count: "exact", head: true })
+          .eq("profile_id", profile.id);
+        setHasPushSubscriptions((count ?? 0) > 0);
+      } catch {
+        // If the query fails, fall back to the old localStorage-only behavior
+        setHasPushSubscriptions(null);
+      }
     } catch (error) {
       // Auto-retry on "JWT issued at future" — this is a clock skew issue
       // that resolves when the session refreshes. Sign out locally and
@@ -6903,10 +6922,14 @@ setChatThreadId(chatThreadFromLink);
 
   // iOS Safari doesn't support PushManager until the app is installed as a PWA.
   // Show install instructions instead of the standard push permission banner.
+  // When the DB says push is missing, the banner re-appears on every visit
+  // (localStorage dismissal is ignored — parents who dismissed it once and
+  // never enabled notifications need to be reminded).
   const shouldShowIOSInstallBanner = (() => {
     if (!identity) return false;
     if (iosInstallDismissed) return false;
-    if (localStorage.getItem("ios_install_dismissed") === "true") return false;
+    const pushMissing = hasPushSubscriptions === false;
+    if (!pushMissing && localStorage.getItem("ios_install_dismissed") === "true") return false;
     const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
     const isStandalone = window.matchMedia("(display-mode: standalone)").matches;
     const hasPushSupport = "serviceWorker" in navigator && "PushManager" in window;
@@ -6918,7 +6941,8 @@ setChatThreadId(chatThreadFromLink);
     if (pushPermissionShown) return false;
     if (typeof Notification === "undefined") return false;
     if (Notification.permission !== "default") return false;
-    if (localStorage.getItem("push_dismissed") === "true") return false;
+    const pushMissing = hasPushSubscriptions === false;
+    if (!pushMissing && localStorage.getItem("push_dismissed") === "true") return false;
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
     return true;
   })();
