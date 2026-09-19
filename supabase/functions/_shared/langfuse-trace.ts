@@ -35,9 +35,22 @@ export type LangfuseEvent = {
 const LANGFUSE_PUBLIC_KEY = Deno.env.get("LANGFUSE_PUBLIC_KEY");
 const LANGFUSE_SECRET_KEY = Deno.env.get("LANGFUSE_SECRET_KEY");
 const LANGFUSE_BASE_URL = Deno.env.get("LANGFUSE_BASE_URL") ?? "https://cloud.langfuse.com";
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 
 export function langfuseEnabled(): boolean {
   return !!(LANGFUSE_PUBLIC_KEY && LANGFUSE_SECRET_KEY);
+}
+
+/**
+ * Detect the deployment environment from the Supabase project URL so
+ * traces are filterable by environment in the Langfuse dashboard.
+ * Staging ref: jfyjgmhqnlbdcafoarrg, Production ref: ujcrnrcgbvzyqosykkjy.
+ */
+function detectEnvironment(): string {
+  if (SUPABASE_URL.includes("ujcrnrcgbvzyqosykkjy")) return "production";
+  if (SUPABASE_URL.includes("jfyjgmhqnlbdcafoarrg")) return "staging";
+  if (SUPABASE_URL.includes("127.0.0.1") || SUPABASE_URL.includes("localhost")) return "local";
+  return "unknown";
 }
 
 function uuid(): string {
@@ -59,6 +72,7 @@ export class LangfuseTrace {
   readonly sessionId: string;
   readonly userId: string;
   readonly tags: string[];
+  readonly environment: string;
   private startTime: string;
 
   constructor(opts: {
@@ -71,7 +85,10 @@ export class LangfuseTrace {
     this.name = opts.name;
     this.sessionId = opts.sessionId;
     this.userId = opts.userId;
-    this.tags = opts.tags ?? [];
+    // Environment tag: lets the Langfuse dashboard filter staging vs
+    // production traces separately (detectEnvironment reads SUPABASE_URL).
+    this.environment = detectEnvironment();
+    this.tags = [...(opts.tags ?? []), this.environment];
     this.startTime = now();
 
     // Emit the trace-create event immediately (it can be upserted with
@@ -86,6 +103,7 @@ export class LangfuseTrace {
         sessionId: this.sessionId,
         userId: this.userId,
         tags: this.tags,
+        environment: this.environment,
         timestamp: this.startTime,
         input: null,
         output: null,
@@ -106,6 +124,7 @@ export class LangfuseTrace {
         sessionId: this.sessionId,
         userId: this.userId,
         tags: this.tags,
+        environment: this.environment,
         timestamp: this.startTime,
         input,
         output: null,
@@ -126,6 +145,7 @@ export class LangfuseTrace {
         sessionId: this.sessionId,
         userId: this.userId,
         tags: this.tags,
+        environment: this.environment,
         timestamp: this.startTime,
         input: null,
         output,
@@ -220,6 +240,7 @@ export class LangfuseTrace {
         sessionId: this.sessionId,
         userId: this.userId,
         tags: this.tags,
+        environment: this.environment,
         timestamp: this.startTime,
         input: null,
         output: null,
