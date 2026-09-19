@@ -19,6 +19,7 @@ import { createOpenAICompatible } from "npm:@ai-sdk/openai-compatible@3.0.48";
 import { generateText, tool, isStepCount } from "npm:ai@7.0.99";
 import { z } from "npm:zod@4.6.5";
 import { corsHeaders } from "../_shared/cors.ts";
+import { LangfuseTrace, langfuseEnabled } from "../_shared/langfuse-trace.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const CRON_SECRET = Deno.env.get("CRON_SECRET");
@@ -624,6 +625,19 @@ Deno.serve(async (req)=>{
   // exactly like the private Crewmate thread.
   const taggedCrewmate = ((message.mentions as any[] | null) ?? []).some((m) => m && !m.profile_id);
 
+  // Langfuse tracing — created after message validation, before any LLM call.
+  // session_id = thread_id (groups the conversation), user_id = parent profile.
+  // Fail-soft: if Langfuse keys aren't set, the trace is a no-op.
+  const lfTrace = langfuseEnabled()
+    ? new LangfuseTrace({
+        name: "chat-agent-run",
+        sessionId: threadId,
+        userId: message.sender_profile_id ?? "unknown",
+        tags: ["carpool", "crewmate", thread.kind, ...(taggedCrewmate ? ["tagged"] : [])],
+      })
+    : null;
+  if (lfTrace) lfTrace.setInput(message.body);
+
   // Per-thread coalescing.
     const { data: runId } = await admin.rpc("claim_crewmate_run", {
       p_group_id: thread.group_id,
@@ -635,6 +649,12 @@ Deno.serve(async (req)=>{
     });
     claimedRunId = runId;
     const finishRun = async (status, detail, usage)=>{
+      // Langfuse: record the run outcome as trace metadata and flush.
+      // This is the single flush point — every finishRun call triggers it.
+      if (lfTrace) {
+        lfTrace.addMetadata({ status, ...detail });
+        await lfTrace.flush();
+      }
       await admin.from("crewmate_runs").update({
         status,
         triage_model: usage?.triage ? TRIAGE_MODEL : null,
@@ -703,11 +723,8 @@ Deno.serve(async (req)=>{
     const transcript = [
       ...priorMessages ?? []
     ].reverse();
-    if (thread.kind !== "agent" && !taggedCrewmate) {
-      const triageResult = await generateText({
-        model: together(TRIAGE_MODEL),
-        maxOutputTokens: 1500,
-        prompt: [
+if (thread.kind !== "agent" && !taggedCrewmate) {
+      const triagePrompt = [
           `Classify the LATEST message in a parent carpool group's chat.`,
           `Latest message from ${message.sender_name}: "${message.body}"`,
           ``,
@@ -723,8 +740,30 @@ Deno.serve(async (req)=>{
           `Chatter takes priority: if the latest message is social or unrelated to rides and schedules — even when phrased as a question — it is chatter. Classify ONLY the latest message; earlier messages are context, never a category signal.`,
           `Examples of chatter (social, NOT about the schedule): "Anyone else's kid obsessed with Bluey rn" → chatter; "Great game last night!" → chatter; "Happy birthday Priya!!" → chatter; "See everyone at the potluck Saturday" → chatter; "Ugh, this traffic on 280 is brutal today" → chatter.`,
           `Example question: "Who is driving Wednesday morning?" → question. Example action: "Take Zoe off Thursday's ride" → action.`
-        ].join("\n")
+        ].join("\n");
+      const triageStart = new Date().toISOString();
+      const triageResult = await generateText({
+        model: together(TRIAGE_MODEL),
+        maxOutputTokens: 1500,
+        prompt: triagePrompt
       });
+      // Langfuse: record the triage generation with model + token usage.
+      if (lfTrace) {
+        const triageUsage = triageResult.usage as any;
+        lfTrace.addGeneration({
+          name: "triage",
+          model: TRIAGE_MODEL,
+          input: message.body,
+          output: triageResult.text,
+          usage: {
+            promptTokens: triageUsage?.promptTokens ?? triageUsage?.inputTokens,
+            completionTokens: triageUsage?.completionTokens ?? triageUsage?.outputTokens,
+            totalTokens: triageUsage?.totalTokens,
+          },
+          modelParameters: { maxOutputTokens: 1500 },
+          startTime: triageStart,
+        });
+      }
       const parsedTriage = parseJsonish(triageResult.text);
       const triageCategory = parsedTriage?.category;
       if (triageCategory === "question" || triageCategory === "action" || triageCategory === "consent") {
@@ -913,6 +952,7 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
     // Reload the transcript fresh on every planning pass so coalesced
     // messages (and the agent's own earlier replies) are always in context.
     const planOnce = async ()=>{
+      const planStart = new Date().toISOString();
       const { data: fresh } = await admin.from("chat_messages").select("id,sender_kind,sender_name,body,created_at").eq("thread_id", threadId).order("created_at", {
         ascending: false
       }).limit(MESSAGE_WINDOW);
@@ -935,6 +975,26 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
           stepMs: 45_000
         }
       });
+      // Langfuse: record the planner generation with model + tokens + tools used.
+      if (lfTrace) {
+        const planUsage = result.usage as any;
+        lfTrace.addGeneration({
+          name: "planner",
+          model: PLANNER_MODEL,
+          input: currentTranscript.map((m: any) => `[${m.sender_kind}] ${m.body}`).join("\n").slice(-2000),
+          output: (result.text ?? "").slice(0, 2000),
+          usage: {
+            promptTokens: planUsage?.promptTokens ?? planUsage?.inputTokens,
+            completionTokens: planUsage?.completionTokens ?? planUsage?.outputTokens,
+            totalTokens: planUsage?.totalTokens,
+          },
+          modelParameters: { maxOutputTokens: 4000, toolLoopMaxSteps: 6 },
+          startTime: planStart,
+          metadata: {
+            toolCalls: ctx?.calls?.map((c: any) => c.name) ?? [],
+          },
+        });
+      }
       return {
         // The final assistant text is the chat answer. Structured-output
         // modes are unreliable with Together's reasoning models (see
@@ -1149,6 +1209,8 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       proposalNote = " (That request is outside what I can propose right now.)";
     }
     const body = (answer + proposalNote).slice(0, MAX_AGENT_BODY) || "Done — see the card below.";
+    // Langfuse: set the trace output to the agent's reply.
+    if (lfTrace) lfTrace.setOutput(body);
     const { data: agentMessage, error: insertError } = await admin.from("chat_messages").insert({
       thread_id: threadId,
       sender_kind: "agent",
