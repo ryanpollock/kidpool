@@ -485,8 +485,11 @@ test("@Crewmate mentions: one sanctioned null-profile form, honored as an explic
   const fn = await readFile(agentFnUrl, "utf8");
   assert.match(fn, /sender_name,body,created_at,mentions/);
   assert.match(fn, /const taggedCrewmate = \(\(message\.mentions as any\[\] \| null\) \?\? \[\]\)\.some\(\(m\) => m && !m\.profile_id\)/);
-  assert.match(fn, /thread\.kind !== "agent" && !taggedCrewmate/);
-  assert.match(fn, /!block && !taggedCrewmate && \/\^NOREPLY\\b\/i\.test\(answer\)/);
+  assert.match(fn, /thread.kind !== "agent" && !taggedCrewmate/);
+  // Jev gate replaces the old GLM triage + NOREPLY second gate.
+  assert.match(fn, /jevGate/);
+  assert.match(fn, /helpRequested < 0.5/);
+  assert.match(fn, /jevConsent/);
   assert.match(fn, /explicitly tagged you with @Crewmate/);
 });
 
