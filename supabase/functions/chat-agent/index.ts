@@ -20,6 +20,7 @@ import { generateText, tool, isStepCount } from "npm:ai@7.0.99";
 import { z } from "npm:zod@4.6.5";
 import { corsHeaders } from "../_shared/cors.ts";
 import { LangfuseTrace, langfuseEnabled } from "../_shared/langfuse-trace.ts";
+import { jevEnabled, jevGate, jevConsent } from "../_shared/jev-gate.ts";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const CRON_SECRET = Deno.env.get("CRON_SECRET");
@@ -712,9 +713,15 @@ Deno.serve(async (req)=>{
       ].join(" ");
     }
     const threadKindLabel = thread.kind === "everyone" ? "the all-parents Everyone thread" : thread.kind === "group" ? `a group chat titled "${thread.title ?? "Group"}"` : thread.kind === "agent" ? "a private conversation between the parent and Crewmate AI" : "a direct message between two parents";
-    // ── Triage (skipped in private Crewmate threads: every message there
-    // is addressed to the agent by definition). ──
-    let triageUsage;
+    // ── Jev invocation gate ──
+    // Replaces the GLM triage (~1300 tokens) with a single Jev call
+    // (~330 tokens input, output free, ~100ms). Jev evaluates every
+    // untagged message in non-private threads and decides if Crewmate
+    // should respond. Tagged messages and private threads bypass the
+    // gate entirely (tagging = explicit invocation).
+    //
+    // If Jev is unavailable (no API key, API failure), falls back to
+    // tag-only behavior: untagged group messages are silent.
     let category = "question";
     let triageTopic = "";
     const { data: priorMessages } = await admin.from("chat_messages").select("id,sender_kind,sender_name,body,created_at").eq("thread_id", threadId).order("created_at", {
@@ -723,113 +730,129 @@ Deno.serve(async (req)=>{
     const transcript = [
       ...priorMessages ?? []
     ].reverse();
-if (thread.kind !== "agent" && !taggedCrewmate) {
-      const triagePrompt = [
-          `Classify the LATEST message in a parent carpool group's chat.`,
-          `Latest message from ${message.sender_name}: "${message.body}"`,
-          ``,
-          `Recent earlier messages (for context, do not classify these):`,
-          recentTranscript(transcript.slice(0, -1)),
-          ``,
-          `Reply with JSON only: {"category": "question" | "action" | "consent" | "chatter", "confidence": number, "topic": string}.`,
-          `question: asks about the schedule, rosters, coverage, times, who drives/rides, or the weekly cycle.`,
-          `action: requests a schedule change (cancel a ride, switch cars, volunteer, add a drive, change seat count).`,
-          `consent: confirms or declines a pending proposal card.`,
-          `chatter: social conversation or anything unrelated to the carpool schedule.`,
-          ``,
-          `Chatter takes priority: if the latest message is social or unrelated to rides and schedules — even when phrased as a question — it is chatter. Classify ONLY the latest message; earlier messages are context, never a category signal.`,
-          `Examples of chatter (social, NOT about the schedule): "Anyone else's kid obsessed with Bluey rn" → chatter; "Great game last night!" → chatter; "Happy birthday Priya!!" → chatter; "See everyone at the potluck Saturday" → chatter; "Ugh, this traffic on 280 is brutal today" → chatter.`,
-          `Example question: "Who is driving Wednesday morning?" → question. Example action: "Take Zoe off Thursday's ride" → action.`
-        ].join("\n");
-      const triageStart = new Date().toISOString();
-      const triageResult = await generateText({
-        model: together(TRIAGE_MODEL),
-        maxOutputTokens: 1500,
-        prompt: triagePrompt
-      });
-      // Langfuse: record the triage generation with model + token usage.
-      if (lfTrace) {
-        const triageUsage = triageResult.usage as any;
-        lfTrace.addGeneration({
-          name: "triage",
-          model: TRIAGE_MODEL,
-          input: message.body,
-          output: triageResult.text,
-          usage: {
-            promptTokens: triageUsage?.promptTokens ?? triageUsage?.inputTokens,
-            completionTokens: triageUsage?.completionTokens ?? triageUsage?.outputTokens,
-            totalTokens: triageUsage?.totalTokens,
-          },
-          modelParameters: { maxOutputTokens: 1500 },
-          startTime: triageStart,
+
+    if (thread.kind !== "agent" && !taggedCrewmate) {
+      if (jevEnabled()) {
+        const gateStart = new Date().toISOString();
+        const gateResult = await jevGate({
+          state: message.body + "\n\nRecent thread context:\n" + recentTranscript(transcript.slice(0, -1)).slice(0, 800),
         });
-      }
-      const parsedTriage = parseJsonish(triageResult.text);
-      const triageCategory = parsedTriage?.category;
-      if (triageCategory === "question" || triageCategory === "action" || triageCategory === "consent") {
-        category = triageCategory;
-      }
-      if (parsedTriage?.topic) triageTopic = parsedTriage.topic;
-      const parsedConfidence = typeof parsedTriage?.confidence === "number" ? parsedTriage.confidence : null;
-      triageUsage = {
-        in: triageResult.usage.promptTokens ?? triageResult.usage.inputTokens ?? 0,
-        out: triageResult.usage.completionTokens ?? triageResult.usage.outputTokens ?? 0
-      };
-      void parsedConfidence;
-      if (category === "chatter" || !parsedTriage) {
-        await finishRun("chatter", {
-          category,
-          topic: triageTopic
-        }, {
-          triage: triageUsage
-        });
-        return jsonResponse({
-          skipped: "chatter"
-        });
+
+        if (!gateResult) {
+          // Jev failed — fall back to tag-only (silent for untagged).
+          await finishRun("skipped_gate_failure", { error: "jev_unavailable" });
+          return jsonResponse({ skipped: "not_invoked" });
+        }
+
+        // Langfuse: record the Jev gate call as a generation.
+        if (lfTrace) {
+          lfTrace.addGeneration({
+            name: "jev-gate",
+            model: "jev-latest",
+            input: message.body,
+            output: JSON.stringify(gateResult),
+            usage: {
+              promptTokens: gateResult.inputTokens,
+              completionTokens: gateResult.outputTokens,
+              totalTokens: gateResult.inputTokens + gateResult.outputTokens,
+            },
+            startTime: gateStart,
+          });
+        }
+
+        // Gate says no — silence.
+        if (gateResult.helpRequested < 0.5 || gateResult.messageType === "chatter") {
+          await finishRun("chatter", {
+            category: gateResult.messageType,
+            jev_help_p: gateResult.helpRequested,
+            jev_confidence: gateResult.messageConfidence,
+          });
+          return jsonResponse({ skipped: "not_invoked" });
+        }
+
+        // Gate says yes — set the category from Jev's Choice.
+        category = gateResult.messageType;
+
+        // ── Jev consent detection ──
+        // If the message is a consent confirmation and a pending proposal
+        // exists for this sender, check affirmativeness with Jev Noul.
+        // This replaces the LLM consent classifier (~1300 tokens → ~42).
+        if (category === "consent") {
+          const { data: pendingForSender } = await admin.from("chat_proposals")
+            .select("id,kind,summary,required_confirmer_profile_id,thread_id")
+            .eq("thread_id", threadId)
+            .eq("status", "pending")
+            .eq("required_confirmer_profile_id", message.sender_profile_id)
+            .order("created_at", { ascending: false })
+            .limit(1);
+          const pending = (pendingForSender ?? [])[0];
+
+          if (pending) {
+            const consentResult = await jevConsent({
+              messageBody: message.body,
+              proposalSummary: pending.summary,
+            });
+
+            if (consentResult?.affirmative === true) {
+              const { error: consentError } = await admin.rpc("confirm_chat_proposal_via_consent", {
+                p_proposal_id: pending.id,
+                p_evidence_message_id: messageId,
+              });
+              if (!consentError) {
+                await finishRun("answered", {
+                  via_in_thread_consent: true,
+                  proposal_id: pending.id,
+                  kind: pending.kind,
+                  jev_consent_p: consentResult.confidence,
+                });
+                return jsonResponse({ ok: true, via_consent: pending.id });
+              }
+              // Validation failed (stale, wrong confirmer, executor refused) —
+              // fall through to the planner, which will answer in plain text.
+              console.error("[chat-agent] consent rejected:", consentError?.message);
+            }
+          }
+        }
+      } else {
+        // No Jev API key — tag-only behavior.
+        await finishRun("not_invoked", { reason: "jev_not_enabled" });
+        return jsonResponse({ skipped: "not_invoked" });
       }
     }
-    // ── In-thread consent detection (Phase 2) ──
-    // When triage says consent (or a pending proposal names the sender in a
-    // private thread), classify affirmative vs not; an affirmative from the
-    // required confirmer executes through the server-validating RPC.
-    {
-      const { data: pendingForSender } = await admin.from("chat_proposals").select("id,kind,summary,required_confirmer_profile_id,thread_id").eq("thread_id", threadId).eq("status", "pending").eq("required_confirmer_profile_id", message.sender_profile_id).order("created_at", {
-        ascending: false
-      }).limit(1);
+
+    // ── Private thread consent detection ──
+    // In private threads (or tagged), Crewmate always responds. But if a
+    // pending proposal exists and the message is clearly a consent, execute
+    // it directly (skipping the planner saves ~2300 tokens).
+    if (thread.kind === "agent" || taggedCrewmate) {
+      const { data: pendingForSender } = await admin.from("chat_proposals")
+        .select("id,kind,summary,required_confirmer_profile_id,thread_id")
+        .eq("thread_id", threadId)
+        .eq("status", "pending")
+        .eq("required_confirmer_profile_id", message.sender_profile_id)
+        .order("created_at", { ascending: false })
+        .limit(1);
       const pending = (pendingForSender ?? [])[0];
-      if (pending && (category === "consent" || thread.kind === "agent")) {
-        const consentResult = await generateText({
-          model: together(TRIAGE_MODEL),
-          maxOutputTokens: 1500,
-          prompt: [
-            `A carpool parent may be confirming a pending proposal in chat.`,
-            `The proposal card says: "${pending.summary}".`,
-            `The parent's message is: "${message.body}"`,
-            `Reply with JSON only: {"affirmative": true|false, "confidence": number}.`,
-            `affirmative=true only if the parent clearly says yes/ok/confirmed/go ahead to that specific proposal. Declines, hesitations, or topic changes are false.`
-          ].join("\n")
+
+      if (pending && jevEnabled()) {
+        const consentResult = await jevConsent({
+          messageBody: message.body,
+          proposalSummary: pending.summary,
         });
-        const consentParsed = parseJsonish(consentResult.text);
-        if (consentParsed?.affirmative === true) {
+        if (consentResult?.affirmative === true) {
           const { error: consentError } = await admin.rpc("confirm_chat_proposal_via_consent", {
             p_proposal_id: pending.id,
-            p_evidence_message_id: messageId
+            p_evidence_message_id: messageId,
           });
           if (!consentError) {
             await finishRun("answered", {
               via_in_thread_consent: true,
               proposal_id: pending.id,
-              kind: pending.kind
-            }, {
-              triage: triageUsage
+              kind: pending.kind,
+              jev_consent_p: consentResult.confidence,
             });
-            return jsonResponse({
-              ok: true,
-              via_consent: pending.id
-            });
+            return jsonResponse({ ok: true, via_consent: pending.id });
           }
-          // Validation failed (stale, wrong confirmer, executor refused) —
-          // fall through to the planner, which will answer in plain text.
           console.error("[chat-agent] consent rejected:", consentError?.message);
         }
       }
@@ -946,8 +969,7 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
       `- Do not share phone numbers, emails, or addresses — you don't have them, and they stay private.`,
       `- Be brief. Two to four sentences for answers, one to two for confirmations. Use children's first names and drivers' full names. A roster may be a short list, nothing longer. Format for a phone: use actual line breaks (\\n) between each driver and their car, a blank line (\\n\\n) between sections. NEVER use markdown — no **, no -, no #, no bullet symbols. The chat renders plain text only, so markdown symbols appear as ugly asterisks and dashes to parents. Just plain text with line breaks. Cut filler words, pleasantries, and repetition — parents are reading on a phone.`,
-      `- If the message is social or completely unrelated to the carpool — kid TV shows, birthdays, sports, weather, traffic, school events, small talk — reply with ONLY the token NOREPLY and nothing else. Never engage, never deflect politely, never add explanation.`,
-      `- Be reserved in group threads (Everyone, group chats, DMs between parents). Respond ONLY when: (a) the parent tagged you with @Crewmate, (b) the parent is clearly asking you to do something specific — a schedule change, a direct question about coverage — or (c) a parent is confirming a pending card. If parents are chatting about carpool-adjacent things with each other without directly addressing you — how the morning went, general coordination, logistics, observations — reply NOREPLY. You are a quiet crew member. Being silent when not needed is your best feature.`
+      `- If the message is completely unrelated to the carpool and you were tagged by accident, a brief one-liner redirecting to carpool topics is fine.`
     ].join("\n");
     // Reload the transcript fresh on every planning pass so coalesced
     // messages (and the agent's own earlier replies) are always in context.
@@ -1017,20 +1039,11 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
     const { block, visible } = splitProposalBlock(planned.answer ?? "");
     const answer = visible.trim();
 
-    // Second chatter gate: triage can miss chatty interrogatives on busy
-    // threads, but the planner reliably recognizes off-topic. NOREPLY =
-    // stay silent, exactly as if triage had caught it.
-    if (!block && !taggedCrewmate && /^NOREPLY\b/i.test(answer)) {
-      await finishRun("chatter", { second_gate: true, category, topic: triageTopic }, { triage: triageUsage, planner: planned.usage });
-      return jsonResponse({ skipped: "chatter_second_gate" });
-    }
-
     if (!answer && !block) {
       await finishRun("failed", {
         error: "empty_answer"
       }, {
-        triage: triageUsage,
-        planner: planned.usage
+                planner: planned.usage
       });
       return jsonResponse({
         skipped: "empty_answer"
@@ -1222,8 +1235,7 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       await finishRun("failed", {
         error: insertError?.message ?? "insert_failed"
       }, {
-        triage: triageUsage,
-        planner: planned.usage
+                planner: planned.usage
       });
       return jsonResponse({
         error: "message_insert_failed"
@@ -1259,8 +1271,7 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       proposals_created: proposalsCreated,
       coalesced_window_ms: COALESCE_WINDOW_MS
     }, {
-      triage: triageUsage,
-      planner: planned.usage
+            planner: planned.usage
     });
     // Persist the tool-call log for the gap analysis (separate update so
     // the ledger survives even if this write races).
