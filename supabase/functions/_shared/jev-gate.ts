@@ -66,18 +66,21 @@ export async function jevGate(opts: {
           help_requested: {
             type: "noul",
             instructions:
-              "Is this parent asking Crewmate AI for help with the carpool schedule? " +
-              "A question about who drives, coverage, pickup times, or a request to change the schedule counts as yes. " +
-              "Social chat, small talk, kid TV shows, birthdays, sports, traffic, or messages directed at other parents are no.",
+              "Is this parent specifically requesting Crewmate AI to DO something — " +
+              "answer a direct schedule question (who drives, what time, is it covered), " +
+              "make a schedule change, or confirm a pending card? " +
+              "Reactions, acknowledgments, thanks, observations about how things went, " +
+              "comments directed at other parents, and social chat are NO. " +
+              "Only a clear request directed at Crewmate counts as yes.",
           },
           message_type: {
             type: "choice",
             instructions: "What kind of message is this?",
             criteria: {
-              question: "Asking about the schedule, rosters, coverage, times, who drives/rides, or the weekly cycle",
-              action: "Requesting a schedule change (cancel a ride, switch cars, volunteer, add a drive, change seat count)",
+              question: "A direct question TO Crewmate about the schedule — who drives, what time, is it covered, what changed. NOT observations or comments about how things went.",
+              action: "Requesting a schedule change (cancel a ride, switch cars, volunteer, add a drive, change seat count). Something needs to change on the schedule.",
               consent: "Confirming or declining a pending proposal card (e.g. 'yes, go ahead' or 'confirmed')",
-              chatter: "Social conversation, small talk, anything not about the carpool schedule",
+              chatter: "Social conversation, observations, reactions, acknowledgments, thanks, or anything not specifically asking Crewmate to act or answer.",
             },
           },
         },

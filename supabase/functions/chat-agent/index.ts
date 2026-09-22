@@ -622,7 +622,7 @@ Deno.serve(async (req)=>{
     // @Crewmate is an explicit invocation: the validation trigger sanctions
   // exactly one null-profile mention form (label "@Crewmate"), so a null
   // profile_id here means the parent tagged the agent on purpose. Tagged
-  // messages always run the planner — no triage silence, no NOREPLY gate —
+  // messages always run the planner directly — no gate, always respond.
   // exactly like the private Crewmate thread.
   const taggedCrewmate = ((message.mentions as any[] | null) ?? []).some((m) => m && !m.profile_id);
 
@@ -760,8 +760,17 @@ Deno.serve(async (req)=>{
           });
         }
 
-        // Gate says no — silence.
-        if (gateResult.helpRequested < 0.5 || gateResult.messageType === "chatter") {
+        // Gate decision: actions and consent always pass (that's Crewmate's job —
+        // propose changes, execute confirmations). Questions need high
+        // confidence (>= 0.8) to prevent Crewmate from chiming in on
+        // casual observations, acknowledgments, and reactions that
+        // merely mention the schedule without needing Crewmate's input.
+        const shouldRespond =
+          gateResult.messageType === "action" ||
+          gateResult.messageType === "consent" ||
+          (gateResult.messageType === "question" && gateResult.helpRequested >= 0.8);
+
+        if (!shouldRespond) {
           await finishRun("chatter", {
             category: gateResult.messageType,
             jev_help_p: gateResult.helpRequested,

@@ -488,8 +488,9 @@ test("@Crewmate mentions: one sanctioned null-profile form, honored as an explic
   assert.match(fn, /thread.kind !== "agent" && !taggedCrewmate/);
   // Jev gate replaces the old GLM triage + NOREPLY second gate.
   assert.match(fn, /jevGate/);
-  assert.match(fn, /helpRequested < 0.5/);
+  assert.match(fn, /helpRequested >= 0.8/);
   assert.match(fn, /jevConsent/);
+  assert.doesNotMatch(fn, /NOREPLY/);
   assert.match(fn, /explicitly tagged you with @Crewmate/);
 });
 
