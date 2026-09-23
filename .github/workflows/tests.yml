@@ -112,7 +112,7 @@ jobs:
           NODE
 
       - name: Run Playwright E2E tests
-        run: npx playwright test tests/cross-family.spec.ts tests/weekly-cycle.spec.ts tests/today-card.spec.ts tests/toggle-drive-cycle.spec.ts tests/drive-status.spec.ts tests/chat.spec.ts tests/chat-multi-user.spec.ts tests/chat-enhancements.spec.ts --workers=1 --reporter=line
+        run: npx playwright test tests/cross-family.spec.ts tests/weekly-cycle.spec.ts tests/today-card.spec.ts tests/toggle-drive-cycle.spec.ts tests/drive-status.spec.ts tests/chat.spec.ts tests/chat-multi-user.spec.ts tests/chat-enhancements.spec.ts tests/idle-schedule-requests.spec.ts --workers=1 --reporter=line
         env:
           TEST_DB_TARGET: local
           MOBILE_RUNTIME_TEST_PORT: 4187

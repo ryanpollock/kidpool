@@ -839,6 +839,12 @@ function tripLabel(trip: Tables<"trips">): string {
   return `${dateInfo.full} · ${period}`;
 }
 
+function samePublishedWeek(a: WeekWithTrips | null, b: WeekWithTrips | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 function countDeclinedRosters(schedule: ScheduleVersionWithRosters): number {
   let count = 0;
   for (const rosters of schedule.rostersByTrip.values()) {
@@ -6690,7 +6696,7 @@ setChatThreadId(chatThreadFromLink);
       // mid-week, and a publishedWeek closure captured before the mutation
       // would never contain them.
       const pubWeek = await repository.getActivePublishedWeek(identity.group.id);
-      setPublishedWeek(pubWeek);
+      setPublishedWeek(prev => samePublishedWeek(prev, pubWeek) ? prev : pubWeek);
       if (!pubWeek) { setPublishedSchedule(null); return; }
       const roster = await repository.getGroupRoster(identity.group.id);
       const version = await repository.getLatestPublishedVersion(
