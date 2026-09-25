@@ -39,7 +39,8 @@ begin
   end if;
 
   -- Verify the caller is a coordinator for the child's group
-  if not public.is_group_coordinator(auth.uid(), v_child.group_id) then
+  -- (single-arg call: is_group_coordinator checks auth.uid() internally)
+  if not public.is_group_coordinator(v_child.group_id) then
     raise exception 'Only coordinators can remove other children from drives';
   end if;
 
