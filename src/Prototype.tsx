@@ -1610,7 +1610,9 @@ function DriveCard({
 // Ad hoc custom drives: minimal offer form. Any parent with an active
 // vehicle can offer a one-off drive at an arbitrary time on a remaining
 // day of the published week; other families add their kids first-come-
-// first-served from the drive detail screen.
+// first-served from the drive detail screen. Offers require the week's
+// PUBLISHED schedule (decision 2026-09-27) — the Home button is
+// visible-but-disabled pre-publish, so this sheet only opens post-publish.
 function OfferCustomDriveSheet({
   open,
   onOpenChange,
@@ -1619,7 +1621,6 @@ function OfferCustomDriveSheet({
   vehicle,
   working,
   error,
-  schedulePublished,
   onSubmit,
 }: {
   open: boolean;
@@ -1629,7 +1630,6 @@ function OfferCustomDriveSheet({
   vehicle: Tables<"vehicles"> | null;
   working: boolean;
   error: string | null;
-  schedulePublished: boolean;
   onSubmit: (date: string, direction: "morning" | "afternoon", time: string, childIds: string[]) => Promise<void>;
 }) {
   const [date, setDate] = useState<string | null>(null);
@@ -1668,9 +1668,6 @@ function OfferCustomDriveSheet({
       description="A one-off drive at a custom time. Other families can add their kids from the schedule."
     >
       {error ? <div className="auth-error" role="alert" style={{ marginBottom: 12 }}>{error}</div> : null}
-      {!schedulePublished ? (
-        <p className="helper-copy" style={{ marginTop: 0 }}>Families can join right away — the drive goes live with the week's published schedule (Sun 7 PM).</p>
-      ) : null}
       {dates.length === 0 ? (
         <p className="helper-copy">No remaining school days this week — the schedule publishes Sunday evening.</p>
       ) : (
@@ -2195,6 +2192,30 @@ function HomeScreen({
                             </div>
                           );
                         }
+                        // Custom-drive coverage: a seat on an extra drive for the same
+                        // date+direction satisfies this leg's need — the
+                        // child is not "missing a ride" here (production
+                        // incident 2026-09-27). The extra drive renders as
+                        // its own leg below with the child in its roster.
+                        const coveringCustomTrip = (homeSchedule?.trips ?? []).find(
+                          (t) =>
+                            t.id !== trip.id &&
+                            t.slot === "custom" &&
+                            t.service_date === trip.service_date &&
+                            t.direction === trip.direction &&
+                            (homeSchedule?.rostersByTrip.get(t.id) ?? []).some(
+                              (r) =>
+                                (r.driverAssignment.status === "tentative" || r.driverAssignment.status === "confirmed") &&
+                                r.children.some((c) => c.id === child.id),
+                            ),
+                        );
+                        if (coveringCustomTrip) {
+                          return (
+                            <div className="today-card-ride today-card-ride--covered" key={child.id}>
+                              <span>Riding the {formatMeetingTime(coveringCustomTrip.meeting_time)} extra drive</span>
+                            </div>
+                          );
+                        }
                         return (
                           <div className="today-card-ride today-card-ride--none" key={child.id}>
                             <span>No {trip.direction === "morning" ? "morning" : formatMeetingTime(trip.meeting_time)} ride for <strong>{child.first_name}</strong></span>
@@ -2505,11 +2526,18 @@ function HomeScreen({
       ) : null}
 
       {canOfferCustomDrive && onOfferCustomDrive ? (
-        <button className="coverage-alert coverage-alert--muted" onClick={onOfferCustomDrive} data-testid="offer-custom-drive">
-          <span><ClockIcon width="20" height="20" /></span>
-          <span><strong>Offer an extra drive</strong><small>A one-off pickup at a custom time — other families can add their kids</small></span>
-          <ChevronRightIcon />
-        </button>
+        schedulePublished ? (
+          <button className="coverage-alert coverage-alert--muted" onClick={onOfferCustomDrive} data-testid="offer-custom-drive">
+            <span><ClockIcon width="20" height="20" /></span>
+            <span><strong>Offer an extra drive</strong><small>A one-off pickup at a custom time — other families can add their kids</small></span>
+            <ChevronRightIcon />
+          </button>
+        ) : (
+          <button className="coverage-alert coverage-alert--muted" disabled data-testid="offer-custom-drive-locked" aria-disabled="true">
+            <span><ClockIcon width="20" height="20" /></span>
+            <span><strong>Offer an extra drive</strong><small>Opens Sunday evening, once the weekly schedule is published</small></span>
+          </button>
+        )
       ) : null}
 
       <button className="coverage-alert coverage-alert--muted" onClick={onDirectory} data-testid="directory-link">
@@ -3474,6 +3502,13 @@ function WeekScreen({
     const existing = tripsByDate.get(trip.service_date) ?? [];
     existing.push(trip);
     tripsByDate.set(trip.service_date, existing);
+  }
+  // Chronological legs within each day (morning first, then by pickup time)
+  // — the DB order returns afternoon-before-morning and sorts slots
+  // alphabetically, which rendered a 4:20 custom drive above the 2:10
+  // pm_early leg instead of in time order.
+  for (const dateTrips of tripsByDate.values()) {
+    dateTrips.sort(tripSlotSort);
   }
   const sortedDates = [...tripsByDate.keys()].sort();
 
@@ -7424,11 +7459,12 @@ const navItems = useMemo(() => {
   }, [weekData, todayDate]);
 
   const canOfferCustomDrive = useMemo(() => {
-    // Any juncture in the weekly cycle: the week just needs remaining school
-    // days and the caller needs a car. The RPC attaches to the published
-    // version when one exists, the latest draft during the pre-publish
-    // window, and seeds a manual draft v1 when the week has no version yet
-    // (Saturday check-in day / Sunday before the 7 AM generation).
+    // Extra drives extend the PUBLISHED roster (decision 2026-09-27,
+    // reversing the Sep 13 any-juncture relaxation): the RPC rejects
+    // offers until the week's schedule is published, and the Home button
+    // renders visible-but-disabled pre-publish with an explainer
+    // (schedulePublished prop). This memo covers only eligibility —
+    // identity, remaining school days, and a household vehicle.
     if (!identity || offerableDates.length === 0) return false;
     const householdId = identity.membership?.household_id;
     if (!householdId || !householdSetup) return false;
@@ -8076,7 +8112,6 @@ if (authError && !identity) {
           vehicle={householdSetup ? resolveDriverVehicle(householdSetup.vehicles, identity.profile.id) : null}
           working={offerWorking}
           error={offerError}
-          schedulePublished={homeSchedule?.version.status === "published"}
           onSubmit={offerCustomDrive}
         />
       ) : null}

@@ -2577,9 +2577,11 @@ test("Custom drives: regenerate carries custom assignments into the new version"
   for (const u of [coord, driver, rider]) deleteTestUser(u.userId);
 });
 
-// ── Custom drives at any juncture (draft / version-less weeks) ────
+// ── Custom drives require a published schedule (202609270001) ────
 
-test("Custom drives: version-less week — offer seeds a manual draft v1, generate carries it into v2", { skip: !SERVICE_KEY }, async () => {
+const OFFER_NOT_PUBLISHED = /The schedule for that week is not published yet/;
+
+test("Custom drives: offerings are rejected until the schedule is published; publishing unlocks them", { skip: !SERVICE_KEY }, async () => {
   const coord = setupHousehold(650, "SeedCoord", "member", true);
   const driver = setupHousehold(651, "SeedDriver");
   const rider = setupHousehold(652, "SeedRider");
@@ -2588,6 +2590,11 @@ test("Custom drives: version-less week — offer seeds a manual draft v1, genera
   const driverChild = UID(1560);
   const riderChild = UID(1561);
   const vehicleId = UID(1550);
+  const riderVehicleId = UID(1556);
+  const draftVersionId = UID(1655);
+
+  const driverJwt = signInUser("seeddriver@test.kidpool").access_token;
+  const riderJwt = signInUser("seedrider@test.kidpool").access_token;
 
   runSql(`
     INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleId}', '${GROUP_ID}', '${driver.householdId}', 'SeedCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
@@ -2595,107 +2602,166 @@ test("Custom drives: version-less week — offer seeds a manual draft v1, genera
     INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${riderChild}', '${GROUP_ID}', '${rider.householdId}', 'S2', 'Seed', '${rider.userId}') ON CONFLICT DO NOTHING;
   `);
 
-  // No schedule_versions row exists for this week yet.
+  // Case 1: version-less week (Saturday check-in day / Sunday pre-7 AM analog)
   assert.equal(restGet("schedule_versions", { week_id: weekId }).length, 0, "precondition: week has no version");
-
-  // Offer on a version-less week (Saturday / Sunday pre-generation analog)
-  const driverJwt = signInUser("seeddriver@test.kidpool").access_token;
-  const offer = rpcCall(driverJwt, "offer_custom_drive", {
+  const offer1 = rpcCall(driverJwt, "offer_custom_drive", {
     p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
     p_meeting_time: "16:50", p_child_ids: [driverChild],
   });
-  assert.ok(offer.id, `offer on version-less week should succeed: ${JSON.stringify(offer)}`);
+  assert.match(offer1.message ?? "", OFFER_NOT_PUBLISHED, "version-less week must reject offers");
+  assert.equal(restGet("schedule_versions", { week_id: weekId }).length, 0, "no placeholder draft may be created");
+  assert.equal(restGet("trips", { week_id: weekId, slot: "custom" }).length, 0, "no custom trip created");
 
-  const seeded = restGet("schedule_versions", { week_id: weekId });
-  assert.equal(seeded.length, 1, "offer seeded exactly one schedule version");
-  assert.equal(seeded[0].version_number, 1, "seeded as version 1");
-  assert.equal(seeded[0].status, "draft", "seeded as a draft");
-  assert.equal(offer.schedule_version_id, seeded[0].id, "assignment attached to the seeded draft");
+  // Case 2: draft-only week (Sunday morning state)
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status) VALUES ('${draftVersionId}', '${GROUP_ID}', '${weekId}', 1, 'draft') ON CONFLICT DO NOTHING;`);
+  const offer2 = rpcCall(driverJwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "16:50", p_child_ids: [driverChild],
+  });
+  assert.match(offer2.message ?? "", OFFER_NOT_PUBLISHED, "draft-only week must reject offers");
+  assert.equal(restGet("trips", { week_id: weekId, slot: "custom" }).length, 0, "still no custom trip");
 
-  // Another parent joins the pre-publish drive
-  const riderJwt = signInUser("seedrider@test.kidpool").access_token;
-  const join = rpcCall(riderJwt, "join_custom_drive", { p_trip_id: offer.trip_id, p_child_ids: [riderChild] });
-  assert.ok(!join.message, `join on the seeded draft should succeed: ${JSON.stringify(join)}`);
-  assert.equal(restGet("rider_assignments", { trip_id: offer.trip_id, schedule_version_id: seeded[0].id }).length, 2);
+  // Case 3: publish → offers attach to the published version
+  runSql(`UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE id = '${draftVersionId}';`);
+  const offer3 = rpcCall(driverJwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "16:50", p_child_ids: [driverChild],
+  });
+  assert.ok(offer3.id, `offer on the published version must succeed: ${JSON.stringify(offer3)}`);
+  assert.equal(offer3.schedule_version_id, draftVersionId, "offer attaches to the published version");
+  const customTripId = offer3.trip_id;
 
-  // Sunday-morning generation: v2 is created from check-ins, supersedes the
-  // manual v1, and the custom drive carries over intact. A future
-  // confirmation deadline mirrors the real Sunday 7 AM state (a NULL
-  // deadline is treated as passed, which would auto-publish instead).
-  runSql(`UPDATE public.weeks SET checkin_deadline = now() - interval '1 day', confirmation_deadline = now() + interval '1 day' WHERE id = '${weekId}';`);
-  const coordJwt = signInUser("seedcoord@test.kidpool").access_token;
-  const gen = JSON.parse(execSync(
-    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
-    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
-  ));
-  assert.ok(gen.success, "generation over a manual v1 should succeed");
+  const join = rpcCall(riderJwt, "join_custom_drive", { p_trip_id: customTripId, p_child_ids: [riderChild] });
+  assert.ok(!join.message, `join on the published version should succeed: ${JSON.stringify(join)}`);
 
-  const versions = restGet("schedule_versions", { week_id: weekId });
-  assert.equal(versions.length, 2, "v1 superseded by the generated v2");
-  const v2 = versions.find((v) => v.version_number === 2);
-  const v1 = versions.find((v) => v.version_number === 1);
-  assert.ok(v2 && v1, "both versions exist");
-  assert.equal(v1.status, "superseded", "manual v1 superseded by the generated draft");
-  assert.ok(["draft", "published"].includes(v2.status), "generated v2 is the live draft/published version");
+  // Case 4: a second extra drive the same day+direction is still allowed
+  // (a pure capacity offer with no children)
+  const offer4 = rpcCall(driverJwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "17:30", p_child_ids: [],
+  });
+  assert.ok(offer4.id, `a second extra drive that day must be allowed: ${JSON.stringify(offer4)}`);
 
-  const carriedDA = restGet("driver_assignments", { schedule_version_id: v2.id, trip_id: offer.trip_id });
-  assert.equal(carriedDA.length, 1, "custom drive carried into v2");
-  assert.equal(carriedDA[0].driver_profile_id, driver.userId);
-  assert.equal(carriedDA[0].status, "confirmed");
-  const carriedRiders = restGet("rider_assignments", { schedule_version_id: v2.id, trip_id: offer.trip_id });
-  assert.equal(carriedRiders.length, 2, "both pre-publish riders carried into v2");
+  // Case 5: joining THAT child into the second drive is rejected — a child
+  // rides at most one extra drive per direction per day
+  const join2 = rpcCall(riderJwt, "join_custom_drive", { p_trip_id: offer4.trip_id, p_child_ids: [riderChild] });
+  assert.match(join2.message ?? "", /already on another extra drive that day/, "double extra-drive join must be rejected");
 
-  // Publishing v2 would make the drive live — verify publish path accepts it
-  runSql(`UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE id = '${v2.id}';`);
-  const publishedDA = restGet("driver_assignments", { schedule_version_id: v2.id, trip_id: offer.trip_id });
-  assert.equal(publishedDA.length, 1, "custom drive is part of the published version");
+  // Case 6: the offer-side guard — offering a NEW extra drive with your own
+  // child who is already riding one that day is rejected too
+  runSql(`INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${riderVehicleId}', '${GROUP_ID}', '${rider.householdId}', 'RiderCar', 4, true, '${rider.userId}') ON CONFLICT DO NOTHING;`);
+  const offer5 = rpcCall(riderJwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
+    p_meeting_time: "17:45", p_child_ids: [riderChild],
+  });
+  assert.match(offer5.message ?? "", /already on another extra drive that day/, "offering a double extra-drive child must be rejected");
 
   cleanupAllTestData();
   for (const u of [coord, driver, rider]) deleteTestUser(u.userId);
 });
 
-test("Custom drives: draft-only week — offer, join, leave, cancel all work pre-publish", { skip: !SERVICE_KEY }, async () => {
-  const driver = setupHousehold(660, "DraftDriver");
-  const rider = setupHousehold(661, "DraftRider");
-  const { weekId } = setupWeekAndTrips();
-  const serviceDate = "2028-01-04";
-  const draftVersionId = UID(1655);
-  const driverChild = UID(1660);
-  const riderChild = UID(1661);
-  const vehicleId = UID(1650);
+// ── Custom-drive seats count as coverage (202609270002) ──────────
+// Production incident 2026-09-27 (Leah): a child who joined an extra drive
+// kept a needs_ride request on the standard trip — regeneration would seat
+// them on both cars, volunteer/manually-assign would sweep them in, and the
+// UI kept showing "needs a ride". Coverage must now be computed everywhere.
+test("Custom drives: a seat on an extra drive covers the standard-trip need everywhere", { skip: !SERVICE_KEY }, async () => {
+  const coord = setupHousehold(662, "CoverCoord", "member", true);
+  const offerer = setupHousehold(663, "CoverOffer");
+  const riderB = setupHousehold(664, "CoverRider");
+  const riderC = setupHousehold(665, "CoverVol");
+
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const morningTripId = tripIds[4]; // 2028-01-05 morning, meeting_time 08:40
+  const serviceDate = "2028-01-05";
+  const offerVehicleId = UID(1673);
+  const volVehicleId = UID(1674);
+  const offerChild = UID(1675);
+  const childB = UID(1676);
+  const childC = UID(1677);
 
   runSql(`
-    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status) VALUES ('${draftVersionId}', '${GROUP_ID}', '${weekId}', 1, 'draft') ON CONFLICT DO NOTHING;
-    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${vehicleId}', '${GROUP_ID}', '${driver.householdId}', 'DraftCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
-    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${driverChild}', '${GROUP_ID}', '${driver.householdId}', 'D1', 'Draft', '${driver.userId}') ON CONFLICT DO NOTHING;
-    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${riderChild}', '${GROUP_ID}', '${rider.householdId}', 'D2', 'Draft', '${rider.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${offerVehicleId}', '${GROUP_ID}', '${offerer.householdId}', 'CoverCar', 4, true, '${offerer.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${volVehicleId}', '${GROUP_ID}', '${riderC.householdId}', 'VolCar', 4, true, '${riderC.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${offerChild}', '${GROUP_ID}', '${offerer.householdId}', 'O1', 'Cover', '${offerer.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childB}', '${GROUP_ID}', '${riderB.householdId}', 'B1', 'Cover', '${riderB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${childC}', '${GROUP_ID}', '${riderC.householdId}', 'V1', 'Cover', '${riderC.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1670)}', '${GROUP_ID}', '${weekId}', '${offerer.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1671)}', '${GROUP_ID}', '${weekId}', '${riderB.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(1672)}', '${GROUP_ID}', '${weekId}', '${riderC.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1670)}', '${morningTripId}', '${offerChild}', true, '${offerer.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1671)}', '${morningTripId}', '${childB}', true, '${riderB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(1672)}', '${morningTripId}', '${childC}', true, '${riderC.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(1670)}', '${morningTripId}', '${offerer.userId}', '${offerVehicleId}', 'prefer') ON CONFLICT DO NOTHING;
   `);
 
-  const driverJwt = signInUser("draftdriver@test.kidpool").access_token;
-  const riderJwt = signInUser("draftrider@test.kidpool").access_token;
+  // Publish an (empty) v1 so offers are allowed — mirrors the Sunday 7 PM
+  // auto-publish of a draft whose trips have no drivers yet.
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${UID(1678)}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
 
-  const offer = rpcCall(driverJwt, "offer_custom_drive", {
-    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "afternoon",
-    p_meeting_time: "16:50", p_child_ids: [driverChild],
+  // The offerer drives an 8:40 AM extra drive (identical time to the
+  // standard morning trip) with their own child; riderB joins the Leah seat.
+  const offererJwt = signInUser("coveroffer@test.kidpool").access_token;
+  const riderBJwt = signInUser("coverrider@test.kidpool").access_token;
+  const riderCJwt = signInUser("covervol@test.kidpool").access_token;
+  const offer = rpcCall(offererJwt, "offer_custom_drive", {
+    p_group_id: GROUP_ID, p_service_date: serviceDate, p_direction: "morning",
+    p_meeting_time: "08:40", p_child_ids: [offerChild],
   });
-  assert.ok(offer.id, `offer on draft-only week should succeed: ${JSON.stringify(offer)}`);
-  assert.equal(offer.schedule_version_id, draftVersionId, "offer attached to the existing draft, not a new version");
-  assert.equal(restGet("schedule_versions", { week_id: weekId }).length, 1, "no extra version created");
+  assert.ok(offer.id, `offer on the published version: ${JSON.stringify(offer)}`);
+  const customTripId = offer.trip_id;
+  const joinB = rpcCall(riderBJwt, "join_custom_drive", { p_trip_id: customTripId, p_child_ids: [childB] });
+  assert.ok(!joinB.message, `join on the published version: ${JSON.stringify(joinB)}`);
 
-  const join = rpcCall(riderJwt, "join_custom_drive", { p_trip_id: offer.trip_id, p_child_ids: [riderChild] });
-  assert.ok(!join.message, `join on draft-only week: ${JSON.stringify(join)}`);
+  // Regenerate: the custom driver must not be selected for the standard
+  // trip at the identical time, and the custom-covered children (offerChild,
+  // childB) must be filtered out of the rider pool — only childC remains.
+  const coordJwt = signInUser("covercoord@test.kidpool").access_token;
+  const gen = JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${coordJwt}" -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"weekId":"${weekId}"}' "${SUPABASE_URL}/functions/v1/generate-schedule"`,
+    { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+  assert.ok(gen.success, "regeneration should succeed");
 
-  const leave = rpcCall(riderJwt, "leave_custom_drive", { p_trip_id: offer.trip_id, p_child_id: riderChild });
-  assert.ok(!leave.message, `leave on draft-only week: ${JSON.stringify(leave)}`);
+  const v2 = restGet("schedule_versions", { week_id: weekId, version_number: 2 })[0];
+  assert.ok(v2, "v2 must exist");
 
-  const cancel = rpcCall(driverJwt, "cancel_custom_drive", { p_trip_id: offer.trip_id });
-  assert.ok(!cancel.message, `cancel on draft-only week: ${JSON.stringify(cancel)}`);
-  assert.ok(Array.isArray(cancel.rider_profile_ids), "cancel snapshot returned");
-  assert.equal(restGet("trips", { id: offer.trip_id }).length, 0, "trip deleted");
+  const morningResult = gen.trips.find((t) => t.trip_id === morningTripId);
+  assert.equal(morningResult.rider_count, 1, "custom-covered children are filtered out of the rider pool");
+  assert.equal(morningResult.uncovered_rider_count, 1, "only childC still needs the standard car");
+
+  const morningDAs = restGet("driver_assignments", { schedule_version_id: v2.id, trip_id: morningTripId });
+  assert.equal(morningDAs.length, 0, "the custom driver at the identical time is not selected for the standard trip");
+
+  const bRows = restGet("rider_assignments", { schedule_version_id: v2.id, child_id: childB });
+  assert.equal(bRows.length, 1, "childB rides only the custom drive in v2");
+  assert.equal(bRows[0].trip_id, customTripId, "childB's single v2 seat is the custom drive");
+
+  const customDA = restGet("driver_assignments", { schedule_version_id: v2.id, trip_id: customTripId });
+  assert.equal(customDA.length, 1, "custom drive carried into v2");
+  const carriedRiders = restGet("rider_assignments", { schedule_version_id: v2.id, trip_id: customTripId });
+  assert.equal(carriedRiders.length, 2, "both custom riders carried into v2");
+
+  // Volunteer: parentC's own childC is genuinely uncovered and is placed;
+  // the custom-covered children must NOT be swept into the new car
+  const vol = rpcCall(riderCJwt, "volunteer_for_uncovered_trip", { p_trip_id: morningTripId, p_schedule_version_id: v2.id });
+  assert.ok(vol.id, `volunteer should succeed: ${JSON.stringify(vol)}`);
+  const volRiders = restGet("rider_assignments", { driver_assignment_id: vol.id });
+  assert.equal(volRiders.length, 1, "only the volunteer's own child is placed");
+  assert.equal(volRiders[0].child_id, childC, "childC placed");
+
+  // Coordinator manual assign: drivers may be overridden (deliberate admin
+  // freedom) but the child sweep still respects coverage — no riders to seat
+  const manual = rpcCall(coordJwt, "manually_assign_driver", {
+    p_trip_id: morningTripId, p_schedule_version_id: v2.id,
+    p_driver_profile_id: offerer.userId, p_vehicle_id: offerVehicleId,
+  });
+  assert.ok(manual.id, `manual assign should succeed: ${JSON.stringify(manual)}`);
+  const manualRiders = restGet("rider_assignments", { driver_assignment_id: manual.id });
+  assert.equal(manualRiders.length, 0, "manual-assign sweep skips custom-covered and already-seated children");
 
   cleanupAllTestData();
-  deleteTestUser(driver.userId);
-  deleteTestUser(rider.userId);
+  for (const u of [coord, offerer, riderB, riderC]) deleteTestUser(u.userId);
 });
 
 test("Custom drives: published version wins when a draft coexists mid-week", { skip: !SERVICE_KEY }, async () => {
