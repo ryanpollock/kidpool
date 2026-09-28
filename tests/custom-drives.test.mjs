@@ -286,17 +286,30 @@ test("prototype.css: custom drive styles exist and respect the 16px input rule",
     }
   }
 });
-// ── Any-juncture support (202609130001) ──────────────────────────
+// ── Published-only offers (202609270001) + rider coverage (202609270002) ──
+//
+// Decision 2026-09-26/27 reverses, for OFFERS only, the Sep 13
+// any-juncture relaxation: offers require the week's PUBLISHED schedule,
+// and a child seated on an extra drive counts as covered everywhere a
+// child can be placed onto a standard-trip car.
 
 const anyJunctureMigrationUrl = new URL(
   "../supabase/migrations/202609130001_custom_drives_any_juncture.sql",
   import.meta.url,
 );
+const offersRequirePublishedUrl = new URL(
+  "../supabase/migrations/202609270001_custom_drive_offers_require_published.sql",
+  import.meta.url,
+);
+const riderCoverageMigrationUrl = new URL(
+  "../supabase/migrations/202609270002_custom_drive_rider_coverage.sql",
+  import.meta.url,
+);
 
-test("custom drives resolve the version the roster displays: published → latest draft → manual v1", async () => {
+test("custom drives resolve the version the roster displays: published → latest draft (join/leave/cancel)", async () => {
   const sql = await readFile(anyJunctureMigrationUrl, "utf8");
 
-  // Shared resolver, used by all four RPCs
+  // Shared resolver, still used by join/leave/cancel (offer no longer uses it)
   assert.match(sql, /create or replace function public\.resolve_custom_drive_version\(/);
   assert.match(sql, /revoke all on function public\.resolve_custom_drive_version\(uuid, uuid\) from public;/);
   // Published wins; otherwise the latest version_number
@@ -304,28 +317,107 @@ test("custom drives resolve the version the roster displays: published → lates
   assert.match(resolver, /status = 'published'/);
   assert.match(resolver, /order by version_number desc/);
 
-  const helperCalls = sql.match(/public\.resolve_custom_drive_version\(/g) ?? [];
-  assert.ok(helperCalls.length >= 4, "all four RPCs must use the shared resolver");
-
-  // offer seeds a manual draft v1 when the week has no version at all
-  // (Saturday check-in / Sunday pre-generation) and audits that fact
-  assert.match(sql, /insert into public\.schedule_versions \(group_id, week_id, version_number, status\)/);
-  assert.match(sql, /values \(p_group_id, v_week\.id, 1, 'draft'\)/);
-  assert.match(sql, /'created_schedule_version', v_created_version/);
-
-  // join/leave/cancel guard the no-version case instead of requiring published
+  // join/leave/cancel guard the no-version case
   const noVersionGuards = sql.match(/No schedule version exists for this week yet/g);
   assert.ok(noVersionGuards && noVersionGuards.length === 3, "join/leave/cancel must guard the no-version case");
-  assert.doesNotMatch(sql, /The schedule for this week is not published/);
 });
 
-test("UI: the offer button no longer requires a published schedule", async () => {
+test("offer_custom_drive requires the week's published schedule (no v1 seeding)", async () => {
+  const sql = await readFile(offersRequirePublishedUrl, "utf8");
+
+  // Guard restored from 202609100002: no published version → raise
+  assert.match(sql, /status = 'published'/);
+  assert.match(sql, /The schedule for that week is not published yet/, "offer must raise the published-only guard");
+  assert.match(sql, /revoke all on function public\.offer_custom_drive\(uuid, date, public\.trip_direction, time, uuid\[\]\) from public;/);
+  assert.match(sql, /grant execute on function public\.offer_custom_drive\(uuid, date, public\.trip_direction, time, uuid\[\]\) to authenticated;/);
+
+  // The manual-v1 seed is gone — offers never fabricate a draft version
+  assert.doesNotMatch(sql, /insert into public\.schedule_versions/);
+  assert.doesNotMatch(sql, /created_schedule_version/);
+  assert.doesNotMatch(sql, /resolve_custom_drive_version/, "offer must not fall back to a draft version");
+});
+
+test("custom-drive seats count as coverage everywhere (rider coverage migration)", async () => {
+  const sql = await readFile(riderCoverageMigrationUrl, "utf8");
+
+  // Offer + join reject a child already on another extra drive that day
+  const doubleCustomGuards = sql.match(/That child is already on another extra drive that day/g);
+  assert.ok(doubleCustomGuards && doubleCustomGuards.length === 2, "offer and join must reject double extra-drive seats");
+
+  // Volunteer (own children + other children) and manually_assign_driver
+  // credit custom-seat coverage for any preference
+  const customCreditClauses = sql.match(/ct\.slot = 'custom'/g);
+  assert.ok(customCreditClauses && customCreditClauses.length === 3, "volunteer ×2 and manually_assign ×1 must credit custom seats");
+
+  // Version-scoped child checks use the date+direction rule — a custom seat
+  // covers every standard trip of that date+direction
+  assert.match(sql, /ct\.service_date = v_trip\.service_date/);
+  assert.match(sql, /ct\.direction = v_trip\.direction/);
+
+  // Volunteer rejects a driver with a custom assignment at the identical
+  // date+time (same physical drive)
+  const driverTimeGuard = sql.match(/\bt\.slot = 'custom'/g);
+  assert.ok(driverTimeGuard && driverTimeGuard.length === 1, "volunteer must reject a same-time custom driver");
+  assert.match(sql, /You are already driving at that time/);
+});
+
+test("generate-schedule filters custom-covered riders and same-time custom drivers", async () => {
+  const source = await readFile(generateScheduleUrl, "utf8");
+
+  // Custom rider coverage set + driver-busy set are built from the same
+  // rows the carry-over copies (newest active DA per custom trip)
+  assert.match(source, /customCoveredChildKeys\.add\(`\$\{trip\.service_date\}\|\$\{trip\.direction\}\|\$\{childId\}`\)/);
+  assert.match(source, /customDriverBusyKeys\.add\(`\$\{da\.driver_profile_id\}\|\$\{trip\.service_date\}\|\$\{trip\.meeting_time\}`\)/);
+  assert.match(source, /return !customCoveredChildKeys\.has\(`\$\{trip\.service_date\}\|\$\{trip\.direction\}\|\$\{r\.child_id\}`\)/);
+  assert.match(source, /return !customDriverBusyKeys\.has\(`\$\{a\.driver_profile_id\}\|\$\{trip\.service_date\}\|\$\{trip\.meeting_time\}`\)/);
+});
+
+test("repository loaders credit custom-drive seats as coverage (all three)", async () => {
+  const source = await readFile(repoUrl, "utf8");
+
+  // getUncoveredChildren + the draft loader + the published loader all
+  // key coverage by date+direction and treat 'custom' as coverage
+  const customCredit = source.match(/coveredSlots\.has\("custom"\)/g);
+  assert.ok(customCredit && customCredit.length === 3, "all three coverage computations must credit custom seats");
+  const directionKeys = source.match(/const key = `\$\{trip\.service_date\}\|\$\{trip\.direction\}\|\$\{ra\.child_id\}`/g);
+  assert.ok(directionKeys && directionKeys.length === 3, "covered-slot maps must be date+direction scoped");
+});
+
+test("send-push uncovered/admin-escalation converge on the same coverage semantics", async () => {
+  const source = await readFile(sendPushUrl, "utf8");
+
+  assert.match(source, /async function uncoveredChildrenForVersion\(/);
+  // Custom seats cover same date+direction; either-sibling dedup preserved
+  assert.match(source, /customCovered\.add\(`\$\{trip\.service_date\}\|\$\{trip\.direction\}\|\$\{r\.child_id\}`\)/);
+  assert.match(source, /slots\.has\(siblingSlot\)/);
+  // Both branches route through the shared computation
+  const calls = source.match(/uncoveredChildrenForVersion\(version_id\)/g);
+  assert.ok(calls && calls.length === 2, "uncovered + admin_escalation branches must both use the shared helper");
+});
+
+test("UI: the offer button is visible-but-disabled until the schedule is published", async () => {
   const source = await readFile(prototypeUrl, "utf8");
+  const css = await readFile(prototypeCssUrl, "utf8");
 
-  // The published-status gate is gone — the RPC owns version resolution now
-  assert.doesNotMatch(source, /homeSchedule\?\.version\.status !== "published"/);
+  // Offers open the sheet only post-publish; pre-publish renders a
+  // disabled entry point with an explainer (never a disappearing button)
+  assert.match(source, /data-testid="offer-custom-drive"/);
+  assert.match(source, /data-testid="offer-custom-drive-locked"/);
+  assert.match(source, /Opens Sunday evening, once the weekly schedule is published/);
 
-  // Pre-publish helper copy explains the lifecycle
-  assert.match(source, /the drive goes live with the week's published schedule \(Sun 7 PM\)/);
-  assert.match(source, /schedulePublished=\{homeSchedule\?\.version\.status === "published"\}/);
+  // Disabled entry styling exists
+  assert.match(css, /\.coverage-alert:disabled\s*\{/);
+
+  // The Today card credits extra-drive seats on standard legs
+  assert.match(source, /today-card-ride--covered/);
+  assert.match(css, /\.today-card-ride--covered\s*\{/);
+  assert.match(source, /Riding the \{formatMeetingTime\(coveringCustomTrip\.meeting_time\)\} extra drive/);
+
+  // This Week renders legs chronologically (morning first, then pickup time)
+  assert.match(source, /dateTrips\.sort\(tripSlotSort\)/);
+
+  // The sheet's pre-publish copy is gone (it can no longer open pre-publish);
+// the remaining schedulePublished wiring belongs to the HomeScreen hero card
+  assert.doesNotMatch(source, /the drive goes live with the week's published schedule \(Sun 7 PM\)/);
+  assert.doesNotMatch(source, /schedulePublished=\{homeSchedule\?\.version\.status === "published"\}\s*\n\s*onSubmit=\{offerCustomDrive\}/);
 });
