@@ -978,6 +978,7 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
       `- Do not share phone numbers, emails, or addresses — you don't have them, and they stay private.`,
       `- Be brief. Two to four sentences for answers, one to two for confirmations. Use children's first names and drivers' full names. A roster may be a short list, nothing longer. Format for a phone: use actual line breaks (\\n) between each driver and their car, a blank line (\\n\\n) between sections. NEVER use markdown — no **, no -, no #, no bullet symbols. The chat renders plain text only, so markdown symbols appear as ugly asterisks and dashes to parents. Just plain text with line breaks. Cut filler words, pleasantries, and repetition — parents are reading on a phone.`,
+      `- Extra drives (offer_custom_drive) only work once the week's schedule is PUBLISHED — it publishes Sunday 7 PM Pacific. If it is not published yet, say extra drives open Sunday evening instead of proposing the offer.`,
       `- If the message is completely unrelated to the carpool and you were tagged by accident, a brief one-liner redirecting to carpool topics is fine.`
     ].join("\n");
     // Reload the transcript fresh on every planning pass so coalesced

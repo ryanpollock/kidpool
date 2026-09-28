@@ -118,6 +118,7 @@ let riderChildId = "";
 let serviceDate = "";
 let setupReady = false;
 let customTripId = "";
+let pmTripId = "";
 
 test.describe.serial("Custom drive", () => {
   test.beforeAll(() => {
@@ -137,17 +138,17 @@ test.describe.serial("Custom drive", () => {
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${riderChildId}', '${GROUP_ID}', '${rider.householdId}', 'Sam', 'Custom', '${rider.userId}') ON CONFLICT DO NOTHING;
     `);
 
-    // The current week must exist with a schedule version — custom drives
-    // attach to the roster the app displays. Seed a DRAFT (the Sunday
-    // 7 AM–7 PM pre-publish window): the offer button must appear without
-    // a published schedule, and the drive attaches to the draft.
+    // The current week must exist with a PUBLISHED schedule version — extra
+    // drives extend the published roster (decision 2026-09-27: offers are
+    // rejected until the schedule publishes; the Home button is
+    // visible-but-disabled pre-publish).
     const monday = targetMondayStrSF();
     runSql(`INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${UID(550)}', '${GROUP_ID}', '${monday}', 'open') ON CONFLICT DO NOTHING;`);
     const weekRow = runSql(`SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${monday}' LIMIT 1;`).rows?.[0] as { id: string } | undefined;
     if (!weekRow) return;
     const existing = runSql(`SELECT id FROM public.schedule_versions WHERE group_id = '${GROUP_ID}' AND week_id = '${weekRow.id}' LIMIT 1;`).rows?.[0] as { id: string } | undefined;
     if (!existing) {
-      runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status) VALUES ('${UID(551)}', '${GROUP_ID}', '${weekRow.id}', 1, 'draft') ON CONFLICT DO NOTHING;`);
+      runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${UID(551)}', '${GROUP_ID}', '${weekRow.id}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
     }
 
     // First remaining weekday of the targeted week that still has pickup
@@ -164,6 +165,18 @@ test.describe.serial("Custom drive", () => {
     }
     if (!candidate) return; // late Friday — nothing offerable today
     serviceDate = candidate;
+
+    // Leah scenario setup (production incident 2026-09-27): the rider's
+    // child has a standing needs_ride request on the standard 5:15 PM trip
+    // of the same day — before joining the extra drive the family sees
+    // "needs a ride" everywhere; joining must clear it without mutating
+    // the ride request.
+    pmTripId = UID(542);
+    runSql(`
+      INSERT INTO public.trips (id, group_id, week_id, service_date, direction, slot, meeting_time, departure_time, origin, destination) VALUES ('${pmTripId}', '${GROUP_ID}', '${weekRow.id}', '${serviceDate}', 'afternoon', 'pm_late', '17:15', '17:20', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(543)}', '${GROUP_ID}', '${weekRow.id}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(543)}', '${pmTripId}', '${riderChildId}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+    `);
     setupReady = true;
   });
 
@@ -197,9 +210,8 @@ test.describe.serial("Custom drive", () => {
     await expect(page.getByText("4:50 PM").first()).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("Extra drive").first()).toBeVisible({ timeout: 5000 });
 
-    // Confirmed driver assignment + own child as rider on the version the app
-    // displays — this run seeds a draft-only week (pre-publish window), so
-    // the drive attaches to the draft and goes live with Sunday's publish.
+    // Confirmed driver assignment + own child as rider on the published
+    // version — extra drives extend the published roster.
     const assignments = runSql(`
       SELECT da.id, da.status, da.driver_profile_id, sv.status as version_status, sv.version_number
       FROM public.driver_assignments da
@@ -208,7 +220,7 @@ test.describe.serial("Custom drive", () => {
     `).rows ?? [];
     assert.equal(assignments.length, 1, "one assignment for the offered drive");
     assert.equal(assignments[0].status, "confirmed");
-    assert.equal(assignments[0].version_status, "draft", "pre-publish offers attach to the draft version");
+    assert.equal(assignments[0].version_status, "published", "offers attach to the published version");
     const riders = runSql(`SELECT child_id FROM public.rider_assignments WHERE trip_id = '${customTripId}';`).rows ?? [];
     assert.ok(riders.some((r) => String(r.child_id) === driverChildId), "own child rides the offered drive");
   });
@@ -217,8 +229,12 @@ test.describe.serial("Custom drive", () => {
     test.skip(skip || !setupReady || !customTripId, "needs prior offer test");
     await signInWithTestAuth(page, riderEmail);
 
+    // Leah precondition: the standing 5:15 request makes the family's
+    // Home hero + This Week chips say the child needs a ride.
+    await expect(page.getByTestId("uncovered-alert")).toBeVisible({ timeout: 20000 });
     await page.getByTestId("nav-week").click();
     await expect(page.getByText("4:50 PM").first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId(`uncovered-riders-${pmTripId}`)).toBeVisible({ timeout: 15000 });
     // The auth-trigger profile uses the email as the display name until the
     // user edits it — match the roster button on the driver's email.
     await page.locator(".trip-roster", { hasText: driverEmail }).first().click();
@@ -233,7 +249,12 @@ test.describe.serial("Custom drive", () => {
     );
     assert.ok(riders.some((r) => String(r.child_id) === riderChildId), "joined child now rides the custom drive");
 
-    // The drive detail roster reflects the join
+    // The extra-drive seat clears the standard-trip need everywhere —
+    // the ride request stays needs_ride=true; coverage is computed.
+    await page.reload();
+    await expect(page.getByTestId("uncovered-alert")).toBeHidden({ timeout: 20000 });
+    await page.getByTestId("nav-week").click();
+    await expect(page.getByTestId(`uncovered-riders-${pmTripId}`)).toBeHidden({ timeout: 15000 });
     await expect(page.getByText("Sam Custom").first()).toBeVisible({ timeout: 10000 });
   });
 
@@ -253,5 +274,10 @@ test.describe.serial("Custom drive", () => {
       (rows) => rows.length === 0,
     );
     assert.equal(trips.length, 0, "custom drive is deleted on cancel");
+
+    // Cancelling the extra drive restores the standing 5:15 need — coverage
+    // is computed from live roster rows, never mutated into the check-in.
+    await signInWithTestAuth(page, riderEmail);
+    await expect(page.getByTestId("uncovered-alert")).toBeVisible({ timeout: 20000 });
   });
 });

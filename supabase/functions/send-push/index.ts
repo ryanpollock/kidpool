@@ -193,6 +193,89 @@ function addMinutes(time: string, minutes: number): string {
   return `${String(nh).padStart(2, "0")}:${String(nm).padStart(2, "0")}`;
 }
 
+// Per-trip uncovered children for a schedule version — the coverage
+// semantics the client (getUncoveredChildren), the placement RPCs
+// (202609270002 dedup), and the scheduler all agree on: a needs_ride
+// child is uncovered on a standard trip only if they have no rider seat
+// on that trip, no either-sibling coverage (pm_early <-> pm_late, same
+// date), and no custom-drive seat for the same date + direction. The old
+// version-wide covered-set suppressed a household's "ride needed" push
+// when the child had a seat on ANY trip of the week (production note
+// 2026-09-27).
+async function uncoveredChildrenForVersion(
+  version_id: string,
+): Promise<{ group_id: string; week_id: string; childIds: string[] } | null> {
+  const driverAssignments = await supaFetch("driver_assignments", "*", {
+    schedule_version_id: `eq.${version_id}`,
+    status: "in.(tentative,confirmed)",
+  });
+
+  const coveredByTrip = new Map<string, Set<string>>();
+  const customCovered = new Set<string>(); // `${date}|${direction}|${child}`
+  const coveredSlotsByDateChild = new Map<string, Set<string>>();
+
+  const daTripIds = [...new Set(driverAssignments.map((da: any) => da.trip_id))];
+  const daTripRows = daTripIds.length
+    ? await supaFetch("trips", "id,service_date,direction,slot", { id: `in.(${daTripIds.join(",")})` })
+    : [];
+  const daTripById = new Map(daTripRows.map((t: any) => [t.id, t]));
+
+  for (const da of driverAssignments as any[]) {
+    const trip = daTripById.get(da.trip_id);
+    if (!trip) continue;
+    const riders = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${da.id}` });
+    for (const r of riders as any[]) {
+      let onTrip = coveredByTrip.get(da.trip_id);
+      if (!onTrip) {
+        onTrip = new Set<string>();
+        coveredByTrip.set(da.trip_id, onTrip);
+      }
+      onTrip.add(r.child_id);
+      if (trip.slot === "custom") {
+        customCovered.add(`${trip.service_date}|${trip.direction}|${r.child_id}`);
+      } else if (trip.slot) {
+        const key = `${trip.service_date}|${r.child_id}`;
+        let slots = coveredSlotsByDateChild.get(key);
+        if (!slots) {
+          slots = new Set<string>();
+          coveredSlotsByDateChild.set(key, slots);
+        }
+        slots.add(trip.slot);
+      }
+    }
+  }
+
+  const versionData = await supaFetch("schedule_versions", "week_id,group_id", { id: `eq.${version_id}` });
+  if (versionData.length === 0) return null;
+  const { group_id, week_id } = versionData[0];
+
+  const trips = await supaFetch("trips", "id,service_date,direction,slot", { group_id: `eq.${group_id}`, week_id: `eq.${week_id}` });
+  const tripById = new Map(trips.map((t: any) => [t.id, t]));
+  if (trips.length === 0) return { group_id, week_id, childIds: [] };
+
+  const rideRequests = await supaFetch("ride_requests", "*", {
+    trip_id: `in.(${trips.map((t: any) => t.id).join(",")})`,
+    needs_ride: "eq.true",
+  });
+
+  const uncoveredChildIds = new Set<string>();
+  for (const rr of rideRequests as any[]) {
+    const trip = tripById.get(rr.trip_id);
+    if (!trip || trip.slot === "custom") continue;
+    const onTrip = coveredByTrip.get(trip.id);
+    if (onTrip && onTrip.has(rr.child_id)) continue;
+    if (customCovered.has(`${trip.service_date}|${trip.direction}|${rr.child_id}`)) continue;
+    if (trip.slot === "pm_early" || trip.slot === "pm_late") {
+      const siblingSlot = trip.slot === "pm_early" ? "pm_late" : "pm_early";
+      const slots = coveredSlotsByDateChild.get(`${trip.service_date}|${rr.child_id}`);
+      if (rr.preference === "either" && slots && slots.has(siblingSlot)) continue;
+    }
+    uncoveredChildIds.add(rr.child_id);
+  }
+
+  return { group_id, week_id, childIds: [...uncoveredChildIds] };
+}
+
 // Format a date+time as an ICS local datetime: "20260814T082500".
 function toIcsLocal(dateStr: string, timeStr: string): string {
   return `${dateStr.replaceAll("-", "")}T${timeStr.replaceAll(":", "")}00`;
@@ -2590,41 +2673,19 @@ ${cta}
           tag = `declined-${assignment_id}`;
         }
       }
-    } else if (type === "uncovered" && version_id) {
-      const driverAssignments = await supaFetch("driver_assignments", "*", { schedule_version_id: `eq.${version_id}`, status: "in.(tentative,confirmed)" });
-      const coveredRiderIds = new Set<string>();
+} else if (type === "uncovered" && version_id) {
+      const uncovered = await uncoveredChildrenForVersion(version_id);
+      if (!uncovered) return jsonError("Version not found", 404);
+      groupId = uncovered.group_id;
 
-      for (const da of driverAssignments) {
-        const riders = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${da.id}` });
-        riders.forEach((r: any) => coveredRiderIds.add(r.child_id));
-      }
+      // Households whose children have a completely-uncovered ride need
+      // (see uncoveredChildrenForVersion for the coverage semantics).
+      if (uncovered.childIds.length === 0) return jsonResponse({ sent: 0, failed: 0 });
 
-      const versionData = await supaFetch("schedule_versions", "week_id,group_id", { id: `eq.${version_id}` });
-      if (versionData.length === 0) return jsonError("Version not found", 404);
-      const { group_id, week_id } = versionData[0];
-      groupId = group_id;
-
-      // Scope ride_requests to this version's week only — not the whole group.
-      // Without scoping, families get false "your child doesn't have a ride"
-      // pushes for weeks they haven't checked in for yet.
-      const trips = await supaFetch("trips", "id", { group_id: `eq.${group_id}`, week_id: `eq.${week_id}` });
-      const tripIds = trips.map((t: any) => t.id);
-      if (tripIds.length === 0) return jsonResponse({ sent: 0, failed: 0 });
-
-      const rideRequests = await supaFetch("ride_requests", "*", {
-        trip_id: `in.(${tripIds.join(",")})`,
-        needs_ride: "eq.true",
-      });
-      const uncoveredChildren = rideRequests
-        .filter((rr: any) => !coveredRiderIds.has(rr.child_id))
-        .map((rr: any) => rr.child_id);
-
-      if (uncoveredChildren.length === 0) return jsonResponse({ sent: 0, failed: 0 });
-
-      const children = await supaFetch("children", "id,household_id", { id: `in.(${uncoveredChildren.join(",")})` });
+      const children = await supaFetch("children", "id,household_id", { id: `in.(${uncovered.childIds.join(",")})` });
       const childMap = new Map(children.map((c: any) => [c.id, c.household_id]));
       const householdIds = new Set<string>();
-      for (const cid of uncoveredChildren) {
+      for (const cid of uncovered.childIds) {
         const hid = childMap.get(cid);
         if (hid) householdIds.add(hid);
       }
@@ -3291,41 +3352,18 @@ ${cta}
         tag = `drive-reassigned-${assignment_id}`;
       }
     } else if (type === "admin_escalation" && version_id) {
-      const versionData = await supaFetch("schedule_versions", "group_id", { id: `eq.${version_id}` });
-      if (versionData.length === 0) return jsonError("Version not found", 404);
-      const { group_id } = versionData[0];
-      groupId = group_id;
+      const uncovered = await uncoveredChildrenForVersion(version_id);
+      if (!uncovered) return jsonError("Version not found", 404);
+      groupId = uncovered.group_id;
 
-      // Find uncovered trips in this version
-      const driverAssignments = await supaFetch("driver_assignments", "*", { schedule_version_id: `eq.${version_id}`, status: "in.(tentative,confirmed)" });
-      const coveredRiderIds = new Set<string>();
-
-      for (const da of driverAssignments) {
-        const riders = await supaFetch("rider_assignments", "child_id", { driver_assignment_id: `eq.${da.id}` });
-        riders.forEach((r: any) => coveredRiderIds.add(r.child_id));
-      }
-
-      const versionRow = await supaFetch("schedule_versions", "week_id", { id: `eq.${version_id}` });
-      if (versionRow.length === 0) return jsonError("Version not found", 404);
-      const { week_id } = versionRow[0];
-
-      const trips = await supaFetch("trips", "id", { group_id: `eq.${group_id}`, week_id: `eq.${week_id}` });
-      const tripIds = trips.map((t: any) => t.id);
-
-      const rideRequests = await supaFetch("ride_requests", "*", {
-        trip_id: `in.(${tripIds.join(",")})`,
-        needs_ride: "eq.true",
-      });
-      const uncoveredChildren = rideRequests.filter((rr: any) => !coveredRiderIds.has(rr.child_id));
-
-      if (uncoveredChildren.length === 0) return jsonResponse({ sent: 0, failed: 0 });
+      if (uncovered.childIds.length === 0) return jsonResponse({ sent: 0, failed: 0 });
 
       // Notify coordinators only
-      const memberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${group_id}`, status: "eq.active", role: "eq.coordinator" });
+      const memberships = await supaFetch("memberships", "profile_id", { group_id: `eq.${groupId}`, status: "eq.active", role: "eq.coordinator" });
       recipientProfileIds = memberships.map((m: any) => m.profile_id);
 
       title = "Schedule needs attention";
-      bodyText = `${uncoveredChildren.length} child${uncoveredChildren.length !== 1 ? "ren" : ""} still need${uncoveredChildren.length === 1 ? "s" : ""} a ride this week. Open the app to assign a driver.`;
+      bodyText = `${uncovered.childIds.length} child${uncovered.childIds.length !== 1 ? "ren" : ""} still need${uncovered.childIds.length === 1 ? "s" : ""} a ride this week. Open the app to assign a driver.`;
       tag = `admin-escalation-${version_id}`;
     } else if (type === "displaced" && version_id && Array.isArray(displaced_drivers)) {
       // Each displaced driver gets a personal notification:

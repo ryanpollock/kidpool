@@ -2163,18 +2163,21 @@ export class CarpoolRepository {
       coveredChildrenByTrip.set(ra.trip_id, existing);
     }
 
-    // Cross-trip "either" dedup: a child with preference='either' who is
+    // Cross-trip coverage map: a child with preference='either' who is
     // covered on pm_early should NOT be flagged as uncovered on pm_late
-    // (and vice versa). The scheduler (balanced-greedy-v2) dedupes riders
-    // across trips but leaves both ride_requests with needs_ride=true —
-    // so the alert logic must mirror the scheduler's dedup.
-    // Build: (service_date, child_id) → Set of covered slot(s)
+    // (and vice versa) — the scheduler (balanced-greedy-v2) dedupes riders
+    // across trips but leaves both ride_requests with needs_ride=true, so
+    // the alert logic must mirror it. A child seated on a CUSTOM drive is
+    // covered for every standard trip of the same date+direction, for
+    // either AND specific preferences (joining an extra drive is the
+    // household's current choice — production incident 2026-09-27).
+    // Build: (service_date, direction, child_id) → Set of covered slot(s)
     const coveredSlotsByDateChild = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
       if (!handledDriverAssignments.has(ra.driver_assignment_id)) continue;
       const trip = tripById.get(ra.trip_id);
-      if (!trip || !trip.slot) continue;
-      const key = `${trip.service_date}|${ra.child_id}`;
+      if (!trip || !trip.slot || !trip.direction) continue;
+      const key = `${trip.service_date}|${trip.direction}|${ra.child_id}`;
       const existing = coveredSlotsByDateChild.get(key) ?? new Set<string>();
       existing.add(trip.slot);
       coveredSlotsByDateChild.set(key, existing);
@@ -2192,14 +2195,16 @@ export class CarpoolRepository {
       const child = childById.get(rr.child_id);
       if (!trip || !child) continue;
 
-      // Either-rider cross-trip dedup: if this ride request has preference='either'
-      // and the child is already covered by the sibling afternoon trip on the same
-      // date, skip — they're not actually uncovered.
-      if (rr.preference === "either" && trip.slot) {
-        const siblingSlot = trip.slot === "pm_early" ? "pm_late" : trip.slot === "pm_late" ? "pm_early" : null;
-        if (siblingSlot) {
-          const coveredSlots = coveredSlotsByDateChild.get(`${trip.service_date}|${rr.child_id}`);
-          if (coveredSlots && coveredSlots.has(siblingSlot)) continue;
+      // Cross-trip coverage: custom-drive seats cover all standard trips
+      // of the same date+direction (any preference); either-preference
+      // children covered on the sibling afternoon trip are not uncovered
+      // here either.
+      const coveredSlots = coveredSlotsByDateChild.get(`${trip.service_date}|${trip.direction}|${rr.child_id}`);
+      if (coveredSlots) {
+        if (coveredSlots.has("custom")) continue;
+        if (rr.preference === "either" && trip.slot) {
+          const siblingSlot = trip.slot === "pm_early" ? "pm_late" : trip.slot === "pm_late" ? "pm_early" : null;
+          if (siblingSlot && coveredSlots.has(siblingSlot)) continue;
         }
       }
 
@@ -2320,21 +2325,24 @@ async getLatestScheduleVersion(
       coveredChildIdsByTrip.set(ra.trip_id, existing);
     }
 
-    // Cross-trip "either" dedup: same as getUncoveredChildren — a child with
+    // Cross-trip coverage: same as getUncoveredChildren — a child with
     // preference='either' covered on pm_early should not be flagged as
-    // uncovered on pm_late.
+    // uncovered on pm_late, and a child seated on a CUSTOM drive is covered
+    // for every standard trip of the same date+direction (any preference —
+    // production incident 2026-09-27).
     // NOTE: the cross-trip map uses ALL rider_assignments (tentative + confirmed)
     // because the scheduler has already made the placement decision — a child
     // tentatively assigned to pm_early should NOT show as "needs a ride" on
     // pm_late. The per-trip coverage check above stays confirmed-only (safety).
+    // Build: (service_date, direction, child_id) → Set of covered slot(s)
     const tripById = new Map(trips.map((t) => [t.id, t]));
     const allAssignmentIds = new Set(driverAssignments.map((da) => da.id));
     const coveredSlotsByDateChild = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
       if (!allAssignmentIds.has(ra.driver_assignment_id)) continue;
       const trip = tripById.get(ra.trip_id);
-      if (!trip || !trip.slot) continue;
-      const key = `${trip.service_date}|${ra.child_id}`;
+      if (!trip || !trip.slot || !trip.direction) continue;
+      const key = `${trip.service_date}|${trip.direction}|${ra.child_id}`;
       const existing = coveredSlotsByDateChild.get(key) ?? new Set<string>();
       existing.add(trip.slot);
       coveredSlotsByDateChild.set(key, existing);
@@ -2348,13 +2356,18 @@ async getLatestScheduleVersion(
       const child = childById.get(rr.child_id);
       if (!child) continue;
 
-      // Either-rider cross-trip dedup
+      // Cross-trip coverage: custom-drive seats cover all standard trips of
+      // the same date+direction; either-preference children covered on the
+      // sibling afternoon trip are not uncovered either.
       const trip = tripById.get(rr.trip_id);
-      if (rr.preference === "either" && trip?.slot) {
-        const siblingSlot = trip.slot === "pm_early" ? "pm_late" : trip.slot === "pm_late" ? "pm_early" : null;
-        if (siblingSlot) {
-          const coveredSlots = coveredSlotsByDateChild.get(`${trip.service_date}|${rr.child_id}`);
-          if (coveredSlots && coveredSlots.has(siblingSlot)) continue;
+      const coveredSlots = trip
+        ? coveredSlotsByDateChild.get(`${trip.service_date}|${trip.direction}|${rr.child_id}`)
+        : undefined;
+      if (coveredSlots) {
+        if (coveredSlots.has("custom")) continue;
+        if (rr.preference === "either" && trip?.slot) {
+          const siblingSlot = trip.slot === "pm_early" ? "pm_late" : trip.slot === "pm_late" ? "pm_early" : null;
+          if (siblingSlot && coveredSlots.has(siblingSlot)) continue;
         }
       }
 
@@ -2563,19 +2576,23 @@ async getLatestScheduleVersion(
       coveredChildIdsByTrip.set(ra.trip_id, existing);
     }
 
-    // Cross-trip "either" dedup: same as getUncoveredChildren and
+    // Cross-trip coverage: same as getUncoveredChildren and
     // getLatestScheduleVersion — a child with preference='either' covered
-    // on pm_early should not be flagged as uncovered on pm_late.
+    // on pm_early should not be flagged as uncovered on pm_late, and a
+    // child seated on a CUSTOM drive is covered for every standard trip
+    // of the same date+direction (any preference — production incident
+    // 2026-09-27).
     // Uses ALL rider_assignments (tentative + confirmed) — the scheduler
     // has already made the placement decision.
+    // Build: (service_date, direction, child_id) → Set of covered slot(s)
     const tripById = new Map(trips.map((t) => [t.id, t]));
     const allAssignmentIds = new Set(driverAssignments.map((da) => da.id));
     const coveredSlotsByDateChild = new Map<string, Set<string>>();
     for (const ra of riderAssignments) {
       if (!allAssignmentIds.has(ra.driver_assignment_id)) continue;
       const trip = tripById.get(ra.trip_id);
-      if (!trip || !trip.slot) continue;
-      const key = `${trip.service_date}|${ra.child_id}`;
+      if (!trip || !trip.slot || !trip.direction) continue;
+      const key = `${trip.service_date}|${trip.direction}|${ra.child_id}`;
       const existing = coveredSlotsByDateChild.get(key) ?? new Set<string>();
       existing.add(trip.slot);
       coveredSlotsByDateChild.set(key, existing);
@@ -2589,13 +2606,18 @@ async getLatestScheduleVersion(
       const child = childById.get(rr.child_id);
       if (!child) continue;
 
-      // Either-rider cross-trip dedup
+      // Cross-trip coverage: custom-drive seats cover all standard trips of
+      // the same date+direction; either-preference children covered on the
+      // sibling afternoon trip are not uncovered either.
       const trip = tripById.get(rr.trip_id);
-      if (rr.preference === "either" && trip?.slot) {
-        const siblingSlot = trip.slot === "pm_early" ? "pm_late" : trip.slot === "pm_late" ? "pm_early" : null;
-        if (siblingSlot) {
-          const coveredSlots = coveredSlotsByDateChild.get(`${trip.service_date}|${rr.child_id}`);
-          if (coveredSlots && coveredSlots.has(siblingSlot)) continue;
+      const coveredSlots = trip
+        ? coveredSlotsByDateChild.get(`${trip.service_date}|${trip.direction}|${rr.child_id}`)
+        : undefined;
+      if (coveredSlots) {
+        if (coveredSlots.has("custom")) continue;
+        if (rr.preference === "either" && trip?.slot) {
+          const siblingSlot = trip.slot === "pm_early" ? "pm_late" : trip.slot === "pm_late" ? "pm_early" : null;
+          if (siblingSlot && coveredSlots.has(siblingSlot)) continue;
         }
       }
 

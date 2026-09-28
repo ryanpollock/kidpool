@@ -1412,6 +1412,13 @@ button.child-photo-thumb:active {
   color: var(--ink-soft);
 }
 
+/* Locked feature entries (e.g., extra-drive offers before the week's
+   schedule is published) — visible, but unmistakably not tappable. */
+.coverage-alert:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .bottom-nav {
   position: absolute;
   z-index: 20;
@@ -3263,6 +3270,12 @@ a.directory-contact-item:hover {
 
 .today-card-ride--none {
   color: var(--ink-soft);
+}
+
+/* The child's need for this leg is satisfied by an extra drive at a
+   different time the same day (custom-drive coverage). */
+.today-card-ride--covered {
+  color: var(--teal);
 }
 
 .today-card-ride span {

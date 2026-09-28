@@ -153,7 +153,7 @@ Deno.serve(async (req: Request) => {
 
     // ── Load data (phase 1: trips first, then trip-dependent queries) ──
     const [tripsRes, checkinsRes, vehiclesRes, childrenRes, membershipsRes] = await Promise.all([
-      supabase.from("trips").select("id, service_date, direction, slot, week_id, group_id").eq("week_id", weekId as string).eq("group_id", groupId).order("service_date").order("direction").order("slot"),
+      supabase.from("trips").select("id, service_date, direction, slot, meeting_time, week_id, group_id").eq("week_id", weekId as string).eq("group_id", groupId).order("service_date").order("direction").order("slot"),
       supabase.from("weekly_checkins").select("id, household_id, max_drives, status").eq("week_id", weekId as string).eq("group_id", groupId),
       supabase.from("vehicles").select("id, household_id, label, child_passenger_capacity, active, group_id").eq("group_id", groupId).eq("active", true),
       supabase.from("children").select("id, household_id, first_name, last_name, active, group_id, preferred_buddy_child_id, is_priority").eq("group_id", groupId).eq("active", true),
@@ -223,6 +223,71 @@ Deno.serve(async (req: Request) => {
       .map((t: { id: string }) => t.id);
     const customTripIdSet = new Set(customTripIds);
 
+    // ── Custom-drive coverage (rider + driver dedup) ────────────
+    // A child seated on an ad-hoc custom drive for a date+direction is
+    // COVERED for the standard trips of that date+direction — a child
+    // rides once per direction per day (production incident 2026-09-27: a
+    // regeneration seated a custom-drive rider on the standard car too).
+    // A driver confirmed/tentative on a custom drive at the exact
+    // date+time of a standard trip is driving the same physical drive
+    // and must not be selected for it. Source rows mirror the carry-over
+    // block below: the newest active driver assignment per custom trip
+    // across all versions of this week.
+    const standardTripById = new Map(
+      allTrips
+        .filter((t: { slot: string }) => t.slot !== "custom")
+        .map((t) => [t.id, t] as const),
+    );
+    const customCoveredChildKeys = new Set<string>();
+    const customDriverBusyKeys = new Set<string>();
+    if (customTripIds.length > 0) {
+      const tripById = new Map(allTrips.map((t) => [t.id, t] as const));
+      const { data: customDAData, error: customDAError } = await supabase
+        .from("driver_assignments")
+        .select("id, trip_id, driver_profile_id, status")
+        .in("trip_id", customTripIds)
+        .eq("group_id", groupId)
+        .order("created_at", { ascending: false });
+      if (customDAError) {
+        return jsonError("Failed to load custom drives for coverage checks.", 500);
+      }
+
+      const seenCustomTrips = new Set<string>();
+      const activeCustomDAs = (customDAData ?? []).filter(
+        (a: { id: string; trip_id: string; status: string }) => {
+          if (a.status !== "confirmed" && a.status !== "tentative") return false;
+          if (seenCustomTrips.has(a.trip_id)) return false;
+          seenCustomTrips.add(a.trip_id);
+          return true;
+        },
+      );
+
+      if (activeCustomDAs.length > 0) {
+        const { data: customRiders, error: customRidersError } = await supabase
+          .from("rider_assignments")
+          .select("driver_assignment_id, child_id")
+          .in("driver_assignment_id", activeCustomDAs.map((a: { id: string }) => a.id));
+        if (customRidersError) {
+          return jsonError("Failed to load custom drive riders for coverage checks.", 500);
+        }
+        const customRidersByDAId = new Map<string, string[]>();
+        for (const ra of customRiders ?? []) {
+          const arr = customRidersByDAId.get(ra.driver_assignment_id) ?? [];
+          arr.push(ra.child_id);
+          customRidersByDAId.set(ra.driver_assignment_id, arr);
+        }
+
+        for (const da of activeCustomDAs) {
+          const trip = tripById.get(da.trip_id);
+          if (!trip) continue;
+          customDriverBusyKeys.add(`${da.driver_profile_id}|${trip.service_date}|${trip.meeting_time}`);
+          for (const childId of customRidersByDAId.get(da.id) ?? []) {
+            customCoveredChildKeys.add(`${trip.service_date}|${trip.direction}|${childId}`);
+          }
+        }
+      }
+    }
+
     const trips: SchedulingTrip[] = allTrips
       .filter((t: { slot: string }) => t.slot !== "custom")
       .map((t) => ({
@@ -248,19 +313,36 @@ Deno.serve(async (req: Request) => {
       child_passenger_capacity: v.child_passenger_capacity,
     }));
 
-    const rideRequests: SchedulingRideRequest[] = (rideRequestsRes.data ?? []).map((r) => ({
-      trip_id: r.trip_id,
-      child_id: r.child_id,
-      needs_ride: r.needs_ride,
-      preference: r.preference ?? "specific",
-    }));
+    // Custom-covered children are never placed on the standard trips of the
+    // same date+direction — their ride need is satisfied by the custom drive.
+    const rideRequests: SchedulingRideRequest[] = (rideRequestsRes.data ?? [])
+      .filter((r) => {
+        if (!r.needs_ride) return true;
+        const trip = standardTripById.get(r.trip_id);
+        if (!trip) return true;
+        return !customCoveredChildKeys.has(`${trip.service_date}|${trip.direction}|${r.child_id}`);
+      })
+      .map((r) => ({
+        trip_id: r.trip_id,
+        child_id: r.child_id,
+        needs_ride: r.needs_ride,
+        preference: r.preference ?? "specific",
+      }));
 
-    const availability: SchedulingAvailability[] = (availabilityRes.data ?? []).map((a) => ({
-      trip_id: a.trip_id,
-      driver_profile_id: a.driver_profile_id,
-      vehicle_id: a.vehicle_id,
-      preference: a.preference,
-    }));
+    // A driver on a custom drive at the identical date+time is not
+    // available for that standard trip (same physical drive).
+    const availability: SchedulingAvailability[] = (availabilityRes.data ?? [])
+      .filter((a) => {
+        const trip = standardTripById.get(a.trip_id);
+        if (!trip) return true;
+        return !customDriverBusyKeys.has(`${a.driver_profile_id}|${trip.service_date}|${trip.meeting_time}`);
+      })
+      .map((a) => ({
+        trip_id: a.trip_id,
+        driver_profile_id: a.driver_profile_id,
+        vehicle_id: a.vehicle_id,
+        preference: a.preference,
+      }));
 
     const eligibleAvailabilityKey = new Set(
       availability
