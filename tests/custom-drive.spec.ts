@@ -84,6 +84,9 @@ function cleanupCustomDriveData(): void {
   } else {
     // Scoped to this spec's own rows only (see EMAIL_DOMAIN note above).
     runSql(`
+      DELETE FROM public.ride_requests WHERE checkin_id = '${UID(543)}';
+      DELETE FROM public.weekly_checkins WHERE id = '${UID(543)}';
+      DELETE FROM public.trips WHERE id = '${UID(542)}';
       DELETE FROM public.trips WHERE group_id = '${GROUP_ID}' AND slot = 'custom' AND meeting_time = '16:50';
       DELETE FROM public.schedule_versions WHERE id = '${UID(551)}';
       DELETE FROM public.weeks WHERE id = '${UID(550)}' AND group_id = '${GROUP_ID}';
@@ -141,15 +144,25 @@ test.describe.serial("Custom drive", () => {
     // The current week must exist with a PUBLISHED schedule version — extra
     // drives extend the published roster (decision 2026-09-27: offers are
     // rejected until the schedule publishes; the Home button is
-    // visible-but-disabled pre-publish).
+    // visible-but-disabled pre-publish). On local runs truncateAll wipes
+    // the preseed so the fixture inserts its own week; on staging the
+    // school-year preseed keeps a real week for the pilot group and the
+    // Sunday 7 AM cron generates a draft for it — reuse the existing week
+    // row and force its latest version published instead of inserting
+    // blindly.
     const monday = targetMondayStrSF();
     runSql(`INSERT INTO public.weeks (id, group_id, starts_on, status) VALUES ('${UID(550)}', '${GROUP_ID}', '${monday}', 'open') ON CONFLICT DO NOTHING;`);
     const weekRow = runSql(`SELECT id FROM public.weeks WHERE group_id = '${GROUP_ID}' AND starts_on = '${monday}' LIMIT 1;`).rows?.[0] as { id: string } | undefined;
     if (!weekRow) return;
-    const existing = runSql(`SELECT id FROM public.schedule_versions WHERE group_id = '${GROUP_ID}' AND week_id = '${weekRow.id}' LIMIT 1;`).rows?.[0] as { id: string } | undefined;
-    if (!existing) {
-      runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${UID(551)}', '${GROUP_ID}', '${weekRow.id}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
-    }
+    runSql(`
+      UPDATE public.schedule_versions SET status = 'superseded' WHERE week_id = '${weekRow.id}' AND status = 'published';
+      UPDATE public.schedule_versions SET status = 'published', published_at = now() WHERE week_id = '${weekRow.id}' AND version_number = (SELECT max(version_number) FROM public.schedule_versions WHERE week_id = '${weekRow.id}');
+      INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at)
+        SELECT '${UID(551)}', '${GROUP_ID}', '${weekRow.id}', 1, 'published', now()
+        WHERE NOT EXISTS (SELECT 1 FROM public.schedule_versions WHERE week_id = '${weekRow.id}');
+    `);
+    const versionCheck = runSql(`SELECT count(*)::int AS n FROM public.schedule_versions WHERE week_id = '${weekRow.id}' AND status = 'published';`).rows?.[0] as { n: number } | undefined;
+    if (!versionCheck || versionCheck.n !== 1) return;
 
     // First remaining weekday of the targeted week that still has pickup
     // time left (a same-day 4:50 PM offer needs to be before ~4 PM).
@@ -170,13 +183,22 @@ test.describe.serial("Custom drive", () => {
     // child has a standing needs_ride request on the standard 5:15 PM trip
     // of the same day — before joining the extra drive the family sees
     // "needs a ride" everywhere; joining must clear it without mutating
-    // the ride request.
-    pmTripId = UID(542);
-    runSql(`
-      INSERT INTO public.trips (id, group_id, week_id, service_date, direction, slot, meeting_time, departure_time, origin, destination) VALUES ('${pmTripId}', '${GROUP_ID}', '${weekRow.id}', '${serviceDate}', 'afternoon', 'pm_late', '17:15', '17:20', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;
-      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(543)}', '${GROUP_ID}', '${weekRow.id}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
-      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(543)}', '${pmTripId}', '${riderChildId}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
-    `);
+    // the ride request. Adopt the preseeded pm_late trip on staging (the
+    // fixture's own insert would no-op against the school-year preseed).
+    const existingPm = runSql(`SELECT id FROM public.trips WHERE group_id = '${GROUP_ID}' AND week_id = '${weekRow.id}' AND service_date = '${serviceDate}' AND slot = 'pm_late' LIMIT 1;`).rows?.[0] as { id: string } | undefined;
+    pmTripId = existingPm ? String(existingPm.id) : UID(542);
+    if (existingPm) {
+      runSql(`
+        INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(543)}', '${GROUP_ID}', '${weekRow.id}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+        INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(543)}', '${pmTripId}', '${riderChildId}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+      `);
+    } else {
+      runSql(`
+        INSERT INTO public.trips (id, group_id, week_id, service_date, direction, slot, meeting_time, departure_time, origin, destination) VALUES ('${pmTripId}', '${GROUP_ID}', '${weekRow.id}', '${serviceDate}', 'afternoon', 'pm_late', '17:15', '17:20', 'Midtown', 'Presidio') ON CONFLICT DO NOTHING;
+        INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(543)}', '${GROUP_ID}', '${weekRow.id}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+        INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(543)}', '${pmTripId}', '${riderChildId}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+      `);
+    }
     setupReady = true;
   });
 
@@ -234,7 +256,9 @@ test.describe.serial("Custom drive", () => {
     await expect(page.getByTestId("uncovered-alert")).toBeVisible({ timeout: 20000 });
     await page.getByTestId("nav-week").click();
     await expect(page.getByText("4:50 PM").first()).toBeVisible({ timeout: 15000 });
-    await expect(page.getByTestId(`uncovered-riders-${pmTripId}`)).toBeVisible({ timeout: 15000 });
+    // Staging runs on the real preseeded roster — other children may also
+    // be uncovered on this trip, so the assertion targets Sam's chip.
+    await expect(page.getByTestId(`uncovered-riders-${pmTripId}`).getByText("Sam Custom")).toBeVisible({ timeout: 15000 });
     // The auth-trigger profile uses the email as the display name until the
     // user edits it — match the roster button on the driver's email.
     await page.locator(".trip-roster", { hasText: driverEmail }).first().click();
@@ -254,7 +278,7 @@ test.describe.serial("Custom drive", () => {
     await page.reload();
     await expect(page.getByTestId("uncovered-alert")).toBeHidden({ timeout: 20000 });
     await page.getByTestId("nav-week").click();
-    await expect(page.getByTestId(`uncovered-riders-${pmTripId}`)).toBeHidden({ timeout: 15000 });
+    await expect(page.getByTestId(`uncovered-riders-${pmTripId}`).getByText("Sam Custom")).toBeHidden({ timeout: 15000 });
     await expect(page.getByText("Sam Custom").first()).toBeVisible({ timeout: 10000 });
   });
 
