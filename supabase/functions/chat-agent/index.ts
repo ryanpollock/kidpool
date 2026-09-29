@@ -1066,6 +1066,9 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
     let linkedProposalId = null;
     let proposalsCreated = 0;
     let proposalNote = "";
+    // Dual-consent swaps: the second driver's card, anchored to its own
+    // message after the reply (cards render attached to chat_messages).
+    let swapSecondCard: { id: string; driverName: string } | null = null;
     if (block && typeof block.kind === "string" && PROPOSAL_CATALOG[block.kind]) {
       const entry = PROPOSAL_CATALOG[block.kind];
       const parsed = entry.schema.safeParse(block.params ?? {});
@@ -1134,6 +1137,25 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
             if (daA && daB && daA.driver_profile_id !== daB.driver_profile_id && await canBothSeeThread()) {
               const { data: driverA } = await admin.from("profiles").select("full_name").eq("id", daA.driver_profile_id).maybeSingle();
               const { data: driverB } = await admin.from("profiles").select("full_name").eq("id", daB.driver_profile_id).maybeSingle();
+              // Supersede any live swap pair for the same two drives before
+              // creating a new one — a re-ask ("post it") must not leave two
+              // live pairs, or a late confirm on the stale pair would swap
+              // the drives BACK (production incident 2026-09-29).
+              const aId = String(params.assignment_a);
+              const bId = String(params.assignment_b);
+              const { data: staleSwapPairs } = await admin.from("chat_proposals")
+                .select("id")
+                .eq("group_id", thread.group_id)
+                .eq("kind", "swap_drive")
+                .in("status", ["pending", "confirmed"])
+                .or(`and(params->>assignment_a.eq.${aId},params->>assignment_b.eq.${bId}),and(params->>assignment_a.eq.${bId},params->>assignment_b.eq.${aId})`);
+              if (staleSwapPairs && staleSwapPairs.length > 0) {
+                await admin.from("chat_proposals").update({
+                  status: "declined",
+                  failure_reason: "superseded by a newer swap request for the same two drives"
+                }).in("id", staleSwapPairs.map((p: { id: string }) => p.id));
+                proposalNote = " (I set the earlier swap card for these drives aside — only this one is live now.)";
+              }
               const { data: proposalB, error: errB } = await admin.from("chat_proposals").insert({
                 group_id: thread.group_id,
                 thread_id: threadId,
@@ -1170,6 +1192,10 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
                     }
                   }).eq("id", proposalB.id);
                   linkedProposalId = proposalA.id;
+                  swapSecondCard = {
+                    id: proposalB.id,
+                    driverName: driverB?.full_name ?? "the other driver"
+                  };
                   proposalsCreated = 2;
                 } else {
                   await admin.from("chat_proposals").delete().eq("id", proposalB.id);
@@ -1250,6 +1276,22 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       return jsonResponse({
         error: "message_insert_failed"
       }, 200);
+    }
+    // Anchor the second driver's card with its own message. Cards render
+    // attached to a message (proposal_id); the reply above carries only the
+    // asker's card, so without this the other driver's card is invisible —
+    // no button, nothing to tap (production incident 2026-09-29).
+    if (swapSecondCard) {
+      const { error: secondCardError } = await admin.from("chat_messages").insert({
+        thread_id: threadId,
+        sender_kind: "agent",
+        sender_name: "Crewmate AI",
+        body: `${swapSecondCard.driverName} — this one needs your OK before the swap happens. Tap Confirm below and the two drives trade.`,
+        proposal_id: swapSecondCard.id
+      });
+      if (secondCardError) {
+        console.error("[chat-agent] second swap card anchor failed:", secondCardError.message);
+      }
     }
     // Push for private Crewmate threads (agent messages never trigger the
     // push trigger; everywhere else Crewmate replies stay silent).
