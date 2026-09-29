@@ -254,9 +254,13 @@ test("chat-agent function: trigger-authenticated, ledger-first, and Phase 1 writ
   // chat_proposals update rewrites params (the swap sibling link).
   assert.match(src, /from\("chat_proposals"\)[\s\S]{0,400}\.insert\(/);
   assert.match(src, /status: "pending"/);
-  // chat_proposals updates may only rewrite params (the swap sibling link) —
-  // never a status: the agent cannot execute or confirm anything.
-  assert.doesNotMatch(src, /from\("chat_proposals"\)[^;]{0,120}\.update\(\s*\{[^}]*status/);
+  // chat_proposals updates may rewrite params (the swap sibling link) or
+  // DECLINE a superseded duplicate (incident 2026-09-29: a re-ask must not
+  // leave two live swap pairs — a late confirm on the stale pair would swap
+  // the drives BACK). The agent can never confirm or execute: no status
+  // update to anything but "declined".
+  assert.doesNotMatch(src, /from\("chat_proposals"\)[^;]{0,120}\.update\(\s*\{[^}]*status: "(pending|confirmed|executed)"/);
+  assert.match(src, /status: "declined",\s*\n\s*failure_reason: "superseded by a newer swap request for the same two drives"/);
   const scheduleTables = [
     "trips", "weeks", "children", "vehicles", "households", "memberships",
     "groups", "ride_requests", "weekly_checkins", "driver_availability",
@@ -412,6 +416,41 @@ test("Phase 2: dual consent — a swap executes only when both linked proposals 
   assert.match(prop, /waiting on the other driver before the swap happens/);
   // The parked swap must NOT be marked executed by the outer flow.
   assert.match(prop, /v_executed\.kind not in \('admin_sql', 'swap_drive'\)/);
+});
+
+test("Phase 2: the second driver's swap card is visible and swaps dedupe (incident 2026-09-29)", async () => {
+  const dedupeUrl = new URL(
+    "../supabase/migrations/202609290001_swap_card_visibility_and_dedupe.sql",
+    import.meta.url,
+  );
+  const dedupeSql = await readFile(dedupeUrl, "utf8");
+  const agent = await readFile(agentFnUrl, "utf8");
+
+  // Executor: once a swap executes, every OTHER live swap proposal for the
+  // same two drives (either order) is declined — a late confirm on a
+  // duplicate pair would swap the drives BACK.
+  assert.match(dedupeSql, /superseded — this swap already happened/);
+  assert.match(dedupeSql, /id not in \(v_sibling\.id, p_proposal_id\)/);
+  assert.match(dedupeSql, /params ->> 'assignment_a' = v_da_a::text and params ->> 'assignment_b' = v_da_b::text/);
+  assert.match(dedupeSql, /params ->> 'assignment_a' = v_da_b::text and params ->> 'assignment_b' = v_da_a::text/);
+  // The 202609200001/2 hot fixes survive the redefinition.
+  assert.match(dedupeSql, /jsonb_array_elements_text/);
+  assert.match(dedupeSql, /to_jsonb\(public\.offer_custom_drive\(/);
+
+  // Creation: the second driver's card gets its own anchor message (cards
+  // render attached to chat_messages.proposal_id — the reply only carries
+  // the asker's card, so without this the other driver sees nothing to
+  // tap).
+  assert.match(agent, /let swapSecondCard: \{ id: string; driverName: string \} \| null = null;/);
+  assert.match(agent, /swapSecondCard = \{\s*id: proposalB\.id,/);
+  assert.match(agent, /this one needs your OK before the swap happens\. Tap Confirm below and the two drives trade\./);
+  assert.match(agent, /proposal_id: swapSecondCard\.id/);
+
+  // Creation: a re-ask supersedes live pairs for the same two drives
+  // (either order) instead of creating duplicates.
+  assert.match(agent, /and\(params->>assignment_a\.eq\.\$\{aId\},params->>assignment_b\.eq\.\$\{bId\}\)/);
+  assert.match(agent, /and\(params->>assignment_a\.eq\.\$\{bId\},params->>assignment_b\.eq\.\$\{aId\}\)/);
+  assert.match(agent, /superseded by a newer swap request for the same two drives/);
 });
 
 test("Phase 2: in-thread consent is service-gated, evidence-checked, and runs as the confirmer", async () => {

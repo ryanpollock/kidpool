@@ -3285,6 +3285,70 @@ test("Crewmate 2: swap_drive needs BOTH drivers' OK (dual consent)", { skip: !SE
   for (const u of [driverA, driverB, riderA, riderB, smallDriver, smallRider]) deleteTestUser(u.userId);
 });
 
+test("Crewmate 2: executing a swap declines duplicate live pairs for the same drives", { skip: !SERVICE_KEY }, async () => {
+  const driverA = setupHousehold(1126, "DupSwapA");
+  const driverB = setupHousehold(1127, "DupSwapB");
+  const riderA = setupHousehold(1128, "DupRiderA");
+  const riderB = setupHousehold(1129, "DupRiderB");
+  const kidA = UID(2425);
+  const kidB = UID(2426);
+  const { weekId, tripIds } = setupWeekAndTrips();
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidA}', '${GROUP_ID}', '${riderA.householdId}', 'Dup', 'One', '${riderA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidB}', '${GROUP_ID}', '${riderB.householdId}', 'Dup', 'Two', '${riderB.userId}') ON CONFLICT DO NOTHING;
+  `);
+  const swapVersion = UID(2516);
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${swapVersion}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;`);
+  const a = seedPublishedAssignment(15, swapVersion, tripIds[0], driverA.userId, driverA.householdId, "DupAlphaCar", 4, kidA);
+  const b = seedPublishedAssignment(16, swapVersion, tripIds[4], driverB.userId, driverB.householdId, "DupBetaCar", 4, kidB);
+
+  const threadId = rpcCall(signInUser("dupswapa@test.kidpool").access_token, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+
+  // Two live pairs for the SAME two drives — the 2026-09-29 incident: a
+  // re-ask created a second pair. Pair 2 is stored with the assignments in
+  // REVERSED order to prove the dedupe matches both orderings.
+  const pA1 = UID(2530), pB1 = UID(2531), pA2 = UID(2532), pB2 = UID(2533);
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${pA1}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${a.assignmentId}','assignment_b','${b.assignmentId}','sibling_proposal_id','${pB1}'), 'Dup swap A1', '${driverA.userId}', 'pending');
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${pB1}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${a.assignmentId}','assignment_b','${b.assignmentId}','sibling_proposal_id','${pA1}'), 'Dup swap B1', '${driverB.userId}', 'pending');
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${pA2}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${b.assignmentId}','assignment_b','${a.assignmentId}','sibling_proposal_id','${pB2}'), 'Dup swap A2 (reversed)', '${driverB.userId}', 'pending');
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${pB2}', '${GROUP_ID}', '${threadId}', 'swap_drive', jsonb_build_object('assignment_a','${b.assignmentId}','assignment_b','${a.assignmentId}','sibling_proposal_id','${pA2}'), 'Dup swap B2 (reversed)', '${driverA.userId}', 'pending');
+  `);
+
+  const jwtA = signInUser("dupswapa@test.kidpool").access_token;
+  const jwtB = signInUser("dupswapb@test.kidpool").access_token;
+
+  // Confirm pair 1 both ways — the swap executes.
+  const first = rpcCall(jwtA, "confirm_chat_proposal", { p_proposal_id: pA1 });
+  assert.equal(first.status, "confirmed", `first confirm parks: ${JSON.stringify(first).slice(0, 120)}`);
+  const second = rpcCall(jwtB, "confirm_chat_proposal", { p_proposal_id: pB1 });
+  assert.equal(second.status, "executed", `second confirm executes: ${JSON.stringify(second).slice(0, 120)}`);
+  const assignA = restGet("driver_assignments", { id: a.assignmentId })[0];
+  assert.equal(assignA.driver_profile_id, driverB.userId, "the swap happened");
+
+  // The duplicate pair (reversed order) is auto-declined — confirming it
+  // later would have swapped the drives BACK.
+  const staleA2 = restGet("chat_proposals", { id: pA2 })[0];
+  const staleB2 = restGet("chat_proposals", { id: pB2 })[0];
+  assert.equal(staleA2.status, "declined", "reversed-order duplicate declined on execution");
+  assert.equal(staleB2.status, "declined", "reversed-order duplicate declined on execution");
+  assert.match(staleA2.failure_reason ?? "", /superseded/, "decline reason points at the executed swap");
+
+  // Confirming the stale pair must no longer swap anything (declined cards
+  // are not actionable).
+  const late = rpcCall(jwtB, "confirm_chat_proposal", { p_proposal_id: pA2 });
+  assert.ok(chatSqlError(late) || late.status === "declined", `stale confirm must not execute: ${JSON.stringify(late).slice(0, 120)}`);
+  const stillB = restGet("driver_assignments", { id: a.assignmentId })[0];
+  assert.equal(stillB.driver_profile_id, driverB.userId, "the executed swap is not undone");
+
+  cleanupAllTestData();
+  for (const u of [driverA, driverB, riderA, riderB]) deleteTestUser(u.userId);
+});
+
 test("Crewmate 2: admin_sql is coordinator-only, group-scoped, single-DML, and audited", { skip: !SERVICE_KEY }, async () => {
   const coord = setupHousehold(1130, "AdminCoord", "member", true);
   const member = setupHousehold(1131, "AdminMember");
