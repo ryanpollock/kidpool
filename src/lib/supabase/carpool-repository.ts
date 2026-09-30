@@ -2664,6 +2664,20 @@ async getLatestScheduleVersion(
     );
   }
 
+  /**
+   * Open (or create) the shared parent thread for one drive — the driver
+   * plus the parents of every child riding that car. Idempotent per roster
+   * parent set (ensure_drive_thread); roster drift yields a fresh thread.
+   */
+  async ensureDriveThread(tripId: string, scheduleVersionId: string): Promise<string> {
+    return unwrapRequired(
+      await this.client.rpc("ensure_drive_thread", {
+        p_trip_id: tripId,
+        p_schedule_version_id: scheduleVersionId,
+      }),
+    );
+  }
+
   /** Open (or create) the caller's private Crewmate AI thread. */
   async ensureAgentThread(groupId: string): Promise<string> {
     return unwrapRequired(

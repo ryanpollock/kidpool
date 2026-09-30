@@ -906,6 +906,10 @@ export type Database = {
         Args: { target_profile_ids: string[]; thread_title: string };
         Returns: string;
       };
+      ensure_drive_thread: {
+        Args: { p_trip_id: string; p_schedule_version_id: string };
+        Returns: string;
+      };
       mark_thread_read: {
         Args: { target_thread_id: string };
         Returns: void;
