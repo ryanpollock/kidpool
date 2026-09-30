@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 // Crewmate AI — Phase 1 eval gate (CREWMATE_REQUIREMENTS.md §11).
 //
-// Two modes:
+// Modes:
 //
-//   triage (default)  `node scripts/crewmate-eval.mjs`
-//     Runs the labeled triage sample set through the triage model via the
-//     Together API directly — no DB required. PASS = classification
-//     accuracy >= threshold (default 0.85). This is the gate that must
-//     pass before a group's crewmate_enabled flag turns on.
+//   jev-gate          `node scripts/crewmate-eval.mjs --mode jev-gate`
+//     Runs the labeled sample set through the DEPLOYED gate — the same
+//     Jev (Typesafe API) questions supabase/functions/_shared/jev-gate.ts
+//     sends. PASS = classification accuracy >= threshold (default 0.85).
+//     This is the eval that matters for gate-criteria changes (status
+//     category, action retune). Requires TYPESAFE_API_KEY.
+//
+//   triage            `node scripts/crewmate-eval.mjs`
+//     LEGACY: grades the old Together-based triage prompt (kept for
+//     regression/history). PASS = accuracy >= threshold (default 0.85).
+//     This was the gate that had to pass before a group's crewmate_enabled
+//     flag turned on; the deployed gate is Jev — prefer --mode jev-gate.
 //
 //   e2e               `node scripts/crewmate-eval.mjs --mode e2e`
 //     Drives the FULL deployed pipeline on STAGING: signs in as a demo
@@ -78,12 +85,21 @@ const TRIAGE_SAMPLES = [
   { body: "Switch Leo to the early pickup.", expected: "action" },
   { body: "We're away all next week — no rides needed.", expected: "action" },
   { body: "Add a 4:50 pickup Tuesday for the theater kids.", expected: "action" },
-  { body: "I only have two seats this week, husband took the big car.", expected: "action" },
   // consent (Phase 1: point at the buttons, but triaged as consent)
   { body: "Yes, go ahead and cancel it.", expected: "consent" },
   { body: "Confirmed — that works for us.", expected: "consent" },
   { body: "No wait, don't do that one.", expected: "consent" },
   { body: "Yes please make the change.", expected: "consent" },
+  // status — logistics facts shared with other parents: never engage.
+  // (Production incident 2026-09-29: these classified as "action" and
+  // Crewmate posted prose into the Everyone thread; the fifth category
+  // gives the classifier the bucket that was missing.)
+  { body: "Leaving now, ETA 5:50 or so. Will drop off Elinore at MT and ZR at Clarendon.", expected: "status" },
+  { body: "My crew - ETA 4:30 at MT", expected: "status" },
+  { body: "Good am - I will be in the grey BMW this am for carpool - have a good Tuesday 👍", expected: "status" },
+  { body: "I only have two seats this week, husband took the big car.", expected: "status" },
+  { body: "Ok sorry - Hideo has rides. No need to add an extra drive", expected: "status" },
+  { body: "Already dropped her at school, traffic was light.", expected: "status" },
   // chatter — must stay silent
   { body: "Anyone else's kid obsessed with Bluey rn", expected: "chatter" },
   { body: "Great game last night!", expected: "chatter" },
@@ -106,6 +122,7 @@ const E2E_SAMPLES = [
   { body: "Are there any uncovered trips this week?", thread: "agent", expectReply: true },
   { body: "Anyone else's kid obsessed with Bluey rn", thread: "everyone", expectReply: false },
   { body: "Great game last night!", thread: "everyone", expectReply: false },
+  { body: "Leaving now, ETA 5:50 or so. Will drop off Ava at the playground.", thread: "everyone", expectReply: false },
 ];
 
 // An agent reply must NEVER contain these (Phase 1: no changes, no
@@ -142,17 +159,19 @@ async function runTriageMode() {
       `[Maria Garcia] Anyone know if practice is still on?`,
       `[Crewmate AI] Wednesday morning is covered — Wei Chen is driving (Silver Honda) with Lily, Max, and Emma.`,
       ``,
-      `Reply with JSON only: {"category": "question" | "action" | "consent" | "chatter", "confidence": number, "topic": string}.`,
+      `Reply with JSON only: {"category": "question" | "action" | "consent" | "status" | "chatter", "confidence": number, "topic": string}.`,
       `question: asks about the schedule, rosters, coverage, times, who drives/rides, the weekly cycle.`,
-      `action: requests a schedule change (cancel a ride, switch cars, volunteer, add a drive, change seat count).`,
+      `action: requests a schedule change (cancel a ride, switch cars, volunteer, add a drive, change seat count). Someone must act on it.`,
       `consent: confirms or declines a pending proposal card.`,
+      `status: a statement of fact or logistics update shared with other parents — ETAs, 'leaving now', 'I'm in the grey BMW today', reports of what the parent already did, seat-count or availability facts. Nothing is being asked of anyone.`,
       `chatter: social conversation or anything unrelated to the carpool schedule.`,
       ``,
-      // Mirrors the deployed chat-agent triage prompt (supabase/functions/
-      // chat-agent/index.ts) — keep the two in sync.
-      `Chatter takes priority: if the latest message is social or unrelated to rides and schedules — even when phrased as a question — it is chatter. Classify ONLY the latest message; earlier messages are context, never a category signal.`,
+      // Mirrors the deployed chat-agent gate criteria (supabase/functions/
+      // _shared/jev-gate.ts) — keep the two in sync.
+      `Statements of fact are status, NEVER action: 'Leaving now, ETA 5:50' → status; 'I'm in the grey BMW this am' → status; 'I only have two seats this week' → status. Action requires a request for the schedule to CHANGE.`,
+      `Chatter takes priority over question: if the latest message is social or unrelated to rides and schedules — even when phrased as a question — it is chatter. Classify ONLY the latest message; earlier messages are context, never a category signal.`,
       `Examples of chatter: "Anyone else's kid obsessed with Bluey rn" → chatter; "Great game last night!" → chatter; "Happy birthday Priya!!" → chatter; "See everyone at the potluck Saturday" → chatter.`,
-      `Example question: "Who is driving Wednesday morning?" → question. Example action: "Take Zoe off Thursday's ride" → action.`,
+      `Example question: "Who is driving Wednesday morning?" → question. Example action: "Take Zoe off Thursday's ride" → action. Example status: "My crew - ETA 4:30 at MT" → status.`,
     ].join("\n");
 
   let correct = 0;
@@ -626,13 +645,105 @@ async function runE2e2Mode() {
   console.log("\nPASS: Phase 2 e2e gate.");
 }
 
+// ── Mode: jev-gate (the DEPLOYED gate, direct API) ─────────────────
+
+// Runs the labeled sample set through the same Jev gate the deployed
+// chat-agent uses (supabase/functions/_shared/jev-gate.ts — keep the two
+// in sync). This is the eval that matters for gate-criteria changes: the
+// `triage` mode grades the LEGACY Together-based triage prompt.
+async function runJevGateMode() {
+  if (!TYPESAFE_API_KEY) {
+    console.error("TYPESAFE_API_KEY is required for jev-gate mode (the same key the deployed chat-agent uses — `supabase secrets list`).");
+    process.exit(1);
+  }
+
+  let correct = 0;
+  const failures = [];
+  const CONCURRENCY = 5;
+  const results = new Array(TRIAGE_SAMPLES.length);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next++;
+      if (i >= TRIAGE_SAMPLES.length) return;
+      const sample = TRIAGE_SAMPLES[i];
+      try {
+        const res = await fetch("https://api.typesafe.ai/v1/systemone", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${TYPESAFE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          signal: AbortSignal.timeout(30_000),
+          body: JSON.stringify({
+            state: sample.body + "\n\nRecent thread context:\n[Maria Garcia] Anyone know if practice is still on?\n[Crewmate AI] Wednesday morning is covered — the rosters are set.",
+            model: "jev-latest",
+            questions: {
+              help_requested: {
+                type: "noul",
+                instructions:
+                  "Is this parent specifically requesting Crewmate AI to DO something — " +
+                  "answer a direct schedule question (who drives, what time, is it covered), " +
+                  "make a schedule change, or confirm a pending card? " +
+                  "Reactions, acknowledgments, thanks, observations about how things went, " +
+                  "comments directed at other parents, and social chat are NO. " +
+                  "Only a clear request directed at Crewmate counts as yes.",
+              },
+              message_type: {
+                type: "choice",
+                instructions: "What kind of message is this?",
+                criteria: {
+                  question: "A direct question TO Crewmate about the schedule — who drives, what time, is it covered, what changed. NOT observations or comments about how things went.",
+                  action: "The parent is asking for the schedule to CHANGE — cancel a ride, move a child to another car, switch or volunteer drives, add a drive, update seat count. A request someone must act on, even if it is addressed to the room rather than to Crewmate by name.",
+                  consent: "Confirming or declining a pending proposal card (e.g. 'yes, go ahead' or 'confirmed')",
+                  status: "A statement of fact or logistics update shared with other parents — ETAs, 'leaving now', 'I'm in the grey BMW today', reports of what the parent already did ('I just canceled my ride'), seat-count or availability facts. Nothing is being asked of Crewmate and no change is being requested.",
+                  chatter: "Social conversation, observations, reactions, acknowledgments, thanks, or anything else not asking Crewmate to act or answer.",
+                },
+              },
+            },
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        const data = await res.json();
+        const choice = data.answers?.message_type?.choice ?? null;
+        results[i] = { got: ["question", "action", "consent", "status", "chatter"].includes(choice) ? choice : `unexpected:${choice}` };
+      } catch (e) {
+        results[i] = { got: `ERROR: ${e.message}` };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+  for (let i = 0; i < TRIAGE_SAMPLES.length; i++) {
+    if (results[i].got === TRIAGE_SAMPLES[i].expected) correct++;
+    else failures.push({ sample: TRIAGE_SAMPLES[i], got: results[i].got });
+  }
+
+  const accuracy = correct / TRIAGE_SAMPLES.length;
+  console.log(`\nJev gate eval: ${correct}/${TRIAGE_SAMPLES.length} correct (${(accuracy * 100).toFixed(1)}%) with jev-latest`);
+  console.log(`Threshold: ${THRESHOLD * 100}%`);
+  if (failures.length > 0) {
+    console.log("\nFailures:");
+    for (const f of failures) {
+      console.log(`  expected=${f.sample.expected} got=${f.got} body="${f.sample.body}"`);
+    }
+  }
+  if (accuracy < THRESHOLD) {
+    console.error(`\nFAIL: jev gate accuracy ${(accuracy * 100).toFixed(1)}% < ${(THRESHOLD * 100).toFixed(0)}%. Do not deploy the gate change.`);
+    process.exit(1);
+  }
+  console.log("\nPASS: jev gate eval.");
+}
+
 if (MODE === "e2e") {
   await runE2eMode();
 } else if (MODE === "e2e2") {
   await runE2e2Mode();
+} else if (MODE === "jev-gate") {
+  await runJevGateMode();
 } else if (MODE === "triage") {
   await runTriageMode();
 } else {
-  console.error(`Unknown mode "${MODE}". Use --mode triage|e2e|e2e2.`);
+  console.error(`Unknown mode "${MODE}". Use --mode triage|jev-gate|e2e|e2e2.`);
   process.exit(1);
 }

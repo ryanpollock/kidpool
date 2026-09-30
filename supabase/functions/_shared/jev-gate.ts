@@ -8,7 +8,9 @@
 // Jev call (~330 tokens input, output free, ~100ms). Jev evaluates every
 // untagged message in group threads and decides if Crewmate should respond:
 //   - Noul: "Is this parent asking Crewmate for help?"
-//   - Choice: "What type of message is this?" (question/action/consent/chatter)
+//   - Choice: "What type of message is this?"
+//     (question/action/consent/status/chatter — status = logistics facts
+//     and ETAs shared with other parents, always silent)
 //
 // Env var: TYPESAFE_API_KEY (set via `supabase secrets set`)
 // API endpoint: https://api.typesafe.ai/v1/systemone
@@ -26,7 +28,7 @@ export function jevEnabled(): boolean {
 
 export type JevGateResult = {
   helpRequested: number; // P(yes) from the Noul question (0.0–1.0)
-  messageType: "question" | "action" | "consent" | "chatter";
+  messageType: "question" | "action" | "consent" | "status" | "chatter";
   messageConfidence: number; // Choice confidence (0.0–1.0)
   inputTokens: number;
   outputTokens: number;
@@ -78,9 +80,10 @@ export async function jevGate(opts: {
             instructions: "What kind of message is this?",
             criteria: {
               question: "A direct question TO Crewmate about the schedule — who drives, what time, is it covered, what changed. NOT observations or comments about how things went.",
-              action: "Requesting a schedule change (cancel a ride, switch cars, volunteer, add a drive, change seat count). Something needs to change on the schedule.",
+              action: "The parent is asking for the schedule to CHANGE — cancel a ride, move a child to another car, switch or volunteer drives, add a drive, update seat count. A request someone must act on, even if it is addressed to the room rather than to Crewmate by name.",
               consent: "Confirming or declining a pending proposal card (e.g. 'yes, go ahead' or 'confirmed')",
-              chatter: "Social conversation, observations, reactions, acknowledgments, thanks, or anything not specifically asking Crewmate to act or answer.",
+              status: "A statement of fact or logistics update shared with other parents — ETAs, 'leaving now', 'I'm in the grey BMW today', reports of what the parent already did ('I just canceled my ride'), seat-count or availability facts. Nothing is being asked of Crewmate and no change is being requested.",
+              chatter: "Social conversation, observations, reactions, acknowledgments, thanks, or anything else not asking Crewmate to act or answer.",
             },
           },
         },
@@ -102,7 +105,7 @@ export async function jevGate(opts: {
       return null;
     }
 
-    const validTypes = ["question", "action", "consent", "chatter"];
+    const validTypes = ["question", "action", "consent", "status", "chatter"];
     const type = validTypes.includes(msgType.choice) ? msgType.choice : "question";
 
     return {
