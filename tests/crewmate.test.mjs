@@ -527,13 +527,13 @@ test("@Crewmate mentions: one sanctioned null-profile form, honored as an explic
   assert.match(fn, /thread.kind !== "agent" && !taggedCrewmate/);
   // Jev gate replaces the old GLM triage + NOREPLY second gate.
   assert.match(fn, /jevGate/);
-  assert.match(fn, /helpRequested >= 0.8/);
   assert.match(fn, /jevConsent/);
   assert.doesNotMatch(fn, /NOREPLY/);
   assert.match(fn, /explicitly tagged you with @Crewmate/);
 
-  // ── Gate calibration (decision 2026-09-29: engage only when Crewmate
-  // can genuinely help) ────────────────────────────────────────────────
+  // ── Gate calibration (decision 2026-09-29/30: cards-only in untagged
+  // shared threads — engage when it can genuinely help, silence + zero
+  // planner tokens otherwise) ────────────────────────────────────────────
   const jevGateUrl = new URL("../supabase/functions/_shared/jev-gate.ts", import.meta.url);
   const gate = await readFile(jevGateUrl, "utf8");
   // The fifth category exists: logistics statements (ETAs, "I'm in the
@@ -546,8 +546,20 @@ test("@Crewmate mentions: one sanctioned null-profile form, honored as an explic
   // Action retuned: a REQUEST someone must act on — not schedule-adjacent talk.
   assert.match(gate, /action: "The parent is asking for the schedule to CHANGE/);
 
-  // Status falls through to silence (not in shouldRespond's pass list).
-  assert.match(fn, /gateResult\.messageType === "action" \|\|\s*\n\s*gateResult\.messageType === "consent" \|\|\s*\n\s*\(gateResult\.messageType === "question" && gateResult\.helpRequested >= 0\.8\)/);
+  // Cards-only gate for untagged shared threads: only confident actions
+  // and consents pass. Low-confidence 'action' misfiles (the classifier's
+  // mush bucket — 'Almost there!' scored 0.24, production incident
+  // 2026-09-30) and all questions are silent BEFORE the planner runs.
+  // Questions are answered when tagged or in Crewmate's private thread.
+  assert.match(fn, /gateResult\.messageType === "action" && gateResult\.messageConfidence >= 0\.5/);
+  assert.doesNotMatch(fn, /gateResult\.messageType === "question" && gateResult\.helpRequested >= 0\.8/);
+
+  // The structural guarantee: in Everyone/group threads an untagged
+  // gate-pass that produces NO CARD posts nothing at all.
+  assert.match(fn, /!taggedCrewmate && \(thread\.kind === "everyone" \|\| thread\.kind === "group"\) && !block/);
+  assert.match(fn, /reason: "no_card_shared_thread"/);
+  // Genuine action gaps still log for Phase 3.
+  assert.match(fn, /deferred \? "action_deferred" : "chatter"/);
 
   // Parent-to-parent DMs: consent detection only — everything else silent
   // unless tagged (the tagged swap/offer flows bypass the gate entirely).

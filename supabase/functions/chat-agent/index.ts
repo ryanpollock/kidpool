@@ -760,19 +760,21 @@ Deno.serve(async (req)=>{
           });
         }
 
-        // Gate decision: actions and consent always pass (that's Crewmate's job —
-        // propose changes, execute confirmations). Questions need high
-        // confidence (>= 0.8) to prevent Crewmate from chiming in on
-        // casual observations, acknowledgments, and reactions that
-        // merely mention the schedule without needing Crewmate's input.
-        // Status updates — ETAs, logistics facts, reports of what already
-        // happened — fall through to silence (production incident
-        // 2026-09-29: 'Leaving now, ETA 5:50' classified as action and
-        // Crewmate posted prose into the Everyone thread).
+        // Gate decision — cards-only policy for untagged shared threads (decision
+        // 2026-09-30, production incident: 'Almost there!' classified as
+        // action with confidence 0.24 and Crewmate posted prose into the
+        // Everyone thread). Untagged Everyone/group messages engage ONLY
+        // for confident schedule-change requests and pending-card consents;
+        // questions are answered when tagged or in Crewmate's private
+        // thread. A low-confidence 'action' (the classifier's mush bucket —
+        // ETAs and progress notes land here despite the status category)
+        // must clear the Choice confidence floor (>= 0.5) or it is silent
+        // before the planner is ever invoked (zero wasted tokens). Any leak
+        // that still reaches the planner posts nothing without a card
+        // (no_card_shared_thread below).
         const shouldRespond =
-          gateResult.messageType === "action" ||
-          gateResult.messageType === "consent" ||
-          (gateResult.messageType === "question" && gateResult.helpRequested >= 0.8);
+          (gateResult.messageType === "action" && gateResult.messageConfidence >= 0.5) ||
+          gateResult.messageType === "consent";
 
         // Parent-to-parent DMs are private conversations: Crewmate engages
         // only to detect a pending-card confirmation. Everything else is
@@ -1091,6 +1093,24 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
         planner: planned.usage
       });
       return jsonResponse({ skipped: "planner_silent" });
+    }
+
+    // Cards-only policy for untagged shared threads (decision 2026-09-30):
+    // if the gate passed but the planner produced no card, Crewmate posts
+    // NOTHING — no prose into the Everyone/group threads, ever. Tagged
+    // messages and private agent threads still answer freely. Genuine
+    // action requests the catalog can't serve yet still log the gap
+    // (action_deferred) for Phase 3.
+    if (!taggedCrewmate && (thread.kind === "everyone" || thread.kind === "group") && !block) {
+      const deferred = category === "action";
+      await finishRun(deferred ? "action_deferred" : "chatter", {
+        reason: "no_card_shared_thread",
+        category,
+        topic: deferred ? triageTopic || "schedule change request" : "",
+      }, {
+        planner: planned.usage
+      });
+      return jsonResponse({ skipped: "no_card_shared_thread" });
     }
 
     if (!answer && !block) {
