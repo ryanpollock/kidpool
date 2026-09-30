@@ -2087,6 +2087,82 @@ test("Chat: group threads enroll selected members and stay invisible to outsider
   deleteTestUser(d.userId);
 });
 
+test("Chat: ensure_drive_thread opens one shared parent thread per drive", { skip: !SERVICE_KEY }, async () => {
+  const driver = setupHousehold(76, "Driv");
+  const riderA = setupHousehold(77, "Rida");
+  const riderB = setupHousehold(78, "Ridb");
+  const riderOut = setupHousehold(79, "Ridout");
+  const lurker = setupHousehold(80, "Ridlurk");
+  const kidA = UID(120);
+  const kidB = UID(121);
+  const kidOut = UID(122);
+  const { tripIds } = setupWeekAndTrips();
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidA}', '${GROUP_ID}', '${riderA.householdId}', 'Da', 'Rider', '${riderA.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidB}', '${GROUP_ID}', '${riderB.householdId}', 'Db', 'Rider', '${riderB.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kidOut}', '${GROUP_ID}', '${riderOut.householdId}', 'Dout', 'Rider', '${riderOut.userId}') ON CONFLICT DO NOTHING;
+  `);
+  const versionId = UID(1500);
+  runSql(`INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) SELECT '${versionId}', '${GROUP_ID}', (select week_id from public.trips where id = '${tripIds[0]}'), 1, 'published', now() ON CONFLICT DO NOTHING;`);
+  const seeded = seedPublishedAssignment(20, versionId, tripIds[0], driver.userId, driver.householdId, "DriveCar", 4, kidA);
+  runSql(`INSERT INTO public.rider_assignments (group_id, schedule_version_id, trip_id, driver_assignment_id, child_id) VALUES ('${GROUP_ID}', '${versionId}', '${tripIds[0]}', '${seeded.assignmentId}', '${kidB}') ON CONFLICT DO NOTHING;`);
+
+  const driverJwt = signInUser("driv@test.kidpool").access_token;
+  const aJwt = signInUser("rida@test.kidpool").access_token;
+  const lurkerJwt = signInUser("ridlurk@test.kidpool").access_token;
+
+  // Driver opens the parent thread: driver + both rider parents, no one else.
+  const threadId = rpcCall(driverJwt, "ensure_drive_thread", { p_trip_id: tripIds[0], p_schedule_version_id: versionId });
+  assert.ok(!chatSqlError(threadId), `ensure_drive_thread should succeed: ${JSON.stringify(threadId)}`);
+  const participants = restGet("chat_participants", { thread_id: threadId });
+  assert.equal(participants.length, 3, "driver + both rider parents enrolled");
+  const memberIds = participants.map((p) => p.profile_id);
+  assert.ok(memberIds.includes(driver.userId) && memberIds.includes(riderA.userId) && memberIds.includes(riderB.userId), "expected participant set");
+
+  const threadRow = restGet("chat_threads", { id: threadId })[0];
+  assert.equal(threadRow.kind, "group");
+  assert.match(threadRow.title, /morning drive/, `title carries the drive: ${threadRow.title}`);
+
+  // The Crewmate disclosure note posts exactly once (thread creation via
+  // create_group_thread inherits it).
+  const notes = restGet("chat_messages", { thread_id: threadId });
+  const systemNotes = notes.filter((m) => m.sender_kind === "system");
+  assert.equal(systemNotes.length, 1, "Crewmate disclosure posted once");
+  assert.match(systemNotes[0].body, /Crewmate AI/i);
+
+  // Idempotent: a rider parent tapping the same drive lands in the SAME thread.
+  const again = rpcCall(aJwt, "ensure_drive_thread", { p_trip_id: tripIds[0], p_schedule_version_id: versionId });
+  assert.ok(!chatSqlError(again), `rider parent call should succeed: ${JSON.stringify(again)}`);
+  assert.equal(again, threadId, "same parent set reuses the same thread");
+
+  // Stake guard: a member with no kid riding and no wheel gets a clear no.
+  const noStake = rpcCall(lurkerJwt, "ensure_drive_thread", { p_trip_id: tripIds[0], p_schedule_version_id: versionId });
+  assert.ok(chatSqlError(noStake) && /Only the driver or a riding family/i.test(JSON.stringify(noStake)), `unconnected member rejected: ${JSON.stringify(noStake).slice(0, 120)}`);
+
+  // Roster drift: a third rider joins → different parent set → a fresh thread
+  // that includes the new parent (the old thread is left untouched).
+  runSql(`INSERT INTO public.rider_assignments (group_id, schedule_version_id, trip_id, driver_assignment_id, child_id) VALUES ('${GROUP_ID}', '${versionId}', '${tripIds[0]}', '${seeded.assignmentId}', '${kidOut}') ON CONFLICT DO NOTHING;`);
+  const drifted = rpcCall(aJwt, "ensure_drive_thread", { p_trip_id: tripIds[0], p_schedule_version_id: versionId });
+  assert.ok(!chatSqlError(drifted) && drifted !== threadId, `roster drift creates a fresh thread: ${JSON.stringify(drifted)}`);
+  const driftParticipants = restGet("chat_participants", { thread_id: drifted });
+  assert.equal(driftParticipants.length, 4, "the late-added rider's parent is included");
+  const driftIds = driftParticipants.map((p) => p.profile_id);
+  assert.ok(driftIds.includes(riderOut.userId), "new parent in the fresh thread");
+  // The drifted thread is itself idempotent for the new set.
+  const driftAgain = rpcCall(driverJwt, "ensure_drive_thread", { p_trip_id: tripIds[0], p_schedule_version_id: versionId });
+  assert.equal(driftAgain, drifted, "new set reuses the new thread");
+  // The original thread is untouched (still 3 participants, 1 disclosure).
+  assert.equal(restGet("chat_participants", { thread_id: threadId }).length, 3, "original thread untouched by drift");
+
+  // A riderless drive has no parents to message — clear error, no thread.
+  seedPublishedAssignment(21, versionId, tripIds[1], driver.userId, driver.householdId, "EmptyCar", 4, null);
+  const noRiders = rpcCall(driverJwt, "ensure_drive_thread", { p_trip_id: tripIds[1], p_schedule_version_id: versionId });
+  assert.ok(chatSqlError(noRiders) && /No other parents/i.test(JSON.stringify(noRiders)), `riderless drive rejected clearly: ${JSON.stringify(noRiders).slice(0, 120)}`);
+
+  cleanupAllTestData();
+  for (const u of [driver, riderA, riderB, riderOut, lurker]) deleteTestUser(u.userId);
+});
+
 test("Chat: new memberships auto-enroll into the existing everyone thread", { skip: !SERVICE_KEY }, async () => {
   const a = setupHousehold(76, "Chatr");
 

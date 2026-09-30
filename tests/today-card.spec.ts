@@ -162,6 +162,65 @@ test.describe.serial("Today Card", () => {
     await expect(todayCard).toContainText("R1");
   });
 
+  test("Message parents from Today card opens the shared drive thread", async ({ page }) => {
+    test.skip(skip, "Requires service key");
+    const today = todayStrSF();
+    const dow = new Date(today + "T00:00:00").getDay();
+    if (dow === 0 || dow === 6) { test.skip(); return; }
+
+    const coord = setupHousehold(63, "DriveMsgCoord", true);
+    if (!coord) { test.skip(); return; }
+    const driver = setupHousehold(64, "DriveMsgDriver", false);
+    if (!driver) { test.skip(); return; }
+    const rider = setupHousehold(65, "DriveMsgRider", false);
+    if (!rider) { test.skip(); return; }
+
+    const { weekId, tripIds, dates } = setupCurrentWeekWithTrips();
+    const todayIdx = dates.indexOf(today);
+    if (todayIdx < 0) { test.skip(); return; }
+    const morningTrip = tripIds[todayIdx * 2];
+
+    runSql(`
+      INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(773)}', '${GROUP_ID}', '${driver.householdId}', 'DriveMsgCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(774)}', '${GROUP_ID}', '${driver.householdId}', 'D1', 'Driver', '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(775)}', '${GROUP_ID}', '${rider.householdId}', 'R1', 'Rider', '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(776)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(777)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(776)}', '${morningTrip}', '${UID(774)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(777)}', '${morningTrip}', '${UID(775)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(776)}', '${morningTrip}', '${driver.userId}', '${UID(773)}', 'prefer') ON CONFLICT DO NOTHING;
+    `);
+
+    const genResult = generateSchedule(coord.email, weekId);
+    expect(genResult.success).toBe(true);
+    publishScheduleViaSql(weekId);
+
+    // Driver taps "Message parents" on their own today drive card.
+    await signInWithTestAuth(page, driver.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    const msgBtn = page.getByTestId("drive-message-parents").first();
+    await expect(msgBtn).toBeVisible({ timeout: 5000 });
+    await msgBtn.click();
+    await expect(page.getByTestId("chat-thread-layer")).toBeVisible({ timeout: 15000 });
+    await expect(page.locator(".chat-thread-header-info h1")).toContainText(/morning drive/i, { timeout: 10000 });
+    // The Crewmate disclosure note posts once on creation.
+    await expect(page.getByText(/will be in this conversation to help coordinate rides/i).first()).toBeVisible({ timeout: 10000 });
+
+    // The rider parent taps from the DRIVE DETAIL screen and lands in the
+    // SAME thread (find-or-create, not a duplicate).
+    await signInWithTestAuth(page, rider.email);
+    await expect(page.getByTestId("home-screen")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("today-card")).toBeVisible({ timeout: 5000 });
+    await page.locator('[data-testid^="today-drive-status-"]').first().click();
+    await expect(page.getByTestId("drive-detail-screen")).toBeVisible({ timeout: 5000 });
+    await page.getByTestId("drive-detail-message-parents").click();
+    await expect(page.getByTestId("chat-thread-layer")).toBeVisible({ timeout: 15000 });
+    await expect(page.locator(".chat-thread-header-info h1")).toContainText(/morning drive/i, { timeout: 10000 });
+
+    const driveThreads = runSql(`SELECT count(*)::int AS n FROM public.chat_threads WHERE group_id = '${GROUP_ID}' AND kind = 'group' AND title LIKE '%morning drive';`).rows ?? [];
+    expect(driveThreads.length > 0 ? (driveThreads[0] as Record<string, unknown>).n : 0).toBe(1);
+  });
+
   test("Tapping Drive details from Today card opens drive detail", async ({ page }) => {
     test.skip(skip, "Requires service key");
     const today = todayStrSF();
