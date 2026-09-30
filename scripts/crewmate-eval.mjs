@@ -123,6 +123,9 @@ const E2E_SAMPLES = [
   { body: "Anyone else's kid obsessed with Bluey rn", thread: "everyone", expectReply: false },
   { body: "Great game last night!", thread: "everyone", expectReply: false },
   { body: "Leaving now, ETA 5:50 or so. Will drop off Ava at the playground.", thread: "everyone", expectReply: false },
+  // Cards-only in untagged shared threads (2026-09-30): questions are
+  // answered when tagged or in Crewmate's private thread — not here.
+  { body: "Who is driving Wednesday morning?", thread: "everyone", expectReply: false },
 ];
 
 // An agent reply must NEVER contain these (Phase 1: no changes, no
