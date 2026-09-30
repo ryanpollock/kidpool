@@ -765,10 +765,28 @@ Deno.serve(async (req)=>{
         // confidence (>= 0.8) to prevent Crewmate from chiming in on
         // casual observations, acknowledgments, and reactions that
         // merely mention the schedule without needing Crewmate's input.
+        // Status updates — ETAs, logistics facts, reports of what already
+        // happened — fall through to silence (production incident
+        // 2026-09-29: 'Leaving now, ETA 5:50' classified as action and
+        // Crewmate posted prose into the Everyone thread).
         const shouldRespond =
           gateResult.messageType === "action" ||
           gateResult.messageType === "consent" ||
           (gateResult.messageType === "question" && gateResult.helpRequested >= 0.8);
+
+        // Parent-to-parent DMs are private conversations: Crewmate engages
+        // only to detect a pending-card confirmation. Everything else is
+        // silent unless the parent tags @Crewmate (tagged messages bypass
+        // this whole gate) — the tagged swap/offer flows are unaffected.
+        if (thread.kind === "dm" && gateResult.messageType !== "consent") {
+          await finishRun("chatter", {
+            category: gateResult.messageType,
+            dm: true,
+            jev_help_p: gateResult.helpRequested,
+            jev_confidence: gateResult.messageConfidence,
+          });
+          return jsonResponse({ skipped: "not_invoked" });
+        }
 
         if (!shouldRespond) {
           await finishRun("chatter", {
@@ -820,6 +838,19 @@ Deno.serve(async (req)=>{
               // fall through to the planner, which will answer in plain text.
               console.error("[chat-agent] consent rejected:", consentError?.message);
             }
+          }
+
+          // In a parent-to-parent DM the consent path is the ONLY reason
+          // Crewmate is here — if nothing confirmed (no pending card, not
+          // a clear yes, validation failed), stay out of the private
+          // conversation instead of falling through to the planner.
+          if (thread.kind === "dm") {
+            await finishRun("chatter", {
+              category: "consent",
+              dm: true,
+              reason: "no_pending_card_or_not_affirmative",
+            });
+            return jsonResponse({ skipped: "not_invoked" });
           }
         }
       } else {
@@ -977,7 +1008,8 @@ Deno.serve(async (req)=>{
 Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b} (trading two drivers' drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. Use ONLY ids that appeared in tool results. If the parent asks for something the catalog can't do, or you don't have the ids, say what you'd need. A card appears in chat — the right parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
       `- Do not share phone numbers, emails, or addresses — you don't have them, and they stay private.`,
-      `- Be brief. Two to four sentences for answers, one to two for confirmations. Use children's first names and drivers' full names. A roster may be a short list, nothing longer. Format for a phone: use actual line breaks (\\n) between each driver and their car, a blank line (\\n\\n) between sections. NEVER use markdown — no **, no -, no #, no bullet symbols. The chat renders plain text only, so markdown symbols appear as ugly asterisks and dashes to parents. Just plain text with line breaks. Cut filler words, pleasantries, and repetition — parents are reading on a phone.`,
+      `- Silence is a real option: if the parent's message needs no schedule change, proposes nothing you can turn into a card, and asks nothing you can genuinely answer, reply with exactly [SILENT] and nothing else — no message is posted. Prefer [SILENT] over filler. This is NOT available when you were explicitly tagged or in a private Crewmate thread — there you must always reply, even just a friendly one-liner.`,
+      `- Be brief. One to two sentences for answers unless a roster list is genuinely needed, one for confirmations. Use children's first names and drivers' full names. A roster may be a short list, nothing longer. Format for a phone: use actual line breaks (\\n) between each driver and their car, a blank line (\\n\\n) between sections. NEVER use markdown — no **, no -, no #, no bullet symbols. The chat renders plain text only, so markdown symbols appear as ugly asterisks and dashes to parents. Just plain text with line breaks. Cut filler words, pleasantries, and repetition — parents are reading on a phone.`,
       `- Extra drives (offer_custom_drive) only work once the week's schedule is PUBLISHED — it publishes Sunday 7 PM Pacific. If it is not published yet, say extra drives open Sunday evening instead of proposing the offer.`,
       `- If the message is completely unrelated to the carpool and you were tagged by accident, a brief one-liner redirecting to carpool topics is fine.`
     ].join("\n");
@@ -1048,6 +1080,18 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
     }
     const { block, visible } = splitProposalBlock(planned.answer ?? "");
     const answer = visible.trim();
+
+    // The planner's sanctioned silence (safety net for gate leaks): post
+    // nothing rather than filler. The prompt reserves [SILENT] for
+    // gate-passed messages that need no schedule change and ask nothing
+    // Crewmate can genuinely answer — tagged messages and private Crewmate
+    // threads are instructed to always reply.
+    if (answer === "[SILENT]") {
+      await finishRun("chatter", { reason: "planner_silent" }, {
+        planner: planned.usage
+      });
+      return jsonResponse({ skipped: "planner_silent" });
+    }
 
     if (!answer && !block) {
       await finishRun("failed", {
