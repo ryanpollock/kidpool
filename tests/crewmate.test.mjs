@@ -531,6 +531,32 @@ test("@Crewmate mentions: one sanctioned null-profile form, honored as an explic
   assert.match(fn, /jevConsent/);
   assert.doesNotMatch(fn, /NOREPLY/);
   assert.match(fn, /explicitly tagged you with @Crewmate/);
+
+  // ── Gate calibration (decision 2026-09-29: engage only when Crewmate
+  // can genuinely help) ────────────────────────────────────────────────
+  const jevGateUrl = new URL("../supabase/functions/_shared/jev-gate.ts", import.meta.url);
+  const gate = await readFile(jevGateUrl, "utf8");
+  // The fifth category exists: logistics statements (ETAs, "I'm in the
+  // grey BMW", reports of what already happened) get their own bucket —
+  // they were being force-filed into `action`, which auto-passes, and
+  // Crewmate posted prose into shared threads (production incident
+  // 2026-09-29: "Leaving now, ETA 5:50…").
+  assert.match(gate, /status: "A statement of fact or logistics update/);
+  assert.match(gate, /const validTypes = \["question", "action", "consent", "status", "chatter"\]/);
+  // Action retuned: a REQUEST someone must act on — not schedule-adjacent talk.
+  assert.match(gate, /action: "The parent is asking for the schedule to CHANGE/);
+
+  // Status falls through to silence (not in shouldRespond's pass list).
+  assert.match(fn, /gateResult\.messageType === "action" \|\|\s*\n\s*gateResult\.messageType === "consent" \|\|\s*\n\s*\(gateResult\.messageType === "question" && gateResult\.helpRequested >= 0\.8\)/);
+
+  // Parent-to-parent DMs: consent detection only — everything else silent
+  // unless tagged (the tagged swap/offer flows bypass the gate entirely).
+  assert.match(fn, /thread\.kind === "dm" && gateResult\.messageType !== "consent"/);
+  assert.match(fn, /category: "consent",\s*\n\s*dm: true,\s*\n\s*reason: "no_pending_card_or_not_affirmative"/);
+
+  // Planner silence backstop: post nothing rather than filler.
+  assert.match(fn, /answer === "\[SILENT\]"/);
+  assert.match(fn, /Silence is a real option: if the parent's message needs no schedule change/);
 });
 
 const swapFixUrl = new URL(
