@@ -237,12 +237,14 @@ test("Chat: new-chat sheet creates a group thread with selected parents", async 
     await page.getByTestId("chat-new-chat-start").click();
 
     await expect(page.getByTestId("chat-thread-screen")).toBeVisible();
-    await expect(page.locator(".chat-thread-header-info h1")).toContainText("Van crew");
+    // Auto-title: first names of the SELECTED parents, comma-joined by
+    // full name order (Theta Chatty + Iota Chatty → "Iota, Theta").
+    await expect(page.locator(".chat-thread-header-info h1")).toContainText("Iota, Theta");
     await expect(page.locator(".chat-thread-header-info small")).toContainText("Theta");
 
     // The group thread also appears in the inbox
     await page.getByTestId("chat-thread-back").click();
-    await expect(page.locator(".chat-thread-row", { hasText: "Van crew" })).toBeVisible();
+    await expect(page.locator(".chat-thread-row", { hasText: "Iota, Theta" })).toBeVisible();
   } finally {
     cleanupChatData();
   }

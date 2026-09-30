@@ -1412,6 +1412,21 @@ button.child-photo-thumb:active {
   color: var(--ink-soft);
 }
 
+/* "Message parents" row on drive cards + drive detail — opens the shared
+   parent thread for the drive (ensure_drive_thread). */
+.drive-card-message-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 2px;
+}
+
+.drive-card-message-error {
+  font-size: 12px;
+  color: #c0453e;
+}
+
 /* Locked feature entries (e.g., extra-drive offers before the week's
    schedule is published) — visible, but unmistakably not tappable. */
 .coverage-alert:disabled {

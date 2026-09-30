@@ -179,6 +179,7 @@ test("every chat table has a TypeScript contract and the chat RPCs are typed", a
     "ensure_everyone_thread",
     "create_dm_thread",
     "create_group_thread",
+    "ensure_drive_thread",
     "mark_thread_read",
     "set_thread_notifications_muted",
     "list_chat_threads",
@@ -201,6 +202,7 @@ test("repository exposes the chat methods", async () => {
     "ensureEveryoneThread",
     "createDmThread",
     "createGroupThread",
+    "ensureDriveThread",
     "listThreadMessages",
     "listThreadProposals",
     "sendChatMessage",
@@ -214,6 +216,73 @@ test("repository exposes the chat methods", async () => {
 
   // Message page fetches newest-first then reverse (chronological render)
   assert.match(source, /\.order\("created_at", \{ ascending: false \}\)[\s\S]*?\[\.\.\.rows\]\.reverse\(\)/);
+});
+
+// ── Drive parent threads (feature decision 2026-09-30) ────────────
+// "Message parents" on a drive opens ONE shared thread with the driver +
+// the parents of every child riding that car. Group threads had no
+// find-or-create (create_group_thread duplicates), so ensure_drive_thread
+// is the RPC that makes every tap from any connected parent land in the
+// same conversation.
+
+const ensureDriveThreadMigrationUrl = new URL(
+  "../supabase/migrations/202609300001_ensure_drive_thread.sql",
+  import.meta.url,
+);
+
+test("ensure_drive_thread: stake-gated, set-idempotent, disclosure inherited", async () => {
+  const sql = await readFile(ensureDriveThreadMigrationUrl, "utf8");
+
+  // Creation goes through create_group_thread so participant validation,
+  // enrollment, and the Crewmate disclosure note all come along.
+  assert.match(sql, /return public\.create_group_thread\(v_target_ids, v_title\)/);
+
+  // Stake guard: only the driver or a riding family may open the thread.
+  assert.match(sql, /Only the driver or a riding family can start this chat/);
+
+  // Riderless drives have nobody to message.
+  assert.match(sql, /No other parents to message on this drive/);
+
+  // Audience: the drive's active assignment driver + rider-household
+  // active members; the caller is excluded from the selection (their
+  // co-parent stays).
+  assert.match(sql, /status in \('tentative', 'confirmed'\)/);
+  assert.match(sql, /where x <> v_caller/);
+
+  // Find-or-create: same group + same drive title + exact participant set.
+  assert.match(sql, /and t\.kind = 'group'/);
+  assert.match(sql, /and t\.title = v_title/);
+  assert.match(sql, /count\(distinct cp\.profile_id\)/);
+
+  // Title carries date + slot so pm_early/pm_late/custom drives never
+  // collide and two days with identical parent sets stay separate.
+  assert.match(sql, /to_char\(v_trip\.service_date, 'Dy Mon DD'\) \|\| ' morning drive'/);
+  assert.match(sql, /'HH12:MI AM'\) \|\| ' drive'/);
+});
+
+test("Drive parent threads: Home + drive detail wiring", async () => {
+  const source = await readFile(prototypeUrl, "utf8");
+  const chatCss = await readFile(chatCssUrl, "utf8");
+  const protoCss = await readFile(prototypeUrl2, "utf8");
+
+  // App-level open callback follows the openDmWithParent pattern: resolve
+  // the thread, then land on the chat tab with the thread layer mounted.
+  assert.match(source, /repository\.ensureDriveThread\(tripId, scheduleVersionId\)/);
+  assert.match(source, /const openDriveThread = useCallback\(/);
+  assert.match(source, /setDriveDetailId\(null\);\s*\n\s*setActiveTab\("chat"\);\s*\n\s*setChatThreadId\(threadId\)/);
+
+  // DriveCard buttons (driver branch + first rider card) and the drive
+  // detail affordance, with working + error states threaded through.
+  assert.match(source, /data-testid="drive-message-parents"/);
+  assert.match(source, /data-testid="drive-detail-message-parents"/);
+  assert.match(source, /isFirstChildOnThisDrive/);
+  assert.match(source, /roster\.children\.length > 0 && onDriveMessageParents/);
+  assert.match(source, /found\.entry\.children\.length > 0 \? \(\) => void openDriveThread/);
+
+  // Shared pill styling + app-owned row/error styles.
+  assert.match(chatCss, /\.drive-message-driver,\s*\n\.drive-message-parents \{/);
+  assert.match(protoCss, /\.drive-card-message-row \{/);
+  assert.match(protoCss, /\.drive-card-message-error \{/);
 });
 
 test("send-push chat_message branch is push-only, mutes-aware, and deep-links", async () => {

@@ -1284,6 +1284,9 @@ function DriveCard({
   onSetDriverOnMyWay,
   onSetRiderReady,
   onClearDriveStatus,
+  onMessageParents,
+  messageParentsWorking,
+  messageParentsError,
 }: {
   trip: Tables<"trips">;
   roster: ScheduleRosterEntry;
@@ -1312,6 +1315,9 @@ function DriveCard({
   onSetDriverOnMyWay?: () => void;
   onSetRiderReady?: (childId: string) => void;
   onClearDriveStatus?: (childId: string | null) => void;
+  onMessageParents?: () => void;
+  messageParentsWorking?: boolean;
+  messageParentsError?: string | null;
 }) {
   // Afternoon cards include the pickup time in the headline so an ad hoc
   // custom drive (e.g. 4:50 PM) is never interchangeable with 4:20/5:15.
@@ -1357,6 +1363,20 @@ function DriveCard({
             <span>{riderCount} rider{riderCount !== 1 ? "s" : ""}: {riderFirstNames}</span>
           </div>
         </div>
+        {onMessageParents ? (
+          <div className="drive-card-message-row">
+            <button
+              className="drive-message-parents"
+              data-testid="drive-message-parents"
+              onClick={onMessageParents}
+              disabled={messageParentsWorking}
+            >
+              <ChatBubbleIcon width="13" height="13" />
+              {messageParentsWorking ? "Opening…" : "Message parents"}
+            </button>
+            {messageParentsError ? <span className="drive-card-message-error" role="alert">{messageParentsError}</span> : null}
+          </div>
+        ) : null}
         {isCanceling ? (
           <div className="today-card-cancel-confirm" data-testid={`cancel-confirm-${myAssignment.assignment.id}`}>
             <p>Cancel this drive? Affected families will be notified immediately.</p>
@@ -1543,6 +1563,20 @@ function DriveCard({
             <span>{childRoster.children.length} rider{childRoster.children.length !== 1 ? "s" : ""}: {childRoster.children.map(c => c.first_name).join(", ")}</span>
           </div>
         </div>
+        {onMessageParents ? (
+          <div className="drive-card-message-row">
+            <button
+              className="drive-message-parents"
+              data-testid="drive-message-parents"
+              onClick={onMessageParents}
+              disabled={messageParentsWorking}
+            >
+              <ChatBubbleIcon width="13" height="13" />
+              {messageParentsWorking ? "Opening…" : "Message parents"}
+            </button>
+            {messageParentsError ? <span className="drive-card-message-error" role="alert">{messageParentsError}</span> : null}
+          </div>
+        ) : null}
         <div className="drive-card-actions">
           <button
             className="today-card-drive-link"
@@ -1805,6 +1839,9 @@ function HomeScreen({
   onClearDriveStatus,
   canOfferCustomDrive,
   onOfferCustomDrive,
+  onDriveMessageParents,
+  driveMsgWorking,
+  driveMsgError,
 }: {
   myAssignments: MyDriverAssignment[];
   assignmentsLoading: boolean;
@@ -1863,6 +1900,9 @@ function HomeScreen({
   onClearDriveStatus: (assignmentId: string, childId: string | null) => void;
   canOfferCustomDrive?: boolean;
   onOfferCustomDrive?: () => void;
+  onDriveMessageParents?: (tripId: string, scheduleVersionId: string) => void;
+  driveMsgWorking?: boolean;
+  driveMsgError?: string | null;
 }) {
   const [confirmAllOpen, setConfirmAllOpen] = useState(false);
   const [cancelingId, setCancelingId] = useState<string | null>(null);
@@ -2113,49 +2153,61 @@ function HomeScreen({
                           onSetDriverOnMyWay={() => onSetDriverOnMyWay(roster.driverAssignment.id)}
                           onSetRiderReady={(childId) => onSetRiderReady(roster.driverAssignment.id, childId)}
                           onClearDriveStatus={(childId) => onClearDriveStatus(roster.driverAssignment.id, childId)}
+                          onMessageParents={roster.children.length > 0 && onDriveMessageParents ? () => onDriveMessageParents(trip.id, homeSchedule?.version.id ?? "") : undefined}
+                          messageParentsWorking={driveMsgWorking}
+                          messageParentsError={driveMsgError}
                         />
                       );
                     })()
                   ) : (
                     <>
-                      {householdChildren.map((child) => {
-                        const rideKey = `${child.id}:${trip.id}`;
-                        const roster = rosters.find(r =>
-                          r.children.some(c => c.id === child.id)
+{householdChildren.map((child, childIdx) => {
+                      const rideKey = `${child.id}:${trip.id}`;
+                      const roster = rosters.find(r =>
+                        r.children.some(c => c.id === child.id)
+                      );
+                      // One "Message parents" button per trip, on the first
+                      // of the household's riding children — the thread is
+                      // shared across the drive, so duplicates are noise.
+                      const isFirstChildOnThisDrive = !householdChildren.some((c, i2) =>
+                        i2 < childIdx && rosters.some(r => r.children.some(rc => rc.id === c.id))
+                      );
+                      if (roster) {
+                        return (
+                          <DriveCard
+                            key={child.id}
+                            trip={trip}
+                            roster={roster}
+                            myAssignment={null}
+                            householdChildren={[child]}
+                            isToday={true}
+                            isUserDriving={false}
+                            cancelledRideKeys={cancelledRides}
+                            cancellingRideKey={cancellingRideKey}
+                            cancelingId={cancelingId}
+                            working={working}
+                            rideWorking={rideWorking}
+                            onOpenDrive={onOpenDrive}
+                            onCancelDrive={onCancelDrive}
+                            onCancelRide={onCancelRide}
+                            setCancelingId={setCancelingId}
+                            setCancellingRideKey={setCancellingRideKey}
+                            setRideWorking={setRideWorking}
+                            setCancelledRides={setCancelledRides}
+                            homeScheduleVersionId={homeSchedule?.version.id ?? null}
+                            homeScheduleVersionGroupId={homeSchedule?.version.group_id ?? null}
+                            onAddRideBack={onAddRideBack}
+                            driveStatuses={driveStatuses.get(roster.driverAssignment.id) ?? []}
+                            timezone={timezone}
+                            onSetDriverOnMyWay={() => onSetDriverOnMyWay(roster.driverAssignment.id)}
+                            onSetRiderReady={(childId) => onSetRiderReady(roster.driverAssignment.id, childId)}
+                            onClearDriveStatus={(childId) => onClearDriveStatus(roster.driverAssignment.id, childId)}
+                            onMessageParents={isFirstChildOnThisDrive && roster.children.length > 0 && onDriveMessageParents ? () => onDriveMessageParents(trip.id, homeSchedule?.version.id ?? "") : undefined}
+                            messageParentsWorking={driveMsgWorking}
+                            messageParentsError={driveMsgError}
+                          />
                         );
-                        if (roster) {
-                          return (
-                            <DriveCard
-                              key={child.id}
-                              trip={trip}
-                              roster={roster}
-                              myAssignment={null}
-                              householdChildren={[child]}
-                              isToday={true}
-                              isUserDriving={false}
-                              cancelledRideKeys={cancelledRides}
-                              cancellingRideKey={cancellingRideKey}
-                              cancelingId={cancelingId}
-                              working={working}
-                              rideWorking={rideWorking}
-                              onOpenDrive={onOpenDrive}
-                              onCancelDrive={onCancelDrive}
-                              onCancelRide={onCancelRide}
-                              setCancelingId={setCancelingId}
-                              setCancellingRideKey={setCancellingRideKey}
-                              setRideWorking={setRideWorking}
-                              setCancelledRides={setCancelledRides}
-                              homeScheduleVersionId={homeSchedule?.version.id ?? null}
-                              homeScheduleVersionGroupId={homeSchedule?.version.group_id ?? null}
-                              onAddRideBack={onAddRideBack}
-                              driveStatuses={driveStatuses.get(roster.driverAssignment.id) ?? []}
-                              timezone={timezone}
-                              onSetDriverOnMyWay={() => onSetDriverOnMyWay(roster.driverAssignment.id)}
-                              onSetRiderReady={(childId) => onSetRiderReady(roster.driverAssignment.id, childId)}
-                              onClearDriveStatus={(childId) => onClearDriveStatus(roster.driverAssignment.id, childId)}
-                            />
-                          );
-                        }
+                      }
                         if (cancelledRides.has(rideKey)) {
                           return (
                             <div className="today-card-ride today-card-ride--cancelled" key={child.id}>
@@ -5603,6 +5655,9 @@ function DriveDetailScreen({
   siblingTripLabel,
   siblingTripAvailable,
   onMessageDriver,
+  onMessageParents,
+  messageParentsWorking,
+  messageParentsError,
   customJoinChildren,
   customSeatsRemaining,
   onJoinCustomDrive,
@@ -5630,6 +5685,9 @@ function DriveDetailScreen({
   siblingTripLabel?: string;
   siblingTripAvailable?: boolean;
   onMessageDriver?: (driverProfileId: string) => Promise<void>;
+  onMessageParents?: () => void;
+  messageParentsWorking?: boolean;
+  messageParentsError?: string | null;
   customJoinChildren?: Tables<"children">[];
   customSeatsRemaining?: number;
   onJoinCustomDrive?: (childId: string) => Promise<void>;
@@ -5741,6 +5799,20 @@ function DriveDetailScreen({
 
       <section className="drive-detail-children">
         <h2>Children on this drive ({children.length})</h2>
+        {onMessageParents ? (
+          <div className="drive-card-message-row">
+            <button
+              className="drive-message-parents"
+              data-testid="drive-detail-message-parents"
+              onClick={onMessageParents}
+              disabled={messageParentsWorking}
+            >
+              <ChatBubbleIcon width="13" height="13" />
+              {messageParentsWorking ? "Opening…" : "Message parents"}
+            </button>
+            {messageParentsError ? <span className="drive-card-message-error" role="alert">{messageParentsError}</span> : null}
+          </div>
+        ) : null}
         {removeError ? <div className="auth-error" role="alert">{removeError}</div> : null}
         {children.length === 0 ? (
           <p className="helper-copy">No children assigned to this drive.</p>
@@ -7440,6 +7512,32 @@ const navItems = useMemo(() => {
     [repository],
   );
 
+  // ── Drive parent threads ────────────────────────────────────────
+  // "Message parents" on a drive opens (find-or-create) the shared thread
+  // with the driver + the parents of every child riding that car — the
+  // ensure_drive_thread RPC is idempotent per roster parent set, so every
+  // tap from any connected parent lands in the same conversation.
+  const [driveMsgWorking, setDriveMsgWorking] = useState(false);
+  const [driveMsgError, setDriveMsgError] = useState<string | null>(null);
+  const openDriveThread = useCallback(
+    async (tripId: string, scheduleVersionId: string) => {
+      if (driveMsgWorking) return;
+      setDriveMsgWorking(true);
+      setDriveMsgError(null);
+      try {
+        const threadId = await repository.ensureDriveThread(tripId, scheduleVersionId);
+        setDriveDetailId(null);
+        setActiveTab("chat");
+        setChatThreadId(threadId);
+      } catch (e) {
+        setDriveMsgError(readableError(e));
+      } finally {
+        setDriveMsgWorking(false);
+      }
+    },
+    [repository, driveMsgWorking],
+  );
+
   // ── Ad hoc custom drives ────────────────────────────────────────
   // Remaining offerable days of the published week: today (or the week
   // start if it's in the future) through Friday, skipping no-school days.
@@ -7738,6 +7836,9 @@ const navItems = useMemo(() => {
               siblingTripLabel={siblingTripLabel}
               siblingTripAvailable={siblingTripAvailable}
               onMessageDriver={openDmWithParent}
+              onMessageParents={found.entry.children.length > 0 ? () => void openDriveThread(found.trip.id, found.entry.driverAssignment.schedule_version_id) : undefined}
+              messageParentsWorking={driveMsgWorking}
+              messageParentsError={driveMsgError}
               customJoinChildren={isCustomDrive ? customJoinChildren : undefined}
               customSeatsRemaining={customSeatsRemaining}
               onJoinCustomDrive={isCustomDrive ? (childId) => joinCustomDrive(found.trip, childId) : undefined}
@@ -7956,6 +8057,9 @@ onOpenDrive={(id) => { void loadDriveStatuses(); void loadPendingOutgoing(id); v
         onSetRiderReady={(assignmentId, childId) => void handleSetRiderReady(assignmentId, childId)}
         onClearDriveStatus={(assignmentId, childId) => void handleClearDriveStatus(assignmentId, childId)}
         canOfferCustomDrive={canOfferCustomDrive}
+        onDriveMessageParents={(tripId, versionId) => void openDriveThread(tripId, versionId)}
+        driveMsgWorking={driveMsgWorking}
+        driveMsgError={driveMsgError}
         onOfferCustomDrive={() => setOfferSheetOpen(true)}
       />
     );

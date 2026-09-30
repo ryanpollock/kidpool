@@ -164,13 +164,14 @@ test("Multi-User Chat: three-way group thread with interleaved sends", async ({ 
     await pageA.getByTestId("chat-new-chat-start").click();
     await expect(pageA.getByTestId("chat-thread-screen")).toBeVisible();
 
-    // Bravo and Echo join the same thread
+    // Bravo and Echo join the same thread (auto-title from the selected
+    // parents: Delta Multichat + Echo Multichat → "Delta, Echo")
     await signInAndWait(pageB, beta.email);
     await openChatTab(pageB);
-    await openThreadByTitle(pageB, "Ride swap crew");
+    await openThreadByTitle(pageB, "Delta, Echo");
     await signInAndWait(pageC, gamma.email);
     await openChatTab(pageC);
-    await openThreadByTitle(pageC, "Ride swap crew");
+    await openThreadByTitle(pageC, "Delta, Echo");
 
     // Interleaved sends from all three
     await sendViaComposer(pageA, "Message one from Charlie");

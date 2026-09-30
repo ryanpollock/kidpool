@@ -638,7 +638,8 @@
   margin: 0 0 18px;
 }
 
-.drive-message-driver {
+.drive-message-driver,
+.drive-message-parents {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -651,7 +652,8 @@
   font-weight: 650;
 }
 
-.drive-message-driver:disabled {
+.drive-message-driver:disabled,
+.drive-message-parents:disabled {
   opacity: 0.6;
 }
 
