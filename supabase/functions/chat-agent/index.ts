@@ -1133,6 +1133,9 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
     // Dual-consent swaps: the second driver's card, anchored to its own
     // message after the reply (cards render attached to chat_messages).
     let swapSecondCard: { id: string; driverName: string } | null = null;
+    // Cards whose required confirmer is NOT the asker get a targeted push
+    // (proposal_created) so the other parent isn't left in the dark.
+    const confirmerNotices: Array<{ proposalId: string; summary: string; confirmerId: string }> = [];
     if (block && typeof block.kind === "string" && PROPOSAL_CATALOG[block.kind]) {
       const entry = PROPOSAL_CATALOG[block.kind];
       const parsed = entry.schema.safeParse(block.params ?? {});
@@ -1261,6 +1264,24 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
                     driverName: driverB?.full_name ?? "the other driver"
                   };
                   proposalsCreated = 2;
+                  // A card that needs ANOTHER parent's OK must not arrive
+                  // silently — the push (proposal_created) deep-links them
+                  // to the thread (production incident 2026-09-29/30: the
+                  // second driver never knew a card was waiting).
+                  if (daA.driver_profile_id !== message.sender_profile_id) {
+                    confirmerNotices.push({
+                      proposalId: proposalA.id,
+                      summary: `Swap your drive with ${driverB?.full_name ?? "the other driver"} — ${driverA?.full_name ?? "you"} and ${driverB?.full_name ?? "they"} trade drives`,
+                      confirmerId: daA.driver_profile_id,
+                    });
+                  }
+                  if (daB.driver_profile_id !== message.sender_profile_id) {
+                    confirmerNotices.push({
+                      proposalId: proposalB.id,
+                      summary: `Swap your drive with ${driverA?.full_name ?? "the other driver"} — ${driverA?.full_name ?? "they"} and ${driverB?.full_name ?? "you"} trade drives`,
+                      confirmerId: daB.driver_profile_id,
+                    });
+                  }
                 } else {
                   await admin.from("chat_proposals").delete().eq("id", proposalB.id);
                   console.error("[chat-agent] swap proposal A failed:", errA?.message);
@@ -1310,6 +1331,16 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
               if (!proposalError && proposalRow) {
                 linkedProposalId = proposalRow.id;
                 proposalsCreated = 1;
+                // Today requiredConfirmer always resolves to the asker for
+                // single-confirmer kinds; if a future kind targets someone
+                // else, the push must fire so they aren't left in the dark.
+                if (requiredConfirmer !== message.sender_profile_id) {
+                  confirmerNotices.push({
+                    proposalId: proposalRow.id,
+                    summary: summary || "Schedule change",
+                    confirmerId: requiredConfirmer,
+                  });
+                }
               } else {
                 console.error("[chat-agent] proposal insert failed:", proposalError?.message);
                 proposalNote = " (I could not create that card.)";
@@ -1355,6 +1386,30 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       });
       if (secondCardError) {
         console.error("[chat-agent] second swap card anchor failed:", secondCardError.message);
+      }
+    }
+    // A card that needs ANOTHER parent's OK must not arrive silently —
+    // cards in shared threads are push-silent (agent messages only push in
+    // private threads), so push the required confirmer directly with a
+    // deep link to this thread.
+    for (const notice of confirmerNotices) {
+      try {
+        await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            type: "proposal_created",
+            thread_id: threadId,
+            proposal_id: notice.proposalId,
+            summary: notice.summary,
+            confirmer_id: notice.confirmerId
+          })
+        });
+      } catch (e) {
+        console.error("[chat-agent] proposal_created push failed (non-fatal):", e);
       }
     }
     // Push for private Crewmate threads (agent messages never trigger the

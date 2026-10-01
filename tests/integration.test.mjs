@@ -3261,6 +3261,16 @@ test("Crewmate 2: cancel_ride_range executes a multi-day absence through a propo
   const audit = restGet("audit_events", { entity_id: kid });
   assert.ok(audit.some((a) => a.action === "cancel_ride_range"), "range cancellation audited");
 
+  // Execution fan-out: the affected drivers are snapshotted BEFORE the
+  // cancel loop deletes the rider rows, so each still gets a
+  // rider_cancelled notification (parity with the manual cancel flow).
+  const fanout = restGet("audit_events", { action: "proposal_fanout", entity_id: proposalId });
+  assert.equal(fanout.length, 1, "range execution fans out");
+  const notes = fanout[0].details.notifications;
+  assert.equal(notes.length, 2, "both affected drivers captured");
+  assert.ok(notes.every((n) => n.type === "rider_cancelled"), "rider_cancelled per driver");
+  assert.ok(notes.every((n) => n.child_id === kid), "child captured on each notification");
+
   cleanupAllTestData();
   for (const u of [parent, driver, other]) deleteTestUser(u.userId);
 });
@@ -3318,6 +3328,17 @@ test("Crewmate 2: swap_drive needs BOTH drivers' OK (dual consent)", { skip: !SE
     "capacity follows the new vehicle after swap");
   const executedA = restGet("chat_proposals", { id: pA })[0];
   assert.equal(executedA.status, "executed", "both linked proposals are executed");
+
+  // Execution fan-out: both drivers are told about the completed swap
+  // (drive_swapped — no manual equivalent existed).
+  const swapFanout = restGet("audit_events", { action: "proposal_fanout", entity_id: pB });
+  assert.equal(swapFanout.length, 1, "swap execution fans out");
+  assert.equal(swapFanout[0].details.notifications.length, 1, "one drive_swapped notification");
+  assert.equal(swapFanout[0].details.notifications[0].type, "drive_swapped");
+  assert.equal(swapFanout[0].details.notifications[0].assignment_a, a.assignmentId);
+  assert.equal(swapFanout[0].details.notifications[0].assignment_b, b.assignmentId);
+  // The parked first confirm produced no fan-out (no premature notify).
+  assert.equal(restGet("audit_events", { action: "proposal_fanout", entity_id: pA }).length, 0, "parked swap does not notify");
 
   const smallDriver = setupHousehold(1124, "SwapSmall");
   const smallRider = setupHousehold(1125, "SwapSmallRider");
@@ -3421,8 +3442,57 @@ test("Crewmate 2: executing a swap declines duplicate live pairs for the same dr
   const stillB = restGet("driver_assignments", { id: a.assignmentId })[0];
   assert.equal(stillB.driver_profile_id, driverB.userId, "the executed swap is not undone");
 
+  // Exactly one fan-out for the executed pair — the duplicate pair's
+  // early decline produced none.
+  const dupFanout = restGet("audit_events", { action: "proposal_fanout", entity_id: pB1 });
+  assert.equal(dupFanout.length, 1, "one fan-out batch for the real execution");
+  assert.equal(dupFanout[0].details.notifications[0].type, "drive_swapped");
+
   cleanupAllTestData();
   for (const u of [driverA, driverB, riderA, riderB]) deleteTestUser(u.userId);
+});
+
+test("Crewmate 2: place_child execution notifies the driver whose car gained the child", { skip: !SERVICE_KEY }, async () => {
+  const parent = setupHousehold(1132, "PlaceParent");
+  const driver = setupHousehold(1133, "PlaceDriver");
+  const kid = UID(2455);
+  const { weekId, tripIds } = setupWeekAndTrips();
+  runSql(`INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${kid}', '${GROUP_ID}', '${parent.householdId}', 'Pia', 'Placed', '${parent.userId}') ON CONFLICT DO NOTHING;`);
+  const placeVersion = UID(2456);
+  const placeVehicle = UID(2457);
+  const placeAssignment = UID(2458);
+  runSql(`
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at) VALUES ('${placeVersion}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${placeVehicle}', '${GROUP_ID}', '${driver.householdId}', 'PlacerCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
+    INSERT INTO public.driver_assignments (id, group_id, schedule_version_id, trip_id, driver_profile_id, vehicle_id, child_passenger_capacity, status) VALUES ('${placeAssignment}', '${GROUP_ID}', '${placeVersion}', '${tripIds[0]}', '${driver.userId}', '${placeVehicle}', 4, 'confirmed') ON CONFLICT DO NOTHING;
+  `);
+
+  const parentJwt = signInUser("placeparent@test.kidpool").access_token;
+  const threadId = rpcCall(parentJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+  const proposalId = UID(2459);
+  runSql(`
+    INSERT INTO public.chat_proposals (id, group_id, thread_id, kind, params, summary, required_confirmer_profile_id, status)
+    VALUES ('${proposalId}', '${GROUP_ID}', '${threadId}', 'place_child', jsonb_build_object('child_id','${kid}','trip_id','${tripIds[0]}','driver_assignment_id','${placeAssignment}'), 'Assign Pia Placed to the Monday morning car', '${parent.userId}', 'pending');
+  `);
+
+  // Production incident 2026-09-29 shape: this card can live entirely in
+  // the parent's private Crewmate thread — the driver never sees it. The
+  // fan-out is the only thing that tells them their car gained a rider.
+  const confirmed = rpcCall(parentJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.equal(confirmed.status, "executed", `place_child executes: ${JSON.stringify(confirmed).slice(0, 160)}`);
+  const seated = restGet("rider_assignments", { child_id: kid });
+  assert.equal(seated.length, 1, "child seated");
+  assert.equal(seated[0].driver_assignment_id, placeAssignment);
+
+  const fanout = restGet("audit_events", { action: "proposal_fanout", entity_id: proposalId });
+  assert.equal(fanout.length, 1, "place_child execution fans out");
+  const note = fanout[0].details.notifications[0];
+  assert.equal(note.type, "rider_added");
+  assert.equal(note.assignment_id, placeAssignment);
+  assert.equal(note.child_id, kid);
+
+  cleanupAllTestData();
+  for (const u of [parent, driver]) deleteTestUser(u.userId);
 });
 
 test("Crewmate 2: admin_sql is coordinator-only, group-scoped, single-DML, and audited", { skip: !SERVICE_KEY }, async () => {
