@@ -2520,6 +2520,75 @@ ${cta}
       return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
     }
 
+    // ── rider_added: a Crewmate proposal seated a child in a car ──
+    // (place_child / add_ride executions — the driver whose car gained the
+    // child was previously told nothing, because manual-flow pushes are
+    // client-fired and the confirm path never runs them.)
+    if (type === "rider_added" && assignment_id) {
+      const childId: string | undefined = body.child_id;
+      if (!childId) return jsonError("Missing child_id for rider_added", 400);
+
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,trip_id,group_id", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,slot,meeting_time", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const childData = await supaFetch("children", "first_name,last_name", { id: `eq.${childId}` });
+      if (childData.length === 0) return jsonError("Child not found", 404);
+      const child = childData[0];
+      const childName = `${child.first_name} ${child.last_name}`.trim();
+
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      const dateLabel = new Date(trip.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+      const timeLabel = formatTime(trip.meeting_time);
+      const notifTitle = `${childName} was added to your drive`;
+      const notifBody = `${childName} was added to your ${period} drive on ${dateLabel} (${timeLabel}) via a Crewmate proposal. Open the app for details.`;
+      const idempotencyKey = `carpool-rider-added-${assignment_id}-${childId}`;
+      const pushTag = `rider-added-${assignment_id}-${childId}`;
+
+      await sendEmailAndPush(da.driver_profile_id, notifTitle, notifBody, idempotencyKey, pushTag);
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    }
+
+    // ── drive_swapped: a Crewmate swap executed — both drivers ──
+    if (type === "drive_swapped" && body.assignment_a && body.assignment_b) {
+      const daRows = await supaFetch("driver_assignments", "id,driver_profile_id,trip_id", { id: `in.(${body.assignment_a},${body.assignment_b})` });
+      const daA = daRows.find((d: any) => d.id === body.assignment_a);
+      const daB = daRows.find((d: any) => d.id === body.assignment_b);
+      if (!daA || !daB) return jsonError("Assignment not found", 404);
+
+      const tripRows = await supaFetch("trips", "id,service_date,direction,meeting_time", { id: `in.(${daA.trip_id},${daB.trip_id})` });
+      const tripA = tripRows.find((t: any) => t.id === daA.trip_id);
+      const tripB = tripRows.find((t: any) => t.id === daB.trip_id);
+      if (!tripA || !tripB) return jsonError("Trip not found", 404);
+
+      const profileRows = await supaFetch("profiles", "id,full_name", { id: `in.(${daA.driver_profile_id},${daB.driver_profile_id})` });
+      const nameOf = (id: string) => profileRows.find((p: any) => p.id === id)?.full_name ?? "the other driver";
+
+      // After swap_driver_assignments, driver A owns assignment B's trip
+      // and vice versa.
+      const legLabel = (t: any) => `${t.direction === "morning" ? "morning" : "afternoon"} drive on ${new Date(t.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}${t.direction === "morning" ? "" : ` (${formatTime(t.meeting_time)})`}`;
+
+      await sendEmailAndPush(
+        daA.driver_profile_id,
+        "Drive swapped",
+        `You now have the ${legLabel(tripB)} — ${nameOf(daB.driver_profile_id)} takes your ${legLabel(tripA)}. Confirmed via Crewmate.`,
+        `carpool-drive-swapped-${body.assignment_a}-${body.assignment_b}-${daA.driver_profile_id}`,
+        `drive-swapped-${body.assignment_a}-${daA.driver_profile_id}`,
+      );
+      await sendEmailAndPush(
+        daB.driver_profile_id,
+        "Drive swapped",
+        `You now have the ${legLabel(tripA)} — ${nameOf(daA.driver_profile_id)} takes your ${legLabel(tripB)}. Confirmed via Crewmate.`,
+        `carpool-drive-swapped-${body.assignment_a}-${body.assignment_b}-${daB.driver_profile_id}`,
+        `drive-swapped-${body.assignment_b}-${daB.driver_profile_id}`,
+      );
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    }
+
     // ── custom_drive_offered: notify all group members about an ad hoc drive ──
     if (type === "custom_drive_offered" && trip_id) {
       const tripData = await supaFetch("trips", "id,service_date,direction,slot,meeting_time,origin,destination,week_id,group_id", { id: `eq.${trip_id}` });
@@ -3611,6 +3680,44 @@ ${cta}
       }
 
       return jsonResponse({ sent, failed, removed, skipped: recipientIds.length - sent, message_id: message_id ?? null, push_only: true });
+    } else if (type === "proposal_created" && thread_id && body.confirmer_id) {
+      // ── proposal_created: a Crewmate card needs this parent's OK ──
+      // Fired by chat-agent (service key) when a card is created and the
+      // required confirmer isn't the asker — e.g. the other driver on a
+      // swap. Push-only with a deep link to the thread (chat stays push +
+      // in-app); trigger-only like chat_message.
+      const triggerToken = authHeader.slice("Bearer ".length);
+      if (triggerToken !== SERVICE_ROLE_KEY && (!CRON_SECRET || triggerToken !== CRON_SECRET)) return jsonError("Proposal notifications are trigger-only", 403);
+      if (!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY)) {
+        return jsonResponse({ sent: 0, failed: 0, skipped: 1, reason: "no_vapid_keys" });
+      }
+      ensureVapid();
+      const summary: string = (body.summary ?? "Open the app to review the proposal.").slice(0, 300);
+      const deepLink = `${APP_URL ?? ""}/#thread=${thread_id}`;
+      let proposalSent = 0;
+      let proposalFailed = 0;
+      let proposalRemoved = 0;
+      const proposalSubs = await supaFetch("push_subscriptions", "*", { profile_id: `eq.${body.confirmer_id}` });
+      for (const sub of proposalSubs) {
+        try {
+          await webpush.sendNotification(
+            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh_key, auth: sub.auth_key } },
+            JSON.stringify({ title: "Crewmate needs your OK", body: summary, tag: `proposal-${body.proposal_id ?? thread_id}`, url: deepLink }),
+            { TTL: 86400 },
+          );
+          proposalSent++;
+        } catch (error: any) {
+          proposalFailed++;
+          const statusCode = error?.statusCode ?? 0;
+          if (statusCode === 410 || statusCode === 404) {
+            await supaDelete("push_subscriptions", { endpoint: `eq.${encodeURIComponent(sub.endpoint)}` });
+            proposalRemoved++;
+          } else {
+            console.error("[send-push] proposal_created push failed:", error?.message ?? error);
+          }
+        }
+      }
+      return jsonResponse({ sent: proposalSent, failed: proposalFailed, removed: proposalRemoved, push_only: true });
     } else {
       return jsonError(`Invalid type or missing parameters: ${type}`, 400);
     }

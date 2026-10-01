@@ -454,6 +454,19 @@ test("Multi-User Chat: proposal Confirm executes the schedule change via the UI"
     assert.equal(after.rider_rows, 0, "Confirm must delete the rider assignment");
     assert.equal(after.still_needs, 0, "Confirm must clear needs_ride");
     assert.equal(after.status, "executed");
+
+    // Execution fan-out parity: the driver is captured for a
+    // rider_cancelled notification (audited as proposal_fanout — the
+    // pg_net POST itself is fail-soft in local dev without vault secrets).
+    const fanout = (runSql(`
+      SELECT details->'notifications' AS notes FROM public.audit_events
+      WHERE action = 'proposal_fanout' AND entity_id = '${PROPOSAL_ID}' LIMIT 1;
+    `).rows ?? [])[0] as { notes: Array<{ type: string; assignment_id: string; child_id: string }> } | undefined;
+    assert.ok(fanout, "proposal execution must fan out");
+    assert.equal(fanout!.notes.length, 1);
+    assert.equal(fanout!.notes[0].type, "rider_cancelled");
+    assert.equal(fanout!.notes[0].assignment_id, assignment!.id);
+    assert.equal(fanout!.notes[0].child_id, CHILD_R);
     await contextRider.close();
 
     // A non-confirmer sees the executed card with NO action buttons
