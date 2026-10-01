@@ -453,6 +453,72 @@ test("Phase 2: the second driver's swap card is visible and swaps dedupe (incide
   assert.match(agent, /superseded by a newer swap request for the same two drives/);
 });
 
+test("Phase 2: executing a proposal notifies affected parties (fan-out parity, 2026-09-30)", async () => {
+  const fanoutMigrationUrl = new URL(
+    "../supabase/migrations/202609300002_proposal_execution_fanout.sql",
+    import.meta.url,
+  );
+  const sql = await readFile(fanoutMigrationUrl, "utf8");
+  const fn = await readFile(agentFnUrl, "utf8");
+  const sendPush = await readFile(sendPushUrl, "utf8");
+
+  // Per-kind notification matrix (manual-flow parity — the app's rider_
+  // cancelled/declined/rider_switched_*/volunteered/custom_drive_* pushes
+  // are client-fired and never ran on the Crewmate confirm path before).
+  for (const [kind, type] of [
+    ["cancel_ride", "rider_cancelled"],
+    ["cancel_ride_range", "rider_cancelled"],
+    ["place_child", "rider_added"],
+    ["add_ride", "rider_added"],
+    ["switch_slot", "rider_switched_old"],
+    ["switch_slot", "rider_switched_new"],
+    ["decline_drive", "declined"],
+    ["volunteer_drive", "volunteered"],
+    ["offer_custom_drive", "custom_drive_offered"],
+    ["join_custom_drive", "custom_drive_joined"],
+    ["leave_custom_drive", "custom_drive_left"],
+    ["cancel_custom_drive", "custom_drive_cancelled"],
+    ["swap_drive", "drive_swapped"],
+  ]) {
+    assert.ok(
+      sql.includes(`'${type}'`),
+      `kind ${kind} must collect a ${type} notification`,
+    );
+  }
+  // The range cancel snapshots affected assignments BEFORE the cancel loop
+  // deletes the rider rows (mirrors cancel_ride_range_for_child's scoping).
+  assert.match(sql, /t\.status <> 'canceled'\s*\n\s*and da\.status in \('tentative', 'confirmed'\)/);
+  // Deferred by design + never.
+  assert.doesNotMatch(sql, /'admin_sql',\s*\n\s*'/);
+  // Only a first real execution notifies (parked swaps return before the
+  // fan-out; executed_at belt blocks re-runs).
+  assert.match(sql, /if v_proposal\.executed_at is null/);
+  // Audit trail for support/QA: exactly what was sent, per proposal.
+  assert.match(sql, /'proposal_fanout'/);
+  // The established fail-soft vault pg_net pattern with the 120000 timeout.
+  assert.match(sql, /where name = 'cron_secret'/);
+  assert.match(sql, /where name = 'cron_edge_base_url'/);
+  assert.match(sql, /timeout_milliseconds := 120000/);
+
+  // send-push: the two new types notify the right people with push + email
+  // (rider_added/drive_swapped via sendEmailAndPush) and the confirmer
+  // push is trigger-only, push-only, and deep-links to the thread.
+  assert.match(sendPush, /type === "rider_added" && assignment_id/);
+  assert.match(sendPush, /carpool-rider-added-\$\{assignment_id\}-\$\{childId\}/);
+  assert.match(sendPush, /type === "drive_swapped" && body\.assignment_a && body\.assignment_b/);
+  assert.match(sendPush, /You now have the \$\{legLabel\(tripB\)\}/);
+  assert.match(sendPush, /type === "proposal_created" && thread_id && body\.confirmer_id/);
+  assert.match(sendPush, /Proposal notifications are trigger-only/);
+  assert.match(sendPush, /title: "Crewmate needs your OK"/);
+  assert.match(sendPush, /#thread=\$\{thread_id\}/);
+
+  // chat-agent: cards whose confirmer isn't the asker push that parent
+  // (the swap second driver, and any future cross-parent kind).
+  assert.match(fn, /const confirmerNotices: Array<\{ proposalId: string; summary: string; confirmerId: string \}> = \[\];/);
+  assert.match(fn, /daB\.driver_profile_id !== message\.sender_profile_id/);
+  assert.match(fn, /type: "proposal_created",\s*\n\s*thread_id: threadId,\s*\n\s*proposal_id: notice\.proposalId,\s*\n\s*summary: notice\.summary,\s*\n\s*confirmer_id: notice\.confirmerId/);
+});
+
 test("Phase 2: in-thread consent is service-gated, evidence-checked, and runs as the confirmer", async () => {
   const prop = await readFile(phase2ProposalsUrl, "utf8");
 
