@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Carpool Copilot — Investor One-Pager</title>
+<style>
+  @page { size: 1280px 720px; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 720px; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    background: #fbfaf6;
+    color: #16323a;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .slide { width: 1280px; height: 720px; padding: 34px 40px 20px; display: flex; flex-direction: column; }
+
+  /* ── Header ── */
+  .header { display: flex; align-items: baseline; justify-content: space-between; }
+  .wordmark { font-size: 34px; font-weight: 800; letter-spacing: -0.5px; }
+  .wordmark .accent { color: #0e7d74; }
+  .locale { font-size: 12px; font-weight: 600; letter-spacing: 1.5px; color: #5c6f74; text-transform: uppercase; }
+  .thesis { font-size: 15.5px; line-height: 1.4; color: #2c4750; margin-top: 7px; max-width: 1100px; }
+  .thesis strong { color: #0e7d74; }
+  .rule { height: 3px; margin: 14px 0 16px; border-radius: 2px;
+          background: linear-gradient(90deg, #0e7d74 0%, #0e7d74 30%, #e4c98a 30%, #e4c98a 100%); }
+
+  /* ── Main columns ── */
+  .main { display: flex; gap: 22px; flex: 1; min-height: 0; }
+  .col-left { width: 660px; display: flex; flex-direction: column; gap: 12px; }
+  .col-right { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+
+  .card { background: #fff; border: 1px solid #dce3e5; border-radius: 12px; padding: 14px 16px; }
+  .card h2 { font-size: 12px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; color: #0e7d74; margin-bottom: 9px; }
+
+  /* Loop pills */
+  .loop { display: flex; align-items: center; gap: 6px; }
+  .pill { background: #eef5f4; border: 1px solid #c9dbd9; border-radius: 9px; padding: 7px 9px; text-align: center; flex: 1; }
+  .pill .day { font-size: 12px; font-weight: 800; color: #0e7d74; letter-spacing: 0.6px; }
+  .pill .what { font-size: 12px; color: #2c4750; line-height: 1.25; margin-top: 2px; }
+  .loop .arrow { color: #0e7d74; font-weight: 800; font-size: 14px; }
+  .loop-note { font-size: 12px; color: #5c6f74; margin-top: 8px; line-height: 1.35; }
+
+  /* Stats */
+  .stats { display: flex; gap: 10px; }
+  .stat { flex: 1; background: #fff; border: 1px solid #dce3e5; border-radius: 12px; padding: 10px 12px; }
+  .stat .n { font-size: 24px; font-weight: 800; color: #0e7d74; letter-spacing: -0.5px; }
+  .stat .l { font-size: 12px; color: #5c6f74; margin-top: 2px; line-height: 1.25; }
+
+  /* Agent block */
+  .agent p { font-size: 12.5px; line-height: 1.45; color: #2c4750; }
+  .agent p + p { margin-top: 6px; }
+  .agent .name { font-weight: 800; color: #16323a; }
+  .agent .cards { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+  .agent .chip { font-size: 12px; font-weight: 600; color: #0e635c; background: #eef5f4; border: 1px solid #c9dbd9; border-radius: 999px; padding: 3px 9px; }
+  .agent .guard { font-size: 12px; font-weight: 700; color: #8a5f12; background: #f7ecd8; border-radius: 8px; padding: 7px 10px; margin-top: 8px; line-height: 1.35; }
+
+  /* Ladder */
+  .ladder { display: flex; flex-direction: column; gap: 7px; flex: 1; }
+  .step { display: flex; gap: 11px; align-items: flex-start; background: #fff; border: 1px solid #dce3e5; border-left-width: 4px; border-radius: 10px; padding: 9px 12px; }
+  .step .num { font-size: 15px; font-weight: 800; color: #fff; background: #0e7d74; border-radius: 999px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+  .step .t { font-size: 12.5px; font-weight: 800; letter-spacing: 0.8px; text-transform: uppercase; color: #16323a; }
+  .step .d { font-size: 12px; line-height: 1.35; color: #2c4750; margin-top: 2px; }
+  .step.now { border-left-color: #e4c98a; }
+  .step.now .t::after { content: " · LIVE"; color: #8a5f12; font-size: 12px; letter-spacing: 1px; }
+  .market { background: #16323a; color: #fff; border-radius: 10px; padding: 9px 12px; }
+  .market .cat { font-size: 12.5px; font-weight: 700; line-height: 1.35; }
+  .market .cat .accent { color: #7fd0c7; }
+  .market .biz { font-size: 12px; color: #b9cdd2; margin-top: 4px; line-height: 1.35; }
+
+  /* Moat strip */
+  .moat { margin-top: 14px; background: #16323a; border-radius: 12px; padding: 13px 16px; display: flex; gap: 16px; align-items: center; color: #fff; }
+  .moat .label { font-size: 12px; font-weight: 800; letter-spacing: 1.4px; color: #7fd0c7; text-transform: uppercase; width: 118px; flex-shrink: 0; line-height: 1.4; }
+  .moat .items { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 5px 14px; }
+  .moat .item { font-size: 12px; line-height: 1.3; color: #e8f1f0; }
+  .moat .item::before { content: "— "; color: #e4c98a; font-weight: 700; }
+  .whynow { width: 300px; flex-shrink: 0; border-left: 1px solid #33555e; padding-left: 14px; }
+  .whynow .w { font-size: 12px; font-weight: 800; letter-spacing: 1.4px; color: #e4c98a; text-transform: uppercase; margin-bottom: 3px; }
+  .whynow .t { font-size: 12px; line-height: 1.35; color: #e8f1f0; }
+
+  .footer { margin-top: 10px; display: flex; justify-content: space-between; font-size: 12px; color: #5c6f74; }
+</style>
+</head>
+<body>
+<div class="slide">
+
+  <div class="header">
+    <div class="wordmark">CARPOOL <span class="accent">COPILOT</span></div>
+    <div class="locale">San Francisco · 2026</div>
+  </div>
+  <div class="thesis">The school carpool is <strong>30+ moving parts every week</strong> — coordinated today in WhatsApp chaos. Carpool Copilot runs the whole cycle end-to-end, and puts an agent parents actually trust in the loop.</div>
+  <div class="rule"></div>
+
+  <div class="main">
+
+    <div class="col-left">
+      <div class="card">
+        <h2>Live today — the full weekly cycle, automated</h2>
+        <div class="loop">
+          <div class="pill"><div class="day">SAT</div><div class="what">Parent check-ins: rides + drive preferences</div></div>
+          <div class="arrow">→</div>
+          <div class="pill"><div class="day">SUN 7 AM</div><div class="what">Auto-generated, load-balanced schedule</div></div>
+          <div class="arrow">→</div>
+          <div class="pill"><div class="day">SUN 7 PM</div><div class="what">Auto-published roster + confirmations</div></div>
+          <div class="arrow">→</div>
+          <div class="pill"><div class="day">M–F</div><div class="what">Reminders · live status · coverage recovery</div></div>
+        </div>
+        <div class="loop-note">No coordinator bottleneck — the weekly pipeline is fully cron-automated, and self-heals when life happens: volunteers, reassignments, and parents' own ad-hoc drives fill every gap.</div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="n">8</div><div class="l">straight weeks in live operation</div></div>
+        <div class="stat"><div class="n">321</div><div class="l">drives generated &amp; rostered</div></div>
+        <div class="stat"><div class="n">12 · 11</div><div class="l">kids · households in the pilot crew</div></div>
+        <div class="stat"><div class="n">0</div><div class="l">unaccounted seats — coverage is the product</div></div>
+      </div>
+
+      <div class="card agent">
+        <h2>The agent is used, not demoed</h2>
+        <p><span class="name">Crewmate AI (the in-chat copilot)</span> lives in the parents' own group chat. It answers schedule questions and proposes changes as consent cards:</p>
+        <div class="cards">
+          <span class="chip">cancel a ride</span><span class="chip">swap drives</span><span class="chip">place a kid</span><span class="chip">cover a gap</span><span class="chip">add an extra drive</span>
+        </div>
+        <p><strong>20 cards proposed → 11 executed by parents</strong> in 8 weeks. Every execution runs through the same invariant-enforcing path as the app, notifies every affected family, and is audited.</p>
+        <div class="guard">Nothing changes without a parent's OK — the trust boundary is enforced in the executor, not the prompt.</div>
+      </div>
+    </div>
+
+    <div class="col-right">
+      <div class="card" style="display:flex; flex-direction:column; gap:8px; flex:1;">
+        <h2>The wedge generalizes</h2>
+        <div class="ladder">
+          <div class="step now">
+            <div class="num">1</div>
+            <div><div class="t">One crew</div>
+            <div class="d">The hard part isn't chat — it's seat-count invariants, shared-car rules, coverage accounting, and a trust boundary. Shipped, self-healing, proven on real school runs.</div></div>
+          </div>
+          <div class="step">
+            <div class="num">2</div>
+            <div><div class="t">Every crew</div>
+            <div class="d">Self-serve group setup — the unit of value is a crew, not a school. Replicate across SF's ~50k schoolkids, one pickup spot at a time.</div></div>
+          </div>
+          <div class="step">
+            <div class="num">3</div>
+            <div><div class="t">City layer</div>
+            <div class="d">The copilot turns proactive: predicts Sunday coverage gaps and proposes fixes before the week starts; cross-crew route intelligence ("3 families near you also drive Wednesdays").</div></div>
+          </div>
+          <div class="step">
+            <div class="num">4</div>
+            <div><div class="t">Every kid-transport network</div>
+            <div class="d">Camps, leagues, aftercare, daycares — same weekly-cycle engine, same consent cards. ~50M US schoolkids and their logistics.</div></div>
+          </div>
+        </div>
+        <div class="market">
+          <div class="cat">Category: <span class="accent">family-transport coordination, run by an agent.</span></div>
+          <div class="biz">Model: free consumer wedge → school / PTA + enrichment-program licensing at scale.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="moat">
+    <div class="label">Why this is hard to copy</div>
+    <div class="items">
+      <div class="item">Coverage invariants live in the executor, not the prompt</div>
+      <div class="item">Consent cards — nothing changes without a parent's OK</div>
+      <div class="item">Every action audited + fan-out notified to affected families</div>
+      <div class="item">The boring half — cron pipeline, roster truth, reminder mesh — is the moat</div>
+    </div>
+    <div class="whynow">
+      <div class="w">Why now</div>
+      <div class="t">Agents crossed the trust line in 2026: they negotiate in chat and execute inside invariant-enforcing transactions.</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div>Live pilot: Clarendon–Presidio Middle School carpool, San Francisco · Aug–Oct 2026 · carpoolcrew.co</div>
+    <div>Carpool Copilot · investor one-pager</div>
+  </div>
+
+</div>
+</body>
+</html>
