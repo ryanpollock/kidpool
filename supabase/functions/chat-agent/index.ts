@@ -1008,6 +1008,7 @@ Deno.serve(async (req)=>{
 {"kind": "cancel_ride", "summary": "Cancel Max Chen's Tuesday morning ride", "params": {"child_id": "<id from tool results>", "driver_assignment_id": "<id from tool results>"}}
 \u0060\u0060\u0060
 Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b} (trading two drivers' drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. Use ONLY ids that appeared in tool results. If the parent asks for something the catalog can't do, or you don't have the ids, say what you'd need. A card appears in chat — the right parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
+      `- NEVER mention or reference a card/proposal in your text without also including the matching crewmate block in the SAME reply. If you say "the card below" there MUST be a crewmate block after it. If you cannot create the card (missing IDs, unsupported kind, validation failure), do NOT say "the card below" — instead say what you'd need to create it. A reply that references a nonexistent card is worse than no reply at all.`,
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
       `- Do not share phone numbers, emails, or addresses — you don't have them, and they stay private.`,
       `- Silence is a real option: if the parent's message needs no schedule change, proposes nothing you can turn into a card, and asks nothing you can genuinely answer, reply with exactly [SILENT] and nothing else — no message is posted. Prefer [SILENT] over filler. This is NOT available when you were explicitly tagged or in a private Crewmate thread — there you must always reply, even just a friendly one-liner.`,
@@ -1352,6 +1353,22 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
     } else if (block) {
       proposalNote = " (That request is outside what I can propose right now.)";
     }
+
+    // P1 post-generation guard: if the planner's text references a card
+    // but no card was actually created (linkedProposalId is null), the
+    // message is lying to the parent. Replace the false reference with
+    // an honest retry note instead of posting "the card below" with no
+    // card below. This catches the intermittent LLM failure mode where
+    // the model describes the action in prose but never emits the
+    // ```crewmate block.
+    if (!linkedProposalId && proposalsCreated === 0 && !block && answer) {
+      const cardRefPattern = /\b(card|proposal|confirm button)\b.*\b(below|above)\b/i;
+      if (cardRefPattern.test(answer)) {
+        answer = answer.replace(cardRefPattern, "a change I can help with");
+        proposalNote = " (I wasn't able to create the card just now — ask me again and I'll retry.)";
+      }
+    }
+
     const body = (answer + proposalNote).slice(0, MAX_AGENT_BODY) || "Done — see the card below.";
     // Langfuse: set the trace output to the agent's reply.
     if (lfTrace) lfTrace.setOutput(body);
