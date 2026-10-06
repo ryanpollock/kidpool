@@ -1009,6 +1009,7 @@ Deno.serve(async (req)=>{
 \u0060\u0060\u0060
 Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b} (trading two drivers' drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. Use ONLY ids that appeared in tool results. If the parent asks for something the catalog can't do, or you don't have the ids, say what you'd need. A card appears in chat — the right parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
       `- NEVER mention or reference a card/proposal in your text without also including the matching crewmate block in the SAME reply. If you say "the card below" there MUST be a crewmate block after it. If you cannot create the card (missing IDs, unsupported kind, validation failure), do NOT say "the card below" — instead say what you'd need to create it. A reply that references a nonexistent card is worse than no reply at all.`,
+      `- Emit AT MOST ONE crewmate block per reply. If the parent asks for multiple changes, handle the FIRST change with a card, then say you'll help with the next one after they confirm. Multi-block replies risk truncation and post raw JSON parents can't act on.`,,
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
       `- Do not share phone numbers, emails, or addresses — you don't have them, and they stay private.`,
       `- Silence is a real option: if the parent's message needs no schedule change, proposes nothing you can turn into a card, and asks nothing you can genuinely answer, reply with exactly [SILENT] and nothing else — no message is posted. Prefer [SILENT] over filler. This is NOT available when you were explicitly tagged or in a private Crewmate thread — there you must always reply, even just a friendly one-liner.`,
@@ -1037,7 +1038,7 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
         ].join("\n"),
         tools,
         stopWhen: isStepCount(6),
-        maxOutputTokens: 4000,
+maxOutputTokens: 6000,
         timeout: {
           stepMs: 45_000
         }
@@ -1055,7 +1056,7 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
             completionTokens: planUsage?.completionTokens ?? planUsage?.outputTokens,
             totalTokens: planUsage?.totalTokens,
           },
-          modelParameters: { maxOutputTokens: 4000, toolLoopMaxSteps: 6 },
+          modelParameters: { maxOutputTokens: 6000, toolLoopMaxSteps: 6 },
           startTime: planStart,
           metadata: {
             toolCalls: ctx?.calls?.map((c: any) => c.name) ?? [],
@@ -1082,7 +1083,13 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       planned = await planOnce();
     }
     const { block, visible } = splitProposalBlock(planned.answer ?? "");
-    const answer = visible.trim();
+    // Safety net: if the LLM ran out of output tokens mid-JSON, the
+    // crewmate block has no closing fence, splitProposalBlock returns
+    // block=null, and the raw JSON would appear in the message body.
+    // Strip any incomplete block (opening fence but no close) from
+    // the visible text — parents should never see raw JSON in the chat.
+    const visibleClean = visible.replace(/```[ \t]*crewmate[ \t]*\r?\n[\s\S]*$/i, "").trim();
+    const answer = visibleClean;
 
     // The planner's sanctioned silence (safety net for gate leaks): post
     // nothing rather than filler. The prompt reserves [SILENT] for
