@@ -158,10 +158,16 @@ async function buildRosters(admin, groupIds) {
     ];
     let vehiclesById = new Map();
     if (vehicleIds.length > 0) {
-      const { data: vehicles } = await admin.from("vehicles").select("id,label").eq("group_id", groupIds.groupId).in("id", vehicleIds);
+      // Read the vehicle's CURRENT capacity — not the denormalized
+      // driver_assignments.child_passenger_capacity which goes stale when
+      // a parent updates their car mid-week (e.g., Yana's Sienna 5→6).
+      const { data: vehicles } = await admin.from("vehicles").select("id,label,child_passenger_capacity").eq("group_id", groupIds.groupId).in("id", vehicleIds);
       vehiclesById = new Map((vehicles ?? []).map((v)=>[
           v.id,
-          v.label
+          {
+            label: v.label,
+            capacity: v.child_passenger_capacity
+          }
         ]));
     }
     const ridersByDa = new Map();
@@ -182,20 +188,26 @@ async function buildRosters(admin, groupIds) {
       demandByTrip.set(rr.trip_id, arr);
     }
     for (const t of trips){
-      const cars = driverAssignments.filter((da)=>da.trip_id === t.id).map((da)=>({
-          driver: driversById.get(da.driver_profile_id) ?? "a driver",
-          driver_profile_id: da.driver_profile_id,
-          vehicle: vehiclesById.get(da.vehicle_id) ?? "",
-          vehicle_id: da.vehicle_id,
-          driver_assignment_id: da.id,
-          capacity: da.child_passenger_capacity,
-          status: da.status,
-          children: ridersByDa.get(da.id) ?? [],
-          riders: riderAssignments.filter((ra)=>ra.driver_assignment_id === da.id).map((ra)=>({
+const cars = driverAssignments.filter((da)=>da.trip_id === t.id).map((da)=>{
+          const vehicleInfo = vehiclesById.get(da.vehicle_id);
+          return {
+            driver: driversById.get(da.driver_profile_id) ?? "a driver",
+            driver_profile_id: da.driver_profile_id,
+            vehicle: vehicleInfo?.label ?? "",
+            vehicle_id: da.vehicle_id,
+            driver_assignment_id: da.id,
+            // Use the vehicle's CURRENT capacity, not the stale denormalized
+            // assignment value. The executor reads from the vehicles table
+            // (202610060001), so the tools must match what the executor sees.
+            capacity: vehicleInfo?.capacity ?? da.child_passenger_capacity,
+            status: da.status,
+            children: ridersByDa.get(da.id) ?? [],
+            riders: riderAssignments.filter((ra)=>ra.driver_assignment_id === da.id).map((ra)=>({
               id: ra.child_id,
               name: childrenById.get(ra.child_id) ? childName(childrenById.get(ra.child_id)) : ""
             })).filter((r)=>r.name)
-        }));
+          };
+        });
       const demand = demandByTrip.get(t.id) ?? [];
       const demandChildIds = (rideRequests ?? []).filter((r)=>r.trip_id === t.id).map((r)=>r.child_id);
       const unassigned = demandChildIds.filter((cid)=>!seatedChildIds.has(cid)).map((cid)=>childName(childrenById.get(cid))).filter(Boolean);
