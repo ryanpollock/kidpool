@@ -1373,13 +1373,104 @@ maxOutputTokens: 6000,
       proposalNote = " (That request is outside what I can propose right now.)";
     }
 
-    // P1 post-generation guard: if the planner's text references a card
-    // but no card was actually created (linkedProposalId is null), the
-    // message is lying to the parent. Replace the false reference with
-    // an honest retry note instead of posting "the card below" with no
-    // card below. This catches the intermittent LLM failure mode where
-    // the model describes the action in prose but never emits the
-    // ```crewmate block.
+    // ── Post-planner proposal fallback ──
+    // The LLM sometimes writes "The card below proposes..." in prose but
+    // never emits the actual ```crewmate block (it describes the action
+    // instead of performing it). When that happens, make ONE focused
+    // second call with the same tools — a single-purpose prompt that
+    // asks for ONLY the JSON block. This is the "second chance" before
+    // the guard replaces the false card reference.
+    if (!linkedProposalId && proposalsCreated === 0 && !block && answer && TOGETHER_API_KEY) {
+      const cardRefCheck = /\b(card|proposal)\b/i.test(answer);
+      if (cardRefCheck) {
+        try {
+          console.log("[chat-agent] planner didn't emit a block — running fallback");
+          const fallbackCtx = {
+            groupId: thread.group_id,
+            senderProfileId: message.sender_profile_id,
+            calls: []
+          };
+          const fallbackResult = await generateText({
+            model: together(PLANNER_MODEL),
+            system: "You are a JSON generator. Call the tools you need to get the correct IDs, then output ONLY a single fenced crewmate block. No prose, no explanation, no greeting. Just the block: opening fence (three backticks), the word crewmate, the JSON, closing fence (three backticks). Nothing else.",
+            prompt: "The parent asked: \"" + message.body + "\"\n\nThe planned change is described as: \"" + answer.slice(0, 500) + "\"\n\nThe Crewmate system prompt catalog describes these kinds: cancel_ride {child_id, driver_assignment_id}; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; decline_drive {assignment_id}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b}; offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}; change_vehicle {driver_assignment_id, vehicle_id}.\n\nUse the tools to get the correct IDs, then output the crewmate block.",
+            tools,
+            stopWhen: isStepCount(4),
+            maxOutputTokens: 3000,
+          });
+
+          const fallbackBlock = splitProposalBlock(fallbackResult.text);
+          if (fallbackBlock.block && typeof fallbackBlock.block.kind === "string" && PROPOSAL_CATALOG[fallbackBlock.block.kind]) {
+            const entry = PROPOSAL_CATALOG[fallbackBlock.block.kind];
+            const parsed = entry.schema.safeParse(fallbackBlock.block.params ?? {});
+            if (parsed.success) {
+              const params = parsed.data;
+              const summary = String(fallbackBlock.block.summary ?? answer.slice(0, 300)).slice(0, 500);
+
+              // Coordinator-gated kinds still need the check
+              let coordinatorCheck = true;
+              if (entry.confirmer === "coordinator_asker") {
+                const { data: askerMembership } = await admin.from("memberships")
+                  .select("role").eq("group_id", thread.group_id)
+                  .eq("profile_id", message.sender_profile_id).eq("status", "active").maybeSingle();
+                coordinatorCheck = askerMembership?.role === "coordinator";
+              }
+
+              if (coordinatorCheck && entry.confirmer !== "swap_drive") {
+                let requiredConfirmer = null;
+                if (entry.confirmer === "asker") {
+                  requiredConfirmer = message.sender_profile_id;
+                } else if (entry.confirmer === "child_parent") {
+                  const childId = params.child_id;
+                  if (childId) {
+                    const { data: childRow } = await admin.from("children")
+                      .select("household_id").eq("id", childId).eq("group_id", thread.group_id).maybeSingle();
+                    if (childRow) {
+                      const { data: membershipRow } = await admin.from("memberships")
+                        .select("profile_id").eq("household_id", childRow.household_id)
+                        .eq("profile_id", message.sender_profile_id).eq("status", "active").maybeSingle();
+                      requiredConfirmer = membershipRow?.profile_id ?? null;
+                    }
+                  }
+                }
+                if (requiredConfirmer) {
+                  const { data: proposalRow, error: proposalError } = await admin.from("chat_proposals")
+                    .insert({
+                      group_id: thread.group_id,
+                      thread_id: threadId,
+                      kind: fallbackBlock.block.kind,
+                      params,
+                      summary: summary || "Schedule change",
+                      required_confirmer_profile_id: requiredConfirmer,
+                      triggered_by_message_id: messageId,
+                      status: "pending",
+                    }).select("id").single();
+                  if (!proposalError && proposalRow) {
+                    linkedProposalId = proposalRow.id;
+                    proposalsCreated = 1;
+                    console.log("[chat-agent] fallback created proposal: " + fallbackBlock.block.kind);
+                  }
+                }
+              }
+            }
+          }
+          if (lfTrace) {
+            lfTrace.addSpan({
+              name: "proposal-fallback",
+              input: answer.slice(0, 200),
+              output: fallbackResult.text.slice(0, 200),
+              metadata: { created: proposalsCreated > 0 },
+            });
+          }
+        } catch (fallbackErr) {
+          console.error("[chat-agent] proposal fallback error (non-fatal):", fallbackErr);
+        }
+      }
+    }
+
+    // P1 post-generation guard: if BOTH the planner and the fallback failed
+    // to create a card, but the text references one — the message is lying
+    // to the parent. Replace the false reference with an honest retry note.
     if (!linkedProposalId && proposalsCreated === 0 && !block && answer) {
       const cardRefPattern = /\b(card|proposal|confirm button)\b.*\b(below|above)\b/i;
       if (cardRefPattern.test(answer)) {
