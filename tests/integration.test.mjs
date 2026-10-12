@@ -3275,6 +3275,80 @@ test("Crewmate 2: cancel_ride_range executes a multi-day absence through a propo
   for (const u of [parent, driver, other]) deleteTestUser(u.userId);
 });
 
+test("Crewmate 2: an active parent can confirm one atomic card moving several existing riders", { skip: !SERVICE_KEY }, async () => {
+  const requester = setupHousehold(1170, "DelegatedRequester");
+  const familyA = setupHousehold(1171, "DelegatedFamilyA");
+  const familyB = setupHousehold(1172, "DelegatedFamilyB");
+  const sourceA = setupHousehold(1173, "DelegatedSourceA");
+  const sourceB = setupHousehold(1174, "DelegatedSourceB");
+  const target = setupHousehold(1175, "DelegatedTarget");
+  const kidA = UID(2470), kidB = UID(2471), targetKid = UID(2472);
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const versionId = UID(2473);
+
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES
+      ('${kidA}', '${GROUP_ID}', '${familyA.householdId}', 'Ada', 'Rider', '${familyA.userId}'),
+      ('${kidB}', '${GROUP_ID}', '${familyB.householdId}', 'Bea', 'Rider', '${familyB.userId}'),
+      ('${targetKid}', '${GROUP_ID}', '${target.householdId}', 'Tess', 'Target', '${target.userId}')
+    ON CONFLICT DO NOTHING;
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at)
+    VALUES ('${versionId}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;
+  `);
+
+  const oldA = seedPublishedAssignment(70, versionId, tripIds[0], sourceA.userId, sourceA.householdId, "Source A", 4, kidA);
+  const oldB = seedPublishedAssignment(71, versionId, tripIds[0], sourceB.userId, sourceB.householdId, "Source B", 4, kidB);
+  const destination = seedPublishedAssignment(72, versionId, tripIds[0], target.userId, target.householdId, "Target Van", 4, targetKid);
+
+  const requesterJwt = signInUser("delegatedrequester@test.kidpool").access_token;
+  const threadId = rpcCall(requesterJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+  const proposalId = UID(2474);
+  runSql(`
+    INSERT INTO public.chat_proposals (
+      id, group_id, thread_id, created_by_profile_id, kind, params, summary,
+      required_confirmer_profile_id, status
+    ) VALUES (
+      '${proposalId}', '${GROUP_ID}', '${threadId}', '${requester.userId}',
+      'place_children',
+      jsonb_build_object(
+        'child_ids', jsonb_build_array('${kidA}', '${kidB}'),
+        'trip_id', '${tripIds[0]}',
+        'driver_assignment_id', '${destination.assignmentId}'
+      ),
+      'Move Ada and Bea into Target Van',
+      '${requester.userId}', 'pending'
+    );
+  `);
+
+  const confirmed = rpcCall(requesterJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.equal(confirmed.status, "executed", `delegated bulk placement executes: ${JSON.stringify(confirmed).slice(0, 180)}`);
+
+  const moved = restGet("rider_assignments", { driver_assignment_id: destination.assignmentId });
+  assert.deepEqual(
+    new Set(moved.map((r) => r.child_id)),
+    new Set([kidA, kidB, targetKid]),
+    "both delegated riders move atomically into the target car",
+  );
+  assert.equal(restGet("rider_assignments", { driver_assignment_id: oldA.assignmentId }).length, 0, "first old car is cleared");
+  assert.equal(restGet("rider_assignments", { driver_assignment_id: oldB.assignmentId }).length, 0, "second old car is cleared");
+
+  const audit = restGet("audit_events", { action: "crewmate_place_children", entity_id: destination.assignmentId });
+  assert.equal(audit.length, 1, "delegated bulk move is audited once");
+  assert.equal(audit[0].actor_profile_id, requester.userId, "requesting parent is the audited actor");
+  assert.equal(audit[0].details.delegated_parent_placement, true, "audit records delegated placement policy");
+
+  const fanout = restGet("audit_events", { action: "proposal_fanout", entity_id: proposalId });
+  assert.equal(fanout.length, 1, "affected families and drivers get one audited notification batch");
+  assert.equal(
+    fanout[0].details.notifications.filter((n) => n.type === "rider_reassigned_by_parent").length,
+    2,
+    "each affected family is notified without being asked to approve",
+  );
+
+  cleanupAllTestData();
+  for (const u of [requester, familyA, familyB, sourceA, sourceB, target]) deleteTestUser(u.userId);
+});
+
 test("Crewmate 2: swap_drive needs BOTH drivers' OK (dual consent)", { skip: !SERVICE_KEY }, async () => {
   const driverA = setupHousehold(1120, "SwapA");
   const driverB = setupHousehold(1121, "SwapB");

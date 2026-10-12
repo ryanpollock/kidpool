@@ -2553,6 +2553,61 @@ ${cta}
       return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
     }
 
+    // ── rider_reassigned_by_parent: approval is relaxed, transparency is not ──
+    // A trusted active parent may coordinate an existing rider into a car via
+    // Crewmate. Tell the child's household who made the change; the old/new
+    // drivers receive their own rider_switched_* / rider_added notifications.
+    if (type === "rider_reassigned_by_parent" && assignment_id) {
+      const childId: string | undefined = body.child_id;
+      const actorProfileId: string | undefined = body.actor_profile_id;
+      if (!childId || !actorProfileId) return jsonError("Missing child_id or actor_profile_id for rider_reassigned_by_parent", 400);
+
+      const assignment = await supaFetch("driver_assignments", "id,driver_profile_id,trip_id,group_id", { id: `eq.${assignment_id}` });
+      if (assignment.length === 0) return jsonError("Assignment not found", 404);
+      const da = assignment[0];
+
+      const tripData = await supaFetch("trips", "id,service_date,direction,slot,meeting_time", { id: `eq.${da.trip_id}` });
+      if (tripData.length === 0) return jsonError("Trip not found", 404);
+      const trip = tripData[0];
+
+      const childData = await supaFetch("children", "first_name,last_name,household_id", { id: `eq.${childId}` });
+      if (childData.length === 0) return jsonError("Child not found", 404);
+      const child = childData[0];
+
+      const [actorData, driverData, familyMembers] = await Promise.all([
+        supaFetch("profiles", "full_name", { id: `eq.${actorProfileId}` }),
+        supaFetch("profiles", "full_name", { id: `eq.${da.driver_profile_id}` }),
+        supaFetch("memberships", "profile_id", { household_id: `eq.${child.household_id}`, status: "eq.active" }),
+      ]);
+
+      const recipients = familyMembers
+        .map((m: any) => m.profile_id as string)
+        .filter((id: string) => id !== actorProfileId);
+      if (recipients.length === 0) {
+        return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "requester_is_child_parent" });
+      }
+
+      const childName = `${child.first_name} ${child.last_name}`.trim();
+      const actorName = actorData[0]?.full_name ?? "A parent in your carpool";
+      const driverName = driverData[0]?.full_name ?? "the new driver";
+      const period = trip.direction === "morning" ? "morning" : "afternoon";
+      const dateLabel = new Date(trip.service_date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+      const timeLabel = formatTime(trip.meeting_time);
+      const notifTitle = `${childName}'s ride was updated`;
+      const notifBody = `${actorName} moved ${childName} into ${driverName}'s ${period} car on ${dateLabel} (${timeLabel}) via Crewmate. Open the app for details.`;
+
+      for (const recipientId of [...new Set(recipients)]) {
+        await sendEmailAndPush(
+          recipientId,
+          notifTitle,
+          notifBody,
+          `carpool-rider-reassigned-${assignment_id}-${childId}-${recipientId}`,
+          `rider-reassigned-${assignment_id}-${childId}`,
+        );
+      }
+      return jsonResponse({ sent: 0, failed: 0, email_sent: 0, email_failed: 0, reason: "processed-inline" });
+    }
+
     // ── drive_swapped: a Crewmate swap executed — both drivers ──
     if (type === "drive_swapped" && body.assignment_a && body.assignment_b) {
       const daRows = await supaFetch("driver_assignments", "id,driver_profile_id,trip_id", { id: `in.(${body.assignment_a},${body.assignment_b})` });

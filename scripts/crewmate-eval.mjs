@@ -81,6 +81,7 @@ const TRIAGE_SAMPLES = [
   { body: "Take Zoe off Thursday's ride, we're away.", expected: "action" },
   { body: "I can't drive Tuesday morning anymore.", expected: "action" },
   { body: "Can you put Maya in Sofia's car instead?", expected: "action" },
+  { body: "Move Sara, Robyn, Lila, and Hideo into Yana's car Thursday morning.", expected: "action" },
   { body: "I'll cover the Wednesday drive if nobody has it.", expected: "action" },
   { body: "Switch Leo to the early pickup.", expected: "action" },
   { body: "We're away all next week — no rides needed.", expected: "action" },
