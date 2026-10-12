@@ -3052,7 +3052,7 @@ test("Crewmate: ensure_agent_thread creates a private thread with disclosure and
     `curl -s -X POST -H "apikey: ${ANON_KEY}" -H "Content-Type: application/json" -d '{"target_group_id":"${GROUP_ID}"}' "${SUPABASE_URL}/rest/v1/rpc/ensure_agent_thread"`,
     { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
   ));
-  assert.match(anonResult.message ?? "", /authenticated|jwt|permission denied/i, `anon call must be rejected, got: ${JSON.stringify(anonResult)}`);
+  assert.match(anonResult.message ?? "", /authentication required|authenticated|jwt|permission denied/i, `anon call must be rejected, got: ${JSON.stringify(anonResult)}`);
 
   cleanupAllTestData();
   for (const u of [a, b, coord]) deleteTestUser(u.userId);
