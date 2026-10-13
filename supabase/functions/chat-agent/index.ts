@@ -461,9 +461,21 @@ const PROPOSAL_CATALOG = {
     })
   },
   place_child: {
-    confirmer: "child_parent",
+    // Trusted-group placement delegation: moving an existing rider into an
+    // existing car is confirmed by the parent who requested it. The private
+    // proposal executor still checks membership, ride need, capacity, trip
+    // scope, and duplicate placement transactionally.
+    confirmer: "asker",
     schema: z.object({
       child_id: z.string().uuid(),
+      trip_id: z.string().uuid(),
+      driver_assignment_id: z.string().uuid()
+    })
+  },
+  place_children: {
+    confirmer: "asker",
+    schema: z.object({
+      child_ids: z.array(z.string().uuid()).min(1).max(12),
       trip_id: z.string().uuid(),
       driver_assignment_id: z.string().uuid()
     })
@@ -1019,9 +1031,9 @@ Deno.serve(async (req)=>{
 \u0060\u0060\u0060crewmate
 {"kind": "cancel_ride", "summary": "Cancel Max Chen's Tuesday morning ride", "params": {"child_id": "<id from tool results>", "driver_assignment_id": "<id from tool results>"}}
 \u0060\u0060\u0060
-Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b} (trading two drivers' drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. Use ONLY ids that appeared in tool results. If the parent asks for something the catalog can't do, or you don't have the ids, say what you'd need. A card appears in chat — the right parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
+Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; place_children {child_ids, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b} (trading two drivers' drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. Use place_children whenever one request moves multiple children into the same car, so the requester gets ONE card for the whole move. Any active parent may coordinate an existing rider's placement into an existing car; the requesting parent confirms that placement card and affected families/drivers are notified. This relaxation applies only to place_child/place_children — cancellations, new ride needs, drive commitments, vehicle changes, and swaps keep their ownership or dual-consent rules. Use ONLY ids that appeared in tool results. A card appears in chat — the required parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
       `- NEVER mention or reference a card/proposal in your text without also including the matching crewmate block in the SAME reply. If you say "the card below" there MUST be a crewmate block after it. If you cannot create the card (missing IDs, unsupported kind, validation failure), do NOT say "the card below" — instead say what you'd need to create it. A reply that references a nonexistent card is worse than no reply at all.`,
-      `- Emit AT MOST ONE crewmate block per reply. If the parent asks for multiple changes, handle the FIRST change with a card, then say you'll help with the next one after they confirm. Multi-block replies risk truncation and post raw JSON parents can't act on.`,,
+      `- Emit AT MOST ONE crewmate block per reply. Several children moving into the SAME car is ONE atomic change: use one place_children block with every child_id, never split it into sequential cards. For genuinely different changes, handle the FIRST change with a card, then say you'll help with the next one after they confirm. Multi-block replies risk truncation and post raw JSON parents can't act on.`,,
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
       `- Do not share phone numbers, emails, or addresses — you don't have them, and they stay private.`,
       `- Silence is a real option: if the parent's message needs no schedule change, proposes nothing you can turn into a card, and asks nothing you can genuinely answer, reply with exactly [SILENT] and nothing else — no message is posted. Prefer [SILENT] over filler. This is NOT available when you were explicitly tagged or in a private Crewmate thread — there you must always reply, even just a friendly one-liner.`,
@@ -1393,7 +1405,7 @@ maxOutputTokens: 6000,
           const fallbackResult = await generateText({
             model: together(PLANNER_MODEL),
             system: "You are a JSON generator. Call the tools you need to get the correct IDs, then output ONLY a single fenced crewmate block. No prose, no explanation, no greeting. Just the block: opening fence (three backticks), the word crewmate, the JSON, closing fence (three backticks). Nothing else.",
-            prompt: "The parent asked: \"" + message.body + "\"\n\nThe planned change is described as: \"" + answer.slice(0, 500) + "\"\n\nThe Crewmate system prompt catalog describes these kinds: cancel_ride {child_id, driver_assignment_id}; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; decline_drive {assignment_id}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b}; offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}; change_vehicle {driver_assignment_id, vehicle_id}.\n\nUse the tools to get the correct IDs, then output the crewmate block.",
+            prompt: "The parent asked: \"" + message.body + "\"\n\nThe planned change is described as: \"" + answer.slice(0, 500) + "\"\n\nThe Crewmate system prompt catalog describes these kinds: cancel_ride {child_id, driver_assignment_id}; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; place_children {child_ids, trip_id, driver_assignment_id} (use ONE bulk card when several children move into the same car); decline_drive {assignment_id}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b}; offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}; change_vehicle {driver_assignment_id, vehicle_id}.\n\nUse the tools to get the correct IDs, then output the crewmate block.",
             tools,
             stopWhen: isStepCount(4),
             maxOutputTokens: 3000,

@@ -359,6 +359,10 @@ const phase2ProposalsUrl = new URL(
   "../supabase/migrations/202609140003_crewmate_phase2_proposals.sql",
   import.meta.url,
 );
+const delegatedPlacementUrl = new URL(
+  "../supabase/migrations/202610120001_relax_crewmate_placement_consent.sql",
+  import.meta.url,
+);
 
 test("Phase 2: catalog executors exist with ownership gates and audits", async () => {
   const sql = await readFile(phase2CatalogUrl, "utf8");
@@ -406,6 +410,39 @@ test("Phase 2: proposal kinds widened and each branch dispatches to an executor"
   }
   // coverage_fill execution stays Phase 3.
   assert.match(prop, /not supported yet/);
+});
+
+test("Crewmate delegated placement: one requester-confirmed card can atomically move several existing riders", async () => {
+  const sql = await readFile(delegatedPlacementUrl, "utf8");
+  const agent = await readFile(agentFnUrl, "utf8");
+  const sendPush = await readFile(sendPushUrl, "utf8");
+  const types = await readFile(typesUrl, "utf8");
+  const screens = await readFile(chatScreensUrl, "utf8");
+
+  assert.match(sql, /'place_child', 'place_children'/);
+  assert.match(sql, /create or replace function public\.place_children_via_crewmate\(/i);
+  assert.match(sql, /Only an active parent in this carpool can coordinate rider placement/);
+  assert.match(sql, /Another household''s child must already need a ride on this trip/);
+  assert.match(sql, /v_seated \+ v_to_add > v_vehicle_capacity/);
+  assert.match(sql, /Use a pickup-time change to move a child between afternoon trips/);
+  assert.match(sql, /revoke all on function public\.place_children_via_crewmate\(uuid\[\], uuid, uuid\)[\s\S]*?from public, authenticated, service_role/i);
+  assert.match(sql, /'crewmate_place_children'/);
+  assert.match(sql, /'delegated_parent_placement', true/);
+
+  // The wrapper intercepts only placement kinds; all other proposal behavior
+  // stays in the previously deployed executor.
+  assert.match(sql, /v_proposal\.kind not in \('place_child', 'place_children'\)[\s\S]*?execute_chat_proposal_before_delegated_placement/);
+  assert.match(sql, /'rider_switched_old'/);
+  assert.match(sql, /'rider_switched_new'/);
+  assert.match(sql, /'rider_reassigned_by_parent'/);
+
+  assert.match(agent, /place_child: \{[\s\S]*?confirmer: "asker"/);
+  assert.match(agent, /place_children: \{[\s\S]*?confirmer: "asker"/);
+  assert.match(agent, /Use place_children whenever one request moves multiple children into the same car/);
+  assert.match(sendPush, /type === "rider_reassigned_by_parent" && assignment_id/);
+  assert.match(sendPush, /moved \$\{childName\} into \$\{driverName\}'s/);
+  assert.match(types, /\| "place_children"/);
+  assert.match(screens, /place_children: "Move riders"/);
 });
 
 test("Phase 2: dual consent — a swap executes only when both linked proposals confirm", async () => {

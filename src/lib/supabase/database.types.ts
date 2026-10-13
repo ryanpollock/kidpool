@@ -21,7 +21,25 @@ export type ConfirmationResponse = "confirmed" | "declined";
 export type ReassignmentStatus = "pending" | "accepted" | "declined" | "cancelled";
 export type ChatThreadKind = "dm" | "group" | "everyone" | "agent";
 export type ChatSenderKind = "parent" | "agent" | "system";
-export type ChatProposalKind = "cancel_ride" | "switch_slot" | "swap_drive" | "coverage_fill";
+export type ChatProposalKind =
+  | "cancel_ride"
+  | "cancel_ride_range"
+  | "switch_slot"
+  | "add_ride"
+  | "place_child"
+  | "place_children"
+  | "decline_drive"
+  | "volunteer_drive"
+  | "swap_drive"
+  | "change_vehicle"
+  | "adjust_times"
+  | "cancel_trip"
+  | "coverage_fill"
+  | "admin_sql"
+  | "offer_custom_drive"
+  | "join_custom_drive"
+  | "leave_custom_drive"
+  | "cancel_custom_drive";
 export type ChatProposalStatus = "pending" | "confirmed" | "executed" | "declined" | "expired" | "failed";
 
 type Table<Row, Insert, Update = Partial<Insert>> = {
