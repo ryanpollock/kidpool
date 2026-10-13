@@ -118,6 +118,12 @@ function cleanupTodayData() {
 
 test.describe.serial("Today Card", () => {
   test.beforeAll(() => { cleanupTodayData(); });
+  test.beforeEach(async ({ page }) => {
+    // Today drives intentionally disappear after 7 PM. Keep this suite in the
+    // daytime while preserving the real San Francisco calendar date used by
+    // the database fixtures (18:00 UTC is 10–11 AM Pacific year-round).
+    await page.clock.setFixedTime(new Date(`${todayStrSF()}T18:00:00Z`));
+  });
   test.afterAll(() => { cleanupTodayData(); });
   test.afterEach(() => { cleanupTodayData(); });
   test.setTimeout(90000);
@@ -152,7 +158,7 @@ test.describe.serial("Today Card", () => {
     `);
 
     const genResult = generateSchedule(coord.email, weekId);
-    expect(genResult.success).toBe(true);
+    expect(genResult.success, JSON.stringify(genResult)).toBe(true);
     publishScheduleViaSql(weekId);
 
     await signInWithTestAuth(page, rider.email);
@@ -193,7 +199,7 @@ test.describe.serial("Today Card", () => {
     `);
 
     const genResult = generateSchedule(coord.email, weekId);
-    expect(genResult.success).toBe(true);
+    expect(genResult.success, JSON.stringify(genResult)).toBe(true);
     publishScheduleViaSql(weekId);
 
     // Driver taps "Message parents" on their own today drive card.
@@ -252,7 +258,7 @@ test.describe.serial("Today Card", () => {
     `);
 
     const genResult = generateSchedule(coord.email, weekId);
-    expect(genResult.success).toBe(true);
+    expect(genResult.success, JSON.stringify(genResult)).toBe(true);
     publishScheduleViaSql(weekId);
 
     await signInWithTestAuth(page, rider.email);
@@ -294,7 +300,7 @@ test.describe.serial("Today Card", () => {
     `);
 
     const genResult = generateSchedule(coord.email, weekId);
-    expect(genResult.success).toBe(true);
+    expect(genResult.success, JSON.stringify(genResult)).toBe(true);
     publishScheduleViaSql(weekId);
 
     await signInWithTestAuth(page, rider.email);
@@ -335,7 +341,7 @@ test.describe.serial("Today Card", () => {
     `);
 
     const genResult = generateSchedule(coord.email, weekId);
-    expect(genResult.success).toBe(true);
+    expect(genResult.success, JSON.stringify(genResult)).toBe(true);
     publishScheduleViaSql(weekId);
 
     const driverAssignmentId = getDriverAssignmentId(weekId, morningTrip);
@@ -393,7 +399,7 @@ test.describe.serial("Today Card", () => {
     `);
 
     const genResult = generateSchedule(coord.email, weekId);
-    expect(genResult.success).toBe(true);
+    expect(genResult.success, JSON.stringify(genResult)).toBe(true);
     publishScheduleViaSql(weekId);
 
     const driverAssignmentId = getDriverAssignmentId(weekId, morningTrip);
@@ -451,7 +457,7 @@ test.describe.serial("Today Card", () => {
     `);
 
     const genResult = generateSchedule(coord.email, weekId);
-    expect(genResult.success).toBe(true);
+    expect(genResult.success, JSON.stringify(genResult)).toBe(true);
     publishScheduleViaSql(weekId);
 
     const driverAssignmentId = getDriverAssignmentId(weekId, rosterTrip);
