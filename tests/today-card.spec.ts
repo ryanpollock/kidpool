@@ -106,6 +106,7 @@ function getDriverAssignmentId(weekId: string, tripId: string): string | null {
 
 function cleanupTodayData() {
   runSql(`
+    DELETE FROM public.chat_threads WHERE group_id = '${GROUP_ID}' AND kind = 'group' AND title LIKE '%morning drive';
     DELETE FROM public.weeks WHERE id::text LIKE 'deadbeef-%' AND group_id = '${GROUP_ID}';
     DELETE FROM public.weekly_checkins WHERE group_id = '${GROUP_ID}' AND household_id::text LIKE 'deadbeef-%';
     DELETE FROM public.households WHERE group_id = '${GROUP_ID}' AND id::text LIKE 'deadbeef-%';
@@ -433,8 +434,10 @@ test.describe.serial("Today Card", () => {
 
     const { weekId, tripIds, dates } = setupCurrentWeekWithTrips();
     const todayIdx = dates.indexOf(today);
-    if (todayIdx < 0) { test.skip(); return; }
-    const morningTrip = tripIds[todayIdx * 2];
+    if (todayIdx < 0 || todayIdx >= dates.length - 1) { test.skip(); return; }
+    // This assertion is about the weekly roster, not today's card. Use the
+    // next weekday so a holiday or already-finished trip cannot hide it.
+    const rosterTrip = tripIds[(todayIdx + 1) * 2];
 
     runSql(`
       INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by) VALUES ('${UID(751)}', '${GROUP_ID}', '${driver.householdId}', 'RosterCar', 4, true, '${driver.userId}') ON CONFLICT DO NOTHING;
@@ -442,16 +445,16 @@ test.describe.serial("Today Card", () => {
       INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES ('${UID(753)}', '${GROUP_ID}', '${rider.householdId}', 'Roster', 'Child', '${rider.userId}') ON CONFLICT DO NOTHING;
       INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(754)}', '${GROUP_ID}', '${weekId}', '${driver.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
       INSERT INTO public.weekly_checkins (id, group_id, week_id, household_id, status, max_drives) VALUES ('${UID(755)}', '${GROUP_ID}', '${weekId}', '${rider.householdId}', 'submitted', 5) ON CONFLICT DO NOTHING;
-      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(754)}', '${morningTrip}', '${UID(752)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
-      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(755)}', '${morningTrip}', '${UID(753)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
-      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(754)}', '${morningTrip}', '${driver.userId}', '${UID(751)}', 'prefer') ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(754)}', '${rosterTrip}', '${UID(752)}', true, '${driver.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.ride_requests (group_id, checkin_id, trip_id, child_id, needs_ride, created_by) VALUES ('${GROUP_ID}', '${UID(755)}', '${rosterTrip}', '${UID(753)}', true, '${rider.userId}') ON CONFLICT DO NOTHING;
+      INSERT INTO public.driver_availability (group_id, checkin_id, trip_id, driver_profile_id, vehicle_id, preference) VALUES ('${GROUP_ID}', '${UID(754)}', '${rosterTrip}', '${driver.userId}', '${UID(751)}', 'prefer') ON CONFLICT DO NOTHING;
     `);
 
     const genResult = generateSchedule(coord.email, weekId);
     expect(genResult.success).toBe(true);
     publishScheduleViaSql(weekId);
 
-    const driverAssignmentId = getDriverAssignmentId(weekId, morningTrip);
+    const driverAssignmentId = getDriverAssignmentId(weekId, rosterTrip);
     expect(driverAssignmentId).not.toBeNull();
 
     // Cancel the rider's ride
