@@ -3349,6 +3349,108 @@ test("Crewmate 2: an active parent can confirm one atomic card moving several ex
   for (const u of [requester, familyA, familyB, sourceA, sourceB, target]) deleteTestUser(u.userId);
 });
 
+test("Crewmate 2: an active parent can place another household's child into an open custom drive", { skip: !SERVICE_KEY }, async () => {
+  const requester = setupHousehold(1176, "CustomPlacementRequester");
+  const existingRiderFamily = setupHousehold(1177, "CustomPlacementExisting");
+  const newRiderFamily = setupHousehold(1178, "CustomPlacementNew");
+  const source = setupHousehold(1179, "CustomPlacementSource");
+  const target = setupHousehold(1180, "CustomPlacementTarget");
+  const existingKid = UID(2480), newKid = UID(2481), targetKid = UID(2482);
+  const { weekId, tripIds, dates } = setupWeekAndTrips();
+  const standardTripId = tripIds[1];
+  const versionId = UID(2483);
+  const customTripId = UID(2484);
+
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES
+      ('${existingKid}', '${GROUP_ID}', '${existingRiderFamily.householdId}', 'Existing', 'Rider', '${existingRiderFamily.userId}'),
+      ('${newKid}', '${GROUP_ID}', '${newRiderFamily.householdId}', 'New', 'Rider', '${newRiderFamily.userId}'),
+      ('${targetKid}', '${GROUP_ID}', '${target.householdId}', 'Target', 'Rider', '${target.userId}')
+    ON CONFLICT DO NOTHING;
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at)
+    VALUES ('${versionId}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;
+    INSERT INTO public.trips (
+      id, group_id, week_id, service_date, direction, slot,
+      meeting_time, departure_time, origin, destination
+    ) VALUES (
+      '${customTripId}', '${GROUP_ID}', '${weekId}', '${dates[0]}', 'afternoon', 'custom',
+      '16:20', '16:25', 'Presidio', 'Midtown'
+    ) ON CONFLICT DO NOTHING;
+  `);
+
+  const oldAssignment = seedPublishedAssignment(
+    73, versionId, standardTripId, source.userId, source.householdId, "Source Car", 4, existingKid,
+  );
+  const destination = seedPublishedAssignment(
+    74, versionId, customTripId, target.userId, target.householdId, "Open Custom Car", 4, targetKid,
+  );
+
+  const requesterJwt = signInUser("customplacementrequester@test.kidpool").access_token;
+  const threadId = rpcCall(requesterJwt, "ensure_agent_thread", { target_group_id: GROUP_ID });
+  const proposalId = UID(2485);
+  runSql(`
+    INSERT INTO public.chat_proposals (
+      id, group_id, thread_id, created_by_profile_id, kind, params, summary,
+      required_confirmer_profile_id, status
+    ) VALUES (
+      '${proposalId}', '${GROUP_ID}', '${threadId}', '${requester.userId}',
+      'place_children',
+      jsonb_build_object(
+        'child_ids', jsonb_build_array('${existingKid}', '${newKid}'),
+        'trip_id', '${customTripId}',
+        'driver_assignment_id', '${destination.assignmentId}'
+      ),
+      'Move Existing and New into the open custom car',
+      '${requester.userId}', 'pending'
+    );
+  `);
+
+  const confirmed = rpcCall(requesterJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.equal(confirmed.status, "executed", `delegated custom placement executes: ${JSON.stringify(confirmed).slice(0, 180)}`);
+
+  const destinationRiders = restGet("rider_assignments", { driver_assignment_id: destination.assignmentId });
+  assert.deepEqual(
+    new Set(destinationRiders.map((r) => r.child_id)),
+    new Set([existingKid, newKid, targetKid]),
+    "custom drive gains both the existing rider and child without a prior ride request",
+  );
+  assert.equal(
+    restGet("rider_assignments", { driver_assignment_id: oldAssignment.assignmentId }).length,
+    0,
+    "the existing same-day standard ride is removed instead of double-booked",
+  );
+
+  const audit = restGet("audit_events", { action: "crewmate_place_children", entity_id: destination.assignmentId });
+  assert.equal(audit.length, 1, "delegated custom placement is audited once");
+  assert.equal(audit[0].details.delegated_custom_drive_placement, true, "audit identifies the custom-drive exception");
+
+  // The relaxation is custom-only. A different household's child without a
+  // ride request still cannot be placed onto a standard trip by the requester.
+  const standardProposalId = UID(2486);
+  runSql(`
+    INSERT INTO public.chat_proposals (
+      id, group_id, thread_id, created_by_profile_id, kind, params, summary,
+      required_confirmer_profile_id, status
+    ) VALUES (
+      '${standardProposalId}', '${GROUP_ID}', '${threadId}', '${requester.userId}',
+      'place_child',
+      jsonb_build_object(
+        'child_id', '${newKid}',
+        'trip_id', '${standardTripId}',
+        'driver_assignment_id', '${oldAssignment.assignmentId}'
+      ),
+      'Place New Rider into a standard car',
+      '${requester.userId}', 'pending'
+    );
+  `);
+  const denied = rpcCall(requesterJwt, "confirm_chat_proposal", { p_proposal_id: standardProposalId });
+  assert.ok(chatSqlError(denied), "standard-trip placement without an existing ride need remains blocked");
+  assert.match(denied.message ?? "", /must already need a ride/i);
+
+  cleanupAllTestData();
+  for (const u of [requester, existingRiderFamily, newRiderFamily, source, target]) deleteTestUser(u.userId);
+});
+
 test("Crewmate 2: swap_drive needs BOTH drivers' OK (dual consent)", { skip: !SERVICE_KEY }, async () => {
   const driverA = setupHousehold(1120, "SwapA");
   const driverB = setupHousehold(1121, "SwapB");
