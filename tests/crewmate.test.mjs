@@ -363,6 +363,10 @@ const delegatedPlacementUrl = new URL(
   "../supabase/migrations/202610120001_relax_crewmate_placement_consent.sql",
   import.meta.url,
 );
+const delegatedCustomPlacementUrl = new URL(
+  "../supabase/migrations/202610160001_allow_delegated_custom_drive_placement.sql",
+  import.meta.url,
+);
 
 test("Phase 2: catalog executors exist with ownership gates and audits", async () => {
   const sql = await readFile(phase2CatalogUrl, "utf8");
@@ -443,6 +447,20 @@ test("Crewmate delegated placement: one requester-confirmed card can atomically 
   assert.match(sendPush, /moved \$\{childName\} into \$\{driverName\}'s/);
   assert.match(types, /\| "place_children"/);
   assert.match(screens, /place_children: "Move riders"/);
+});
+
+test("Crewmate delegated placement: custom-drive open seats do not require prior ride requests", async () => {
+  const sql = await readFile(delegatedCustomPlacementUrl, "utf8");
+  const agent = await readFile(agentFnUrl, "utf8");
+
+  assert.match(sql, /if v_slot <> 'custom' and exists/i);
+  assert.match(sql, /old_trip\.service_date = v_service_date[\s\S]*?old_trip\.direction = v_direction/i);
+  assert.match(sql, /delete from public\.rider_assignments ra[\s\S]*?v_slot = 'custom'/i);
+  assert.match(sql, /'delegated_custom_drive_placement', v_slot = 'custom'/i);
+  assert.match(sql, /v_seated \+ v_to_add > v_vehicle_capacity/i);
+  assert.match(sql, /revoke all on function public\.place_children_via_crewmate\(uuid\[\], uuid, uuid\)[\s\S]*?from public, authenticated, service_role/i);
+  assert.match(agent, /custom drive for children from other households even when those children did not previously request a ride/i);
+  assert.match(agent, /Custom placement replaces each child's other ride for the same date and direction/i);
 });
 
 test("Phase 2: dual consent — a swap executes only when both linked proposals confirm", async () => {
