@@ -26,6 +26,10 @@ const dbTruncateUrl = new URL("../tests/lib/db.ts", import.meta.url);
 const integrationUrl = new URL("../tests/integration.test.mjs", import.meta.url);
 const playwrightHelpersUrl = new URL("../tests/lib/playwright-helpers.ts", import.meta.url);
 const evalScriptUrl = new URL("../scripts/crewmate-eval.mjs", import.meta.url);
+const driverReassignmentUrl = new URL(
+  "../supabase/migrations/202610220001_crewmate_driver_reassignment.sql",
+  import.meta.url,
+);
 
 test("crewmate ships disabled: group flag defaults false and gates the trigger", async () => {
   const sql = await readFile(migrationUrl, "utf8");
@@ -463,6 +467,50 @@ test("Crewmate delegated placement: custom-drive open seats do not require prior
   assert.match(agent, /Custom placement replaces each child's other ride for the same date and direction/i);
 });
 
+test("Crewmate driver reassignment reuses guarded transfer semantics with the other driver's consent", async () => {
+  const sql = await readFile(driverReassignmentUrl, "utf8");
+  const agent = await readFile(agentFnUrl, "utf8");
+  const types = await readFile(typesUrl, "utf8");
+  const screens = await readFile(chatScreensUrl, "utf8");
+
+  assert.match(sql, /'reassign_driver'/);
+  assert.match(sql, /create or replace function public\.reassign_driver_via_crewmate\(/i);
+  assert.match(sql, /Both the current and replacement driver must approve this reassignment/);
+  assert.match(sql, /Replacement driver must be a rider parent on this drive or in the current driver''s household/);
+  assert.match(sql, /v\.child_passenger_capacity >= v_rider_count/);
+  assert.match(sql, /set driver_assignment_id = v_new\.id/);
+  assert.match(sql, /set status = 'released'/);
+  assert.match(sql, /insert into public\.reassignment_requests/);
+  assert.match(sql, /'source', 'crewmate'/);
+  assert.match(sql, /revoke all on function public\.reassign_driver_via_crewmate\(uuid, uuid, uuid\)[\s\S]*?from public, authenticated, service_role/i);
+  assert.match(sql, /v_proposal\.kind <> 'reassign_driver'[\s\S]*?execute_chat_proposal_before_driver_reassignment/);
+  assert.match(sql, /'reassignment_accepted'/);
+
+  assert.match(agent, /reassign_driver: \{[\s\S]*?confirmer: "driver_reassignment_pair"/);
+  assert.match(agent, /A one-way takeover is reassign_driver, NOT swap_drive/);
+  assert.match(agent, /message\.sender_profile_id === outgoing\.driver_profile_id/);
+  assert.match(agent, /message\.sender_profile_id === newDriverId/);
+  assert.match(agent, /insertParams\.requester_profile_id = message\.sender_profile_id/);
+  assert.match(types, /\| "reassign_driver"/);
+  assert.match(screens, /reassign_driver: "Change driver"/);
+});
+
+test("Crewmate planner retries transient stalls and durably dispatches coalesced successors", async () => {
+  const agent = await readFile(agentFnUrl, "utf8");
+
+  assert.match(agent, /CREWMATE_PLANNER_FALLBACK_MODEL/);
+  assert.match(agent, /isRetryablePlannerError/);
+  assert.match(agent, /planned = await planOnce\(false\)/);
+  assert.match(agent, /planned = await planOnce\(true\)/);
+  assert.match(agent, /totalMs: compact \? 45_000 : 90_000/);
+  assert.match(agent, /stepMs: compact \? 30_000 : 45_000/);
+  assert.match(agent, /reason: "no_pending_card_or_not_affirmative"/);
+  assert.match(agent, /dispatchNewestCoalesced/);
+  assert.match(agent, /functions\/v1\/chat-agent/);
+  assert.match(agent, /planner_attempts: plannerAttemptCount/);
+  assert.doesNotMatch(agent, /MAX_REPLAN_PASSES/);
+});
+
 test("Phase 2: dual consent — a swap executes only when both linked proposals confirm", async () => {
   const prop = await readFile(phase2ProposalsUrl, "utf8");
 
@@ -685,7 +733,7 @@ test("@Crewmate mentions: one sanctioned null-profile form, honored as an explic
   // Parent-to-parent DMs: consent detection only — everything else silent
   // unless tagged (the tagged swap/offer flows bypass the gate entirely).
   assert.match(fn, /thread\.kind === "dm" && gateResult\.messageType !== "consent"/);
-  assert.match(fn, /category: "consent",\s*\n\s*dm: true,\s*\n\s*reason: "no_pending_card_or_not_affirmative"/);
+  assert.match(fn, /category: "consent",\s*\n\s*dm: thread\.kind === "dm",\s*\n\s*reason: "no_pending_card_or_not_affirmative"/);
 
   // Planner silence backstop: post nothing rather than filler.
   assert.match(fn, /answer === "\[SILENT\]"/);
