@@ -29,10 +29,11 @@ const TOGETHER_API_KEY = Deno.env.get("TOGETHER_API_KEY");
 // qualified by the Phase 1 eval gate (scripts/crewmate-eval.mjs).
 const TRIAGE_MODEL = Deno.env.get("CREWMATE_TRIAGE_MODEL") ?? "zai-org/GLM-5.3-Flash";
 const PLANNER_MODEL = Deno.env.get("CREWMATE_PLANNER_MODEL") ?? "zai-org/GLM-5.3-Flash";
+const PLANNER_FALLBACK_MODEL = Deno.env.get("CREWMATE_PLANNER_FALLBACK_MODEL") ?? PLANNER_MODEL;
 const MAX_AGENT_BODY = 3900; // chat_messages caps body at 4000
 const COALESCE_WINDOW_MS = 90_000;
-const MAX_REPLAN_PASSES = 3;
 const MESSAGE_WINDOW = 24; // transcript length for the planner
+const RETRY_MESSAGE_WINDOW = 8;
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -48,6 +49,14 @@ function verifyAuth(authHeader) {
   if (CRON_SECRET && token === CRON_SECRET) return true;
   if (SERVICE_ROLE_KEY && token === SERVICE_ROLE_KEY) return true;
   return false;
+}
+function isRetryablePlannerError(error) {
+  const message = String(error?.message ?? error).toLowerCase();
+  return message.includes("timeout")
+    || message.includes("timed out")
+    || message.includes("rate limit")
+    || message.includes("429")
+    || /\b5\d\d\b/.test(message);
 }
 // ── Timezone helpers (the group's timezone, not the server's) ────────
 function dateInTz(tz, now = new Date()) {
@@ -495,6 +504,15 @@ const PROPOSAL_CATALOG = {
       driver_assignment_id: z.string().uuid().optional()
     })
   },
+  reassign_driver: {
+    // Either affected driver may initiate. The requester has consented by
+    // asking; the other driver is resolved from DB facts and confirms.
+    confirmer: "driver_reassignment_pair",
+    schema: z.object({
+      assignment_id: z.string().uuid(),
+      new_driver_profile_id: z.string().uuid()
+    })
+  },
   swap_drive: {
     confirmer: "swap_pair",
     schema: z.object({
@@ -615,6 +633,9 @@ Deno.serve(async (req)=>{
   // Claimed run id, hoisted so the error path can always record the failure
   // in the ledger instead of leaving a 'running' row for the reaper.
   let claimedRunId = null;
+  let plannerAttemptCount = 0;
+  let plannerAttemptedModel = null;
+  let dispatchNewestCoalesced = async ()=>{};
   let body;
   try {
     body = await req.json();
@@ -673,24 +694,67 @@ Deno.serve(async (req)=>{
       coalesced: true
     });
     claimedRunId = runId;
+    dispatchNewestCoalesced = async ()=>{
+      try {
+        const { data: runState } = await admin.from("crewmate_runs")
+          .select("coalesced_count")
+          .eq("id", runId)
+          .maybeSingle();
+        if ((runState?.coalesced_count ?? 0) < 1) return;
+
+        const { data: latest } = await admin.from("chat_messages")
+          .select("id")
+          .eq("thread_id", threadId)
+          .eq("sender_kind", "parent")
+          .gt("created_at", message.created_at)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (!latest?.id || latest.id === messageId) return;
+
+        const rerun = fetch(`${SUPABASE_URL}/functions/v1/chat-agent`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ thread_id: threadId, message_id: latest.id })
+        }).catch((error)=>{
+          console.error("[chat-agent] coalesced successor dispatch failed:", error);
+        });
+        const edgeRuntime = (globalThis as any).EdgeRuntime;
+        if (edgeRuntime?.waitUntil) edgeRuntime.waitUntil(rerun);
+        else await rerun;
+      } catch (error) {
+        console.error("[chat-agent] coalesced successor lookup failed:", error);
+      }
+    };
     const finishRun = async (status, detail, usage)=>{
+      const outcomeDetail = plannerAttemptCount > 0
+        ? {
+            ...detail,
+            planner_attempts: plannerAttemptCount,
+            planner_last_model: plannerAttemptedModel,
+          }
+        : detail;
       // Langfuse: record the run outcome as trace metadata and flush.
       // This is the single flush point — every finishRun call triggers it.
       if (lfTrace) {
-        lfTrace.addMetadata({ status, ...detail });
+        lfTrace.addMetadata({ status, ...outcomeDetail });
         await lfTrace.flush();
       }
       await admin.from("crewmate_runs").update({
         status,
         triage_model: usage?.triage ? TRIAGE_MODEL : null,
-        planner_model: usage?.planner ? PLANNER_MODEL : null,
+        planner_model: usage?.planner ? (plannerAttemptedModel ?? PLANNER_MODEL) : null,
         triage_tokens_in: usage?.triage?.in ?? 0,
         triage_tokens_out: usage?.triage?.out ?? 0,
         planner_tokens_in: usage?.planner?.in ?? 0,
         planner_tokens_out: usage?.planner?.out ?? 0,
-        outcome_detail: detail,
+        outcome_detail: outcomeDetail,
         finished_at: new Date().toISOString()
       }).eq("id", runId);
+      await dispatchNewestCoalesced();
     };
     // Monthly budget guard (inline check; Phase 4 automates the cron + UI).
     const monthStart = new Date();
@@ -866,18 +930,16 @@ Deno.serve(async (req)=>{
             }
           }
 
-          // In a parent-to-parent DM the consent path is the ONLY reason
-          // Crewmate is here — if nothing confirmed (no pending card, not
-          // a clear yes, validation failed), stay out of the private
-          // conversation instead of falling through to the planner.
-          if (thread.kind === "dm") {
-            await finishRun("chatter", {
-              category: "consent",
-              dm: true,
-              reason: "no_pending_card_or_not_affirmative",
-            });
-            return jsonResponse({ skipped: "not_invoked" });
-          }
+          // Consent-like shared-thread chatter ("thanks", "works for me")
+          // has nothing for the planner to do when no pending card was
+          // confirmed. Do not spend a slow planner call on it or let it sit
+          // in front of a later explicit @Crewmate request.
+          await finishRun("chatter", {
+            category: "consent",
+            dm: thread.kind === "dm",
+            reason: "no_pending_card_or_not_affirmative",
+          });
+          return jsonResponse({ skipped: "not_invoked" });
         }
       } else {
         // No Jev API key — tag-only behavior.
@@ -1031,7 +1093,7 @@ Deno.serve(async (req)=>{
 \u0060\u0060\u0060crewmate
 {"kind": "cancel_ride", "summary": "Cancel Max Chen's Tuesday morning ride", "params": {"child_id": "<id from tool results>", "driver_assignment_id": "<id from tool results>"}}
 \u0060\u0060\u0060
-Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; place_children {child_ids, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b} (trading two drivers' drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. Use place_children whenever one request moves multiple children into the same car, so the requester gets ONE card for the whole move. Any active parent may coordinate an existing rider's placement into an existing standard car. An active parent may also coordinate open seats on a custom drive for children from other households even when those children did not previously request a ride; use place_child/place_children for that delegated custom-drive request, not join_custom_drive. The requesting parent confirms the placement card and affected families/drivers are notified. Custom placement replaces each child's other ride for the same date and direction. This relaxation applies only to place_child/place_children — cancellations, standard-trip new ride needs, drive commitments, vehicle changes, and swaps keep their ownership or dual-consent rules. Use ONLY ids that appeared in tool results. A card appears in chat — the required parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
+Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; place_children {child_ids, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; reassign_driver {assignment_id, new_driver_profile_id} (one driver takes over another driver's assigned drive and riders, using the replacement driver's eligible vehicle; use this when either the current driver asks someone to take it OR the replacement driver offers to take it — the other driver confirms); swap_drive {assignment_a, assignment_b} (trading two drivers' separate drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. A one-way takeover is reassign_driver, NOT swap_drive. Use place_children whenever one request moves multiple children into the same car, so the requester gets ONE card for the whole move. Any active parent may coordinate an existing rider's placement into an existing standard car. An active parent may also coordinate open seats on a custom drive for children from other households even when those children did not previously request a ride; use place_child/place_children for that delegated custom-drive request, not join_custom_drive. The requesting parent confirms the placement card and affected families/drivers are notified. Custom placement replaces each child's other ride for the same date and direction. This relaxation applies only to place_child/place_children — cancellations, standard-trip new ride needs, driver reassignments, vehicle changes, and swaps keep their ownership or dual-consent rules. Use ONLY ids that appeared in tool results. A card appears in chat — the required parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
       `- NEVER mention or reference a card/proposal in your text without also including the matching crewmate block in the SAME reply. If you say "the card below" there MUST be a crewmate block after it. If you cannot create the card (missing IDs, unsupported kind, validation failure), do NOT say "the card below" — instead say what you'd need to create it. A reply that references a nonexistent card is worse than no reply at all.`,
       `- Emit AT MOST ONE crewmate block per reply. Several children moving into the SAME car is ONE atomic change: use one place_children block with every child_id, never split it into sequential cards. For genuinely different changes, handle the FIRST change with a card, then say you'll help with the next one after they confirm. Multi-block replies risk truncation and post raw JSON parents can't act on.`,,
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
@@ -1041,18 +1103,23 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       `- Extra drives (offer_custom_drive) only work once the week's schedule is PUBLISHED — it publishes Sunday 7 PM Pacific. If it is not published yet, say extra drives open Sunday evening instead of proposing the offer.`,
       `- If the message is completely unrelated to the carpool and you were tagged by accident, a brief one-liner redirecting to carpool topics is fine.`
     ].join("\n");
-    // Reload the transcript fresh on every planning pass so coalesced
-    // messages (and the agent's own earlier replies) are always in context.
-    const planOnce = async ()=>{
+    // A transient provider stall must not turn an explicit request into
+    // silence. Retry once with a shorter transcript, smaller output budget,
+    // and an optionally configured fallback model. AI SDK's step timeout is
+    // per LLM step; totalMs bounds the whole multi-tool attempt.
+    const planOnce = async (compact = false)=>{
       const planStart = new Date().toISOString();
+      const attemptModel = compact ? PLANNER_FALLBACK_MODEL : PLANNER_MODEL;
+      plannerAttemptCount += 1;
+      plannerAttemptedModel = attemptModel;
       const { data: fresh } = await admin.from("chat_messages").select("id,sender_kind,sender_name,body,created_at").eq("thread_id", threadId).order("created_at", {
         ascending: false
-      }).limit(MESSAGE_WINDOW);
+      }).limit(compact ? RETRY_MESSAGE_WINDOW : MESSAGE_WINDOW);
       const currentTranscript = [
         ...fresh ?? []
       ].reverse();
       const result = await generateText({
-        model: together(PLANNER_MODEL),
+        model: together(attemptModel),
         system: systemPrompt,
         prompt: [
           `Conversation so far (oldest first):`,
@@ -1061,18 +1128,20 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
           `Reply to ${message.sender_name}'s latest message${taggedCrewmate ? " — they explicitly tagged you with @Crewmate, so respond even if it is casual: a friendly one-liner about what you can help with is perfect" : ""}.`
         ].join("\n"),
         tools,
-        stopWhen: isStepCount(6),
-maxOutputTokens: 6000,
+        stopWhen: isStepCount(compact ? 4 : 6),
+        maxOutputTokens: compact ? 3000 : 6000,
         timeout: {
-          stepMs: 45_000
+          totalMs: compact ? 45_000 : 90_000,
+          stepMs: compact ? 30_000 : 45_000,
+          toolMs: 10_000
         }
       });
       // Langfuse: record the planner generation with model + tokens + tools used.
       if (lfTrace) {
         const planUsage = result.usage as any;
         lfTrace.addGeneration({
-          name: "planner",
-          model: PLANNER_MODEL,
+          name: compact ? "planner-retry" : "planner",
+          model: attemptModel,
           input: currentTranscript.map((m: any) => `[${m.sender_kind}] ${m.body}`).join("\n").slice(-2000),
           output: (result.text ?? "").slice(0, 2000),
           usage: {
@@ -1080,7 +1149,11 @@ maxOutputTokens: 6000,
             completionTokens: planUsage?.completionTokens ?? planUsage?.outputTokens,
             totalTokens: planUsage?.totalTokens,
           },
-          modelParameters: { maxOutputTokens: 6000, toolLoopMaxSteps: 6 },
+          modelParameters: {
+            maxOutputTokens: compact ? 3000 : 6000,
+            toolLoopMaxSteps: compact ? 4 : 6,
+            compactRetry: compact,
+          },
           startTime: planStart,
           metadata: {
             toolCalls: ctx?.calls?.map((c: any) => c.name) ?? [],
@@ -1095,16 +1168,18 @@ maxOutputTokens: 6000,
         usage: {
           in: result.usage.promptTokens ?? result.usage.inputTokens ?? 0,
           out: result.usage.completionTokens ?? result.usage.outputTokens ?? 0
-        }
+        },
+        attempts: plannerAttemptCount,
+        model: attemptModel,
       };
     };
-    // Plan, then re-check for newer parent messages (coalesced bursts);
-    // re-plan with a fresh transcript up to MAX_REPLAN_PASSES.
-    let planned = await planOnce();
-    for(let pass = 1; pass < MAX_REPLAN_PASSES; pass++){
-      const { data: newer } = await admin.from("chat_messages").select("id").eq("thread_id", threadId).eq("sender_kind", "parent").gt("created_at", message.created_at);
-      if (!newer || newer.length === 0) break;
-      planned = await planOnce();
+    let planned;
+    try {
+      planned = await planOnce(false);
+    } catch (plannerError) {
+      if (!isRetryablePlannerError(plannerError)) throw plannerError;
+      console.warn("[chat-agent] planner attempt failed; retrying compact:", plannerError?.message ?? plannerError);
+      planned = await planOnce(true);
     }
     const { block, visible } = splitProposalBlock(planned.answer ?? "");
     // Safety net: if the LLM ran out of output tokens mid-JSON, the
@@ -1332,6 +1407,9 @@ maxOutputTokens: 6000,
             // Single-confirmer kinds. The confirmer is resolved from
             // ownership facts; the model never picks it.
             let requiredConfirmer = null;
+            const insertParams: Record<string, unknown> = {
+              ...params
+            };
             if (entry.confirmer === "asker") {
               requiredConfirmer = message.sender_profile_id;
             } else if (entry.confirmer === "child_parent") {
@@ -1343,13 +1421,41 @@ maxOutputTokens: 6000,
                   requiredConfirmer = membershipRow?.profile_id ?? null;
                 }
               }
+            } else if (entry.confirmer === "driver_reassignment_pair") {
+              const { data: outgoing } = await admin.from("driver_assignments")
+                .select("driver_profile_id,status")
+                .eq("id", params.assignment_id)
+                .eq("group_id", thread.group_id)
+                .maybeSingle();
+              const newDriverId = params.new_driver_profile_id;
+              if (!outgoing || outgoing.status !== "confirmed") {
+                proposalNote = " (That drive is no longer assigned and cannot be reassigned.)";
+              } else if (message.sender_profile_id === outgoing.driver_profile_id) {
+                requiredConfirmer = newDriverId;
+              } else if (message.sender_profile_id === newDriverId) {
+                requiredConfirmer = outgoing.driver_profile_id;
+              } else {
+                proposalNote = " (The current driver or the parent taking over must request this change.)";
+              }
+
+              if (requiredConfirmer) {
+                const { count } = await admin.from("chat_participants").select("profile_id", {
+                  count: "exact",
+                  head: true
+                }).eq("thread_id", threadId).eq("profile_id", requiredConfirmer);
+                if ((count ?? 0) < 1) {
+                  requiredConfirmer = null;
+                  proposalNote = " (Both drivers need to be in this conversation so the other driver can confirm the card.)";
+                } else {
+                  insertParams.requester_profile_id = message.sender_profile_id;
+                }
+              }
             }
             if (!requiredConfirmer) {
-              proposalNote = " (Only that child's parent can make this change — please ask them to.)";
+              if (!proposalNote) {
+                proposalNote = " (Only that child's parent can make this change — please ask them to.)";
+              }
             } else {
-              const insertParams = {
-                ...params
-              };
               const { data: proposalRow, error: proposalError } = await admin.from("chat_proposals").insert({
                 group_id: thread.group_id,
                 thread_id: threadId,
@@ -1405,7 +1511,7 @@ maxOutputTokens: 6000,
           const fallbackResult = await generateText({
             model: together(PLANNER_MODEL),
             system: "You are a JSON generator. Call the tools you need to get the correct IDs, then output ONLY a single fenced crewmate block. No prose, no explanation, no greeting. Just the block: opening fence (three backticks), the word crewmate, the JSON, closing fence (three backticks). Nothing else.",
-            prompt: "The parent asked: \"" + message.body + "\"\n\nThe planned change is described as: \"" + answer.slice(0, 500) + "\"\n\nThe Crewmate system prompt catalog describes these kinds: cancel_ride {child_id, driver_assignment_id}; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; place_children {child_ids, trip_id, driver_assignment_id} (use ONE bulk card when several children move into the same car, including delegated open seats on a custom drive); decline_drive {assignment_id}; volunteer_drive {trip_id, schedule_version_id}; swap_drive {assignment_a, assignment_b}; offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}; change_vehicle {driver_assignment_id, vehicle_id}.\n\nUse the tools to get the correct IDs, then output the crewmate block.",
+            prompt: "The parent asked: \"" + message.body + "\"\n\nThe planned change is described as: \"" + answer.slice(0, 500) + "\"\n\nThe Crewmate system prompt catalog describes these kinds: cancel_ride {child_id, driver_assignment_id}; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; place_children {child_ids, trip_id, driver_assignment_id} (use ONE bulk card when several children move into the same car, including delegated open seats on a custom drive); decline_drive {assignment_id}; volunteer_drive {trip_id, schedule_version_id}; reassign_driver {assignment_id, new_driver_profile_id} (one driver takes over another driver's assigned car; the other driver confirms); swap_drive {assignment_a, assignment_b}; offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}; change_vehicle {driver_assignment_id, vehicle_id}.\n\nUse the tools to get the correct IDs, then output the crewmate block.",
             tools,
             stopWhen: isStepCount(4),
             maxOutputTokens: 3000,
@@ -1600,11 +1706,15 @@ maxOutputTokens: 6000,
       try {
         await admin.from("crewmate_runs").update({
           status: "failed",
+          planner_model: plannerAttemptedModel,
           finished_at: new Date().toISOString(),
           outcome_detail: {
-            error: String(e?.message ?? e).slice(0, 500)
+            error: String(e?.message ?? e).slice(0, 500),
+            planner_attempts: plannerAttemptCount,
+            planner_last_model: plannerAttemptedModel,
           }
         }).eq("id", claimedRunId);
+        await dispatchNewestCoalesced();
       } catch  {
       // never error from the error path
       }

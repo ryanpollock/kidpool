@@ -169,6 +169,7 @@ const PROPOSAL_LABELS: Record<string, string> = {
   place_children: "Move riders",
   decline_drive: "Decline a drive",
   volunteer_drive: "Cover a drive",
+  reassign_driver: "Change driver",
   swap_drive: "Swap a drive",
   change_vehicle: "Change car",
   adjust_times: "Change times",

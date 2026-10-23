@@ -30,6 +30,7 @@ export type ChatProposalKind =
   | "place_children"
   | "decline_drive"
   | "volunteer_drive"
+  | "reassign_driver"
   | "swap_drive"
   | "change_vehicle"
   | "adjust_times"

@@ -3451,6 +3451,86 @@ test("Crewmate 2: an active parent can place another household's child into an o
   for (const u of [requester, existingRiderFamily, newRiderFamily, source, target]) deleteTestUser(u.userId);
 });
 
+test("Crewmate 2: a rider parent can offer to take over an assigned drive after the current driver confirms", { skip: !SERVICE_KEY }, async () => {
+  const outgoing = setupHousehold(1181, "ReassignOutgoing");
+  const incoming = setupHousehold(1182, "ReassignIncoming");
+  const kid = UID(2490);
+  const incomingVehicleId = UID(2491);
+  const { weekId, tripIds } = setupWeekAndTrips();
+  const versionId = UID(2492);
+
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by)
+    VALUES ('${kid}', '${GROUP_ID}', '${incoming.householdId}', 'Rina', 'Rider', '${incoming.userId}')
+    ON CONFLICT DO NOTHING;
+    INSERT INTO public.vehicles (id, group_id, household_id, label, child_passenger_capacity, active, created_by)
+    VALUES ('${incomingVehicleId}', '${GROUP_ID}', '${incoming.householdId}', 'Incoming Car', 4, true, '${incoming.userId}')
+    ON CONFLICT DO NOTHING;
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at)
+    VALUES ('${versionId}', '${GROUP_ID}', '${weekId}', 1, 'published', now())
+    ON CONFLICT DO NOTHING;
+  `);
+
+  const old = seedPublishedAssignment(
+    75, versionId, tripIds[0], outgoing.userId, outgoing.householdId, "Outgoing Car", 4, kid,
+  );
+  const incomingJwt = signInUser("reassignincoming@test.kidpool").access_token;
+  const outgoingJwt = signInUser("reassignoutgoing@test.kidpool").access_token;
+  const threadId = rpcCall(incomingJwt, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+  const proposalId = UID(2493);
+
+  runSql(`
+    INSERT INTO public.chat_proposals (
+      id, group_id, thread_id, created_by_profile_id, kind, params, summary,
+      required_confirmer_profile_id, status
+    ) VALUES (
+      '${proposalId}', '${GROUP_ID}', '${threadId}', '${incoming.userId}',
+      'reassign_driver',
+      jsonb_build_object(
+        'assignment_id', '${old.assignmentId}',
+        'new_driver_profile_id', '${incoming.userId}',
+        'requester_profile_id', '${incoming.userId}'
+      ),
+      'Have ReassignIncoming take over ReassignOutgoing''s morning drive',
+      '${outgoing.userId}', 'pending'
+    );
+  `);
+
+  const wrongConfirmer = rpcCall(incomingJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.ok(chatSqlError(wrongConfirmer), "the requesting replacement cannot confirm their own takeover card");
+
+  const confirmed = rpcCall(outgoingJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.equal(confirmed.status, "executed", `driver reassignment executes: ${JSON.stringify(confirmed).slice(0, 180)}`);
+
+  const oldAfter = restGet("driver_assignments", { id: old.assignmentId })[0];
+  assert.equal(oldAfter.status, "released", "outgoing assignment is released");
+  const incomingAssignments = restGet("driver_assignments", { driver_profile_id: incoming.userId });
+  const replacement = incomingAssignments.find((a) => a.trip_id === tripIds[0] && a.status === "confirmed");
+  assert.ok(replacement, "replacement driver gets a confirmed assignment");
+  assert.equal(replacement.vehicle_id, incomingVehicleId, "replacement driver's own eligible vehicle is used");
+  const movedRiders = restGet("rider_assignments", { driver_assignment_id: replacement.id });
+  assert.deepEqual(movedRiders.map((r) => r.child_id), [kid], "all riders move to the replacement assignment");
+
+  const requestRows = restGet("reassignment_requests", { assignment_id: old.assignmentId });
+  assert.equal(requestRows.length, 1, "existing reassignment record is reused for notifications/history");
+  assert.equal(requestRows[0].status, "accepted");
+  assert.equal(requestRows[0].target_profile_id, incoming.userId);
+
+  const audit = restGet("audit_events", { action: "drive_reassigned", entity_id: replacement.id });
+  assert.equal(audit.length, 1, "Crewmate reassignment is audited once");
+  assert.equal(audit[0].details.source, "crewmate");
+  assert.equal(audit[0].details.requester_profile_id, incoming.userId);
+  assert.equal(audit[0].details.confirmer_profile_id, outgoing.userId);
+
+  const fanout = restGet("audit_events", { action: "proposal_fanout", entity_id: proposalId });
+  assert.equal(fanout.length, 1, "accepted reassignment notification is queued once");
+  assert.equal(fanout[0].details.notifications[0].type, "reassignment_accepted");
+  assert.equal(fanout[0].details.notifications[0].request_id, requestRows[0].id);
+
+  cleanupAllTestData();
+  for (const u of [outgoing, incoming]) deleteTestUser(u.userId);
+});
+
 test("Crewmate 2: swap_drive needs BOTH drivers' OK (dual consent)", { skip: !SERVICE_KEY }, async () => {
   const driverA = setupHousehold(1120, "SwapA");
   const driverB = setupHousehold(1121, "SwapB");
