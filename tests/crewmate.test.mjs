@@ -376,6 +376,10 @@ const delegatedCustomPlacementUrl = new URL(
   "../supabase/migrations/202610160001_allow_delegated_custom_drive_placement.sql",
   import.meta.url,
 );
+const uncoveredCrossSlotPlacementUrl = new URL(
+  "../supabase/migrations/202610280001_allow_uncovered_cross_slot_placement.sql",
+  import.meta.url,
+);
 
 test("Phase 2: catalog executors exist with ownership gates and audits", async () => {
   const sql = await readFile(phase2CatalogUrl, "utf8");
@@ -470,6 +474,24 @@ test("Crewmate delegated placement: custom-drive open seats do not require prior
   assert.match(sql, /revoke all on function public\.place_children_via_crewmate\(uuid\[\], uuid, uuid\)[\s\S]*?from public, authenticated, service_role/i);
   assert.match(agent, /custom drive for children from other households even when those children did not previously request a ride/i);
   assert.match(agent, /Custom placement replaces each child's other ride for the same date and direction/i);
+});
+
+test("Crewmate delegated placement: an uncovered same-direction ride need follows the chosen open car", async () => {
+  const sql = await readFile(uncoveredCrossSlotPlacementUrl, "utf8");
+  const agent = await readFile(agentFnUrl, "utf8");
+
+  assert.match(sql, /rename to place_children_via_crewmate_before_cross_slot/i);
+  assert.match(sql, /from public\.children c[\s\S]*?order by c\.id[\s\S]*?for update/i);
+  assert.match(sql, /source_trip\.service_date = v_service_date/);
+  assert.match(sql, /source_trip\.direction = v_direction/);
+  assert.match(sql, /and rr\.needs_ride/);
+  assert.match(sql, /not exists \([\s\S]*?from public\.rider_assignments ra[\s\S]*?assigned_trip\.direction = v_direction/);
+  assert.match(sql, /on conflict \(trip_id, child_id\) do update[\s\S]*?needs_ride = true/i);
+  assert.match(sql, /set needs_ride = false[\s\S]*?rr\.trip_id <> p_trip_id/i);
+  assert.match(sql, /place_children_via_crewmate_before_cross_slot\(/);
+  assert.match(sql, /crewmate_transfer_uncovered_ride_need/);
+  assert.match(sql, /revoke all on function public\.place_children_via_crewmate\(uuid\[\], uuid, uuid\)[\s\S]*?from public, authenticated, service_role/i);
+  assert.match(agent, /uncovered child who needs another trip on the same date and direction/);
 });
 
 test("Crewmate driver reassignment reuses guarded transfer semantics with the other driver's consent", async () => {
