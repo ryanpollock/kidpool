@@ -278,3 +278,5 @@ Deletes profile, auth user, household, children, vehicles, checkins, assignments
 - The persistent thumbs-up control also displays the aggregate thumbs-up count. Never render a second thumbs-up chip; tap toggles the current user’s like, and hold opens the picker (including View reactions).
 
 - **Crewmate explicit-invocation budget rule (2026-10-28):** a valid `@Crewmate` mention bypasses both the Jev invocation gate and `crewmate_monthly_token_budget`; only untagged/background engagement is budget-capped. This prevents a deliberate parent request from disappearing silently after ambient monthly usage reaches the cap.
+
+- **Crewmate uncovered cross-slot placement (2026-10-28):** delegated `place_child` / `place_children` may move an uncovered same-date, same-direction ride need onto the selected standard trip before seating the child. The transfer and placement are one transaction; children already seated on another afternoon trip still require the dedicated pickup-time change path, and children with no ride need remain protected from third-party placement.
