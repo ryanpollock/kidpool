@@ -762,7 +762,10 @@ Deno.serve(async (req)=>{
     monthStart.setUTCHours(0, 0, 0, 0);
     const { data: monthRuns } = await admin.from("crewmate_runs").select("triage_tokens_in,triage_tokens_out,planner_tokens_in,planner_tokens_out").eq("group_id", thread.group_id).gte("started_at", monthStart.toISOString());
     const tokensUsed = (monthRuns ?? []).reduce((sum, r)=>sum + (r.triage_tokens_in ?? 0) + (r.triage_tokens_out ?? 0) + (r.planner_tokens_in ?? 0) + (r.planner_tokens_out ?? 0), 0);
-    if (tokensUsed >= (group.crewmate_monthly_token_budget ?? 0)) {
+    // The budget is a guardrail for ambient/background engagement, not a
+    // kill switch for an intentional parent request. An explicit @Crewmate
+    // mention always proceeds; untagged messages remain capped.
+    if (!taggedCrewmate && tokensUsed >= (group.crewmate_monthly_token_budget ?? 0)) {
       await finishRun("skipped_budget", {
         error: "monthly_token_budget_exhausted",
         tokens_used: tokensUsed
