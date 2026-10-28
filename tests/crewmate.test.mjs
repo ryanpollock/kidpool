@@ -232,6 +232,11 @@ test("chat-agent function: trigger-authenticated, ledger-first, and Phase 1 writ
   // Coalescing + budget + ledger are mandatory plumbing.
   assert.match(src, /claim_crewmate_run/);
   assert.match(src, /crewmate_monthly_token_budget/);
+  assert.match(
+    src,
+    /if \(!taggedCrewmate && tokensUsed >= \(group\.crewmate_monthly_token_budget \?\? 0\)\)/,
+    "an explicit @Crewmate invocation must bypass the ambient monthly budget guard",
+  );
   assert.match(src, /crewmate_runs/);
   // The SQL tool must go through the grant-enforced RPC, never a raw query.
   assert.match(src, /rpc\("crewmate_readonly_query"/);

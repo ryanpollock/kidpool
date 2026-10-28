@@ -3210,6 +3210,57 @@ test("Crewmate: chat-agent skips disabled groups and fail-soft records missing A
   deleteTestUser(a.userId);
 });
 
+test("Crewmate: explicit @Crewmate mentions bypass an exhausted monthly budget (local)", { skip: !IS_LOCAL || !SERVICE_KEY }, async () => {
+  const a = setupHousehold(851, "BudgetTagA");
+  const aJwt = signInUser("budgettaga@test.kidpool").access_token;
+  const threadId = rpcCall(aJwt, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+
+  runSql(`UPDATE public.groups SET crewmate_enabled = false, crewmate_monthly_token_budget = 0 WHERE id = '${GROUP_ID}';`);
+  const untagged = restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId,
+    sender_kind: "parent",
+    sender_profile_id: a.userId,
+    body: "Who is driving Wednesday?",
+  })[0];
+  const tagged = restPostAs(aJwt, "chat_messages", {
+    thread_id: threadId,
+    sender_kind: "parent",
+    sender_profile_id: a.userId,
+    body: "@Crewmate who is driving Wednesday?",
+    mentions: [{ profile_id: null, label: "@Crewmate", start: 0, end: 9 }],
+  })[0];
+  runSql(`UPDATE public.groups SET crewmate_enabled = true WHERE id = '${GROUP_ID}';`);
+
+  const invoke = (messageId) => JSON.parse(execSync(
+    `curl -s -X POST -H "Authorization: Bearer ${SERVICE_KEY}" -H "Content-Type: application/json" -d '{"thread_id":"${threadId}","message_id":"${messageId}"}' "${SUPABASE_URL}/functions/v1/chat-agent"`,
+    { encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 },
+  ));
+
+  const untaggedResult = invoke(untagged.id);
+  assert.equal(untaggedResult.skipped, "budget", "untagged engagement remains capped");
+
+  const taggedResult = invoke(tagged.id);
+  assert.equal(
+    taggedResult.skipped,
+    "missing_together_api_key",
+    `tagged request must get past the budget guard, got: ${JSON.stringify(taggedResult)}`,
+  );
+
+  const runs = restGet("crewmate_runs", { thread_id: threadId });
+  const untaggedRun = runs.find((run) => run.trigger_message_id === untagged.id);
+  const taggedRun = runs.find((run) => run.trigger_message_id === tagged.id);
+  assert.equal(untaggedRun?.status, "skipped_budget");
+  assert.equal(taggedRun?.status, "failed");
+  const taggedDetail = typeof taggedRun?.outcome_detail === "string"
+    ? JSON.parse(taggedRun.outcome_detail)
+    : taggedRun?.outcome_detail;
+  assert.equal(taggedDetail?.error, "missing_together_api_key");
+
+  runSql(`UPDATE public.groups SET crewmate_enabled = false, crewmate_monthly_token_budget = 2000000 WHERE id = '${GROUP_ID}';`);
+  cleanupAllTestData();
+  deleteTestUser(a.userId);
+});
+
 // ── Crewmate AI Phase 2 (proposal engine) ──────────────────────
 // Spec: CREWMATE_REQUIREMENTS.md §6–§8. The safety-critical paths:
 // catalog execution, dual consent for swaps, admin_sql confinement +
