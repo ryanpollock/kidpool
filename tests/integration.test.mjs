@@ -3502,6 +3502,87 @@ test("Crewmate 2: an active parent can place another household's child into an o
   for (const u of [requester, existingRiderFamily, newRiderFamily, source, target]) deleteTestUser(u.userId);
 });
 
+test("Crewmate 2: delegated placement transfers an uncovered sibling-trip ride need", { skip: !SERVICE_KEY }, async () => {
+  const requester = setupHousehold(1183, "CrossSlotRequester");
+  const riderFamily = setupHousehold(1184, "CrossSlotRider");
+  const target = setupHousehold(1185, "CrossSlotTarget");
+  const child = UID(2495), targetKid = UID(2496);
+  const versionId = UID(2497), earlyTripId = UID(2498);
+  const checkinId = UID(2499), proposalId = UID(2501);
+  const { weekId, tripIds, dates } = setupWeekAndTrips();
+  const lateTripId = tripIds[1];
+
+  runSql(`
+    INSERT INTO public.children (id, group_id, household_id, first_name, last_name, created_by) VALUES
+      ('${child}', '${GROUP_ID}', '${riderFamily.householdId}', 'Uncovered', 'Rider', '${riderFamily.userId}'),
+      ('${targetKid}', '${GROUP_ID}', '${target.householdId}', 'Target', 'Rider', '${target.userId}')
+    ON CONFLICT DO NOTHING;
+    INSERT INTO public.schedule_versions (id, group_id, week_id, version_number, status, published_at)
+    VALUES ('${versionId}', '${GROUP_ID}', '${weekId}', 1, 'published', now()) ON CONFLICT DO NOTHING;
+    INSERT INTO public.trips (
+      id, group_id, week_id, service_date, direction, slot,
+      meeting_time, departure_time, origin, destination
+    ) VALUES (
+      '${earlyTripId}', '${GROUP_ID}', '${weekId}', '${dates[0]}', 'afternoon', 'pm_early',
+      '14:10', '14:15', 'Presidio', 'Midtown'
+    ) ON CONFLICT DO NOTHING;
+    INSERT INTO public.weekly_checkins (
+      id, group_id, week_id, household_id, status, max_drives
+    ) VALUES (
+      '${checkinId}', '${GROUP_ID}', '${weekId}', '${riderFamily.householdId}', 'submitted', 0
+    ) ON CONFLICT DO NOTHING;
+    INSERT INTO public.ride_requests (
+      group_id, checkin_id, trip_id, child_id, needs_ride, created_by
+    ) VALUES
+      ('${GROUP_ID}', '${checkinId}', '${earlyTripId}', '${child}', false, '${riderFamily.userId}'),
+      ('${GROUP_ID}', '${checkinId}', '${lateTripId}', '${child}', true, '${riderFamily.userId}')
+    ON CONFLICT (trip_id, child_id) DO UPDATE SET needs_ride = excluded.needs_ride;
+  `);
+
+  const destination = seedPublishedAssignment(
+    78, versionId, earlyTripId, target.userId, target.householdId, "Open Early Car", 4, targetKid,
+  );
+  const requesterJwt = signInUser("crossslotrequester@test.kidpool").access_token;
+  const threadId = rpcCall(requesterJwt, "ensure_everyone_thread", { target_group_id: GROUP_ID });
+  runSql(`
+    INSERT INTO public.chat_proposals (
+      id, group_id, thread_id, created_by_profile_id, kind, params, summary,
+      required_confirmer_profile_id, status
+    ) VALUES (
+      '${proposalId}', '${GROUP_ID}', '${threadId}', '${requester.userId}',
+      'place_child',
+      jsonb_build_object(
+        'child_id', '${child}',
+        'trip_id', '${earlyTripId}',
+        'driver_assignment_id', '${destination.assignmentId}'
+      ),
+      'Place the uncovered rider in the open early car',
+      '${requester.userId}', 'pending'
+    );
+  `);
+
+  const confirmed = rpcCall(requesterJwt, "confirm_chat_proposal", { p_proposal_id: proposalId });
+  assert.equal(confirmed.status, "executed", `cross-slot uncovered placement executes: ${JSON.stringify(confirmed).slice(0, 180)}`);
+
+  const seated = restGet("rider_assignments", { child_id: child });
+  assert.equal(seated.length, 1, "the uncovered child receives exactly one seat");
+  assert.equal(seated[0].driver_assignment_id, destination.assignmentId, "the child is placed in the chosen car");
+
+  const requests = restGet("ride_requests", { child_id: child });
+  assert.equal(requests.find((r) => r.trip_id === earlyTripId)?.needs_ride, true, "the target-trip ride need turns on");
+  assert.equal(requests.find((r) => r.trip_id === lateTripId)?.needs_ride, false, "the old uncovered ride need turns off");
+
+  const transferAudit = restGet("audit_events", {
+    action: "crewmate_transfer_uncovered_ride_need",
+    entity_id: earlyTripId,
+  });
+  assert.equal(transferAudit.length, 1, "the ride-need transfer is audited");
+  assert.deepEqual(transferAudit[0].details.child_ids, [child]);
+
+  cleanupAllTestData();
+  for (const u of [requester, riderFamily, target]) deleteTestUser(u.userId);
+});
+
 test("Crewmate 2: a rider parent can offer to take over an assigned drive after the current driver confirms", { skip: !SERVICE_KEY }, async () => {
   const outgoing = setupHousehold(1181, "ReassignOutgoing");
   const incoming = setupHousehold(1182, "ReassignIncoming");
