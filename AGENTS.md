@@ -276,3 +276,5 @@ Deletes profile, auth user, household, children, vehicles, checkins, assignments
 - Each parent message shows a persistent thumbs-up button: tap toggles thumbs up, hold opens the reaction picker. Holding must not also submit a thumbs up. Existing reaction counts stay visible and open the people/reaction details sheet.
 
 - The persistent thumbs-up control also displays the aggregate thumbs-up count. Never render a second thumbs-up chip; tap toggles the current user’s like, and hold opens the picker (including View reactions).
+
+- **Crewmate explicit-invocation budget rule (2026-10-28):** a valid `@Crewmate` mention bypasses both the Jev invocation gate and `crewmate_monthly_token_budget`; only untagged/background engagement is budget-capped. This prevents a deliberate parent request from disappearing silently after ambient monthly usage reaches the cap.
