@@ -470,10 +470,9 @@ const PROPOSAL_CATALOG = {
     })
   },
   place_child: {
-    // Trusted-group placement delegation: moving an existing rider into an
-    // existing car is confirmed by the parent who requested it. The private
-    // proposal executor still checks membership, ride need, capacity, trip
-    // scope, and duplicate placement transactionally.
+    // Trusted-group placement delegation within one trip, for an uncovered
+    // same-date ride need, or onto a custom drive. A child already seated on
+    // the other afternoon slot must use switch_slot instead.
     confirmer: "asker",
     schema: z.object({
       child_id: z.string().uuid(),
@@ -598,6 +597,75 @@ function splitProposalBlock(answer) {
   return {
     block: last,
     visible
+  };
+}
+
+// The model occasionally interprets "move Leah to the 5:15 car" as a
+// placement because a specific car was named. For a child already seated on
+// the other standard afternoon slot, that card can never execute: the guarded
+// placement RPC deliberately requires the dedicated switch_slot path. Correct
+// this bounded catalog-routing mistake before resolving consent or inserting
+// the card. The executor still re-validates ownership, capacity, and timing.
+async function normalizeCrossSlotPlacement(admin, groupId, block) {
+  if (block?.kind !== "place_child") return block;
+
+  const childId = block.params?.child_id;
+  const targetTripId = block.params?.trip_id;
+  const targetAssignmentId = block.params?.driver_assignment_id;
+  if (typeof childId !== "string" || typeof targetTripId !== "string" || typeof targetAssignmentId !== "string") {
+    return block;
+  }
+
+  const { data: targetAssignment } = await admin.from("driver_assignments")
+    .select("id,trip_id,group_id,status")
+    .eq("id", targetAssignmentId)
+    .eq("group_id", groupId)
+    .maybeSingle();
+  if (!targetAssignment || targetAssignment.trip_id !== targetTripId || !["tentative", "confirmed"].includes(targetAssignment.status)) {
+    return block;
+  }
+
+  const { data: targetTrip } = await admin.from("trips")
+    .select("id,service_date,direction,slot,status")
+    .eq("id", targetTripId)
+    .eq("group_id", groupId)
+    .maybeSingle();
+  if (!targetTrip || targetTrip.status === "canceled" || !["pm_early", "pm_late"].includes(targetTrip.slot)) {
+    return block;
+  }
+
+  const { data: riderAssignments } = await admin.from("rider_assignments")
+    .select("trip_id,driver_assignment_id")
+    .eq("group_id", groupId)
+    .eq("child_id", childId);
+  const otherTripIds = [...new Set((riderAssignments ?? []).map((row)=>row.trip_id))]
+    .filter((tripId)=>tripId && tripId !== targetTripId);
+  if (otherTripIds.length === 0) return block;
+
+  const { data: otherTrips } = await admin.from("trips")
+    .select("id,service_date,direction,slot,status")
+    .eq("group_id", groupId)
+    .in("id", otherTripIds);
+  const currentTrip = (otherTrips ?? []).find((trip)=>
+    trip.status !== "canceled" &&
+    trip.service_date === targetTrip.service_date &&
+    trip.direction === targetTrip.direction &&
+    ["pm_early", "pm_late"].includes(trip.slot) &&
+    trip.slot !== targetTrip.slot
+  );
+  const currentAssignmentId = riderAssignments?.find((row)=>row.trip_id === currentTrip?.id)?.driver_assignment_id;
+  if (!currentTrip || typeof currentAssignmentId !== "string") return block;
+
+  console.warn("[chat-agent] corrected cross-slot place_child to switch_slot");
+  return {
+    ...block,
+    kind: "switch_slot",
+    params: {
+      child_id: childId,
+      // switch_child_afternoon_trip starts from the child's CURRENT car and
+      // chooses an open car on the sibling slot.
+      driver_assignment_id: currentAssignmentId,
+    },
   };
 }
 function recentTranscript(messages) {
@@ -1096,7 +1164,7 @@ Deno.serve(async (req)=>{
 \u0060\u0060\u0060crewmate
 {"kind": "cancel_ride", "summary": "Cancel Max Chen's Tuesday morning ride", "params": {"child_id": "<id from tool results>", "driver_assignment_id": "<id from tool results>"}}
 \u0060\u0060\u0060
-Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; place_children {child_ids, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; reassign_driver {assignment_id, new_driver_profile_id} (one driver takes over another driver's assigned drive and riders, using the replacement driver's eligible vehicle; use this when either the current driver asks someone to take it OR the replacement driver offers to take it — the other driver confirms); swap_drive {assignment_a, assignment_b} (trading two drivers' separate drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. A one-way takeover is reassign_driver, NOT swap_drive. Use place_children whenever one request moves multiple children into the same car, so the requester gets ONE card for the whole move. Any active parent may coordinate an existing rider's placement into an existing standard car. This includes an uncovered child who needs another trip on the same date and direction: place_child/place_children transfers that unmet ride need to the chosen open car when confirmed. An active parent may also coordinate open seats on a custom drive for children from other households even when those children did not previously request a ride; use place_child/place_children for that delegated custom-drive request, not join_custom_drive. The requesting parent confirms the placement card and affected families/drivers are notified. Custom placement replaces each child's other ride for the same date and direction. This relaxation applies only to place_child/place_children — cancellations, standard-trip new ride needs, driver reassignments, vehicle changes, and swaps keep their ownership or dual-consent rules. Use ONLY ids that appeared in tool results. A card appears in chat — the required parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
+Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_ride_range {child_id, from_date, to_date} for multi-day absences; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; place_children {child_ids, trip_id, driver_assignment_id}; decline_drive {assignment_id, decline_reason?}; volunteer_drive {trip_id, schedule_version_id}; reassign_driver {assignment_id, new_driver_profile_id} (one driver takes over another driver's assigned drive and riders, using the replacement driver's eligible vehicle; use this when either the current driver asks someone to take it OR the replacement driver offers to take it — the other driver confirms); swap_drive {assignment_a, assignment_b} (trading two drivers' separate drives — get both assignment ids first); change_vehicle {driver_assignment_id, vehicle_id}; adjust_times {trip_id, meeting_time, departure_time} (coordinator requests only); cancel_trip {trip_id} (coordinator requests only); offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}. A one-way takeover is reassign_driver, NOT swap_drive. CRITICAL ROUTING: when a child is already seated on pm_early and the parent asks for pm_late, or already seated on pm_late and asks for pm_early, use switch_slot with the CURRENT car's driver_assignment_id — never the target car's id and never place_child. The guarded switch executor starts from the current car and selects an open car on the sibling afternoon trip. Use place_child only to choose a different car within the same trip, place an uncovered same-date/same-direction ride need, or join a custom drive. Use place_children whenever one request moves multiple children into the same car, so the requester gets ONE card for the whole move. Any active parent may coordinate an existing rider's placement into an existing standard car. This includes an uncovered child who needs another trip on the same date and direction: place_child/place_children transfers that unmet ride need to the chosen open car when confirmed. An active parent may also coordinate open seats on a custom drive for children from other households even when those children did not previously request a ride; use place_child/place_children for that delegated custom-drive request, not join_custom_drive. The requesting parent confirms the placement card and affected families/drivers are notified. Custom placement replaces each child's other ride for the same date and direction. This relaxation applies only to place_child/place_children — cancellations, standard-trip new ride needs, driver reassignments, vehicle changes, and swaps keep their ownership or dual-consent rules. Use ONLY ids that appeared in tool results. A card appears in chat — the required parent taps Confirm and only then does anything change. Never say a change has happened; say what the card proposes.`,
       `- NEVER mention or reference a card/proposal in your text without also including the matching crewmate block in the SAME reply. If you say "the card below" there MUST be a crewmate block after it. If you cannot create the card (missing IDs, unsupported kind, validation failure), do NOT say "the card below" — instead say what you'd need to create it. A reply that references a nonexistent card is worse than no reply at all.`,
       `- Emit AT MOST ONE crewmate block per reply. Several children moving into the SAME car is ONE atomic change: use one place_children block with every child_id, never split it into sequential cards. For genuinely different changes, handle the FIRST change with a card, then say you'll help with the next one after they confirm. Multi-block replies risk truncation and post raw JSON parents can't act on.`,,
       `- If a parent seems to be confirming or declining a pending proposal card, ask them to use the Confirm / Decline buttons on the card itself.`,
@@ -1184,7 +1252,8 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
       console.warn("[chat-agent] planner attempt failed; retrying compact:", plannerError?.message ?? plannerError);
       planned = await planOnce(true);
     }
-    const { block, visible } = splitProposalBlock(planned.answer ?? "");
+    let { block, visible } = splitProposalBlock(planned.answer ?? "");
+    block = await normalizeCrossSlotPlacement(admin, thread.group_id, block);
     // Safety net: if the LLM ran out of output tokens mid-JSON, the
     // crewmate block has no closing fence, splitProposalBlock returns
     // block=null, and the raw JSON would appear in the message body.
@@ -1514,13 +1583,14 @@ Allowed kinds and params: cancel_ride {child_id, driver_assignment_id}; cancel_r
           const fallbackResult = await generateText({
             model: together(PLANNER_MODEL),
             system: "You are a JSON generator. Call the tools you need to get the correct IDs, then output ONLY a single fenced crewmate block. No prose, no explanation, no greeting. Just the block: opening fence (three backticks), the word crewmate, the JSON, closing fence (three backticks). Nothing else.",
-            prompt: "The parent asked: \"" + message.body + "\"\n\nThe planned change is described as: \"" + answer.slice(0, 500) + "\"\n\nThe Crewmate system prompt catalog describes these kinds: cancel_ride {child_id, driver_assignment_id}; switch_slot {child_id, driver_assignment_id}; add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id}; place_children {child_ids, trip_id, driver_assignment_id} (use ONE bulk card when several children move into the same car, including delegated open seats on a custom drive); decline_drive {assignment_id}; volunteer_drive {trip_id, schedule_version_id}; reassign_driver {assignment_id, new_driver_profile_id} (one driver takes over another driver's assigned car; the other driver confirms); swap_drive {assignment_a, assignment_b}; offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}; change_vehicle {driver_assignment_id, vehicle_id}.\n\nUse the tools to get the correct IDs, then output the crewmate block.",
+            prompt: "The parent asked: \"" + message.body + "\"\n\nThe planned change is described as: \"" + answer.slice(0, 500) + "\"\n\nThe Crewmate system prompt catalog describes these kinds: cancel_ride {child_id, driver_assignment_id}; switch_slot {child_id, driver_assignment_id} (REQUIRED when a child already seated on pm_early moves to pm_late or vice versa; use the CURRENT car's driver_assignment_id because the executor selects an open sibling-trip car); add_ride {child_id, trip_id}; place_child {child_id, trip_id, driver_assignment_id} (never use for an already-seated early↔late move); place_children {child_ids, trip_id, driver_assignment_id} (use ONE bulk card when several children move into the same car, including delegated open seats on a custom drive); decline_drive {assignment_id}; volunteer_drive {trip_id, schedule_version_id}; reassign_driver {assignment_id, new_driver_profile_id} (one driver takes over another driver's assigned car; the other driver confirms); swap_drive {assignment_a, assignment_b}; offer_custom_drive {service_date, direction, meeting_time, child_ids}; join_custom_drive {trip_id, child_ids}; leave_custom_drive {trip_id, child_id}; cancel_custom_drive {trip_id}; change_vehicle {driver_assignment_id, vehicle_id}.\n\nUse the tools to get the correct IDs, then output the crewmate block.",
             tools,
             stopWhen: isStepCount(4),
             maxOutputTokens: 3000,
           });
 
           const fallbackBlock = splitProposalBlock(fallbackResult.text);
+          fallbackBlock.block = await normalizeCrossSlotPlacement(admin, thread.group_id, fallbackBlock.block);
           if (fallbackBlock.block && typeof fallbackBlock.block.kind === "string" && PROPOSAL_CATALOG[fallbackBlock.block.kind]) {
             const entry = PROPOSAL_CATALOG[fallbackBlock.block.kind];
             const parsed = entry.schema.safeParse(fallbackBlock.block.params ?? {});
