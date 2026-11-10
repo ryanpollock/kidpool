@@ -251,7 +251,7 @@ test("chat-agent function: trigger-authenticated, ledger-first, and Phase 1 writ
   // Deploy transpiles without type-checking, so every helper invoked in
   // the function must be defined in the file (a missing definition ships
   // silently and crashes at runtime — production incident 2026-09-14).
-  for (const helper of ["parseJsonish", "splitProposalBlock", "recentTranscript", "humanNow", "dateInTz", "mondayOf", "childName", "buildRosters", "weekOverview", "tripDetail", "customDrives", "householdSnapshot", "verifyAuth", "jsonResponse", "threadKindLabel"]) {
+  for (const helper of ["parseJsonish", "splitProposalBlock", "normalizeCrossSlotPlacement", "recentTranscript", "humanNow", "dateInTz", "mondayOf", "childName", "buildRosters", "weekOverview", "tripDetail", "customDrives", "householdSnapshot", "verifyAuth", "jsonResponse", "threadKindLabel"]) {
     assert.match(src, new RegExp(`(function ${helper}\\(|const ${helper} =)`), `helper ${helper} must be defined in chat-agent`);
   }
   // Dead scaffolding from the Phase 2 insertion must not linger.
@@ -492,6 +492,22 @@ test("Crewmate delegated placement: an uncovered same-direction ride need follow
   assert.match(sql, /crewmate_transfer_uncovered_ride_need/);
   assert.match(sql, /revoke all on function public\.place_children_via_crewmate\(uuid\[\], uuid, uuid\)[\s\S]*?from public, authenticated, service_role/i);
   assert.match(agent, /uncovered child who needs another trip on the same date and direction/);
+});
+
+test("Crewmate routes an already-seated afternoon rider through switch_slot", async () => {
+  const agent = await readFile(agentFnUrl, "utf8");
+
+  assert.match(agent, /CRITICAL ROUTING:[\s\S]*?already seated on pm_early[\s\S]*?use switch_slot/i);
+  assert.match(agent, /async function normalizeCrossSlotPlacement\(/);
+  assert.match(agent, /block\?\.kind !== "place_child"/);
+  assert.match(agent, /\["pm_early", "pm_late"\]\.includes\(targetTrip\.slot\)/);
+  assert.match(agent, /trip\.service_date === targetTrip\.service_date/);
+  assert.match(agent, /trip\.slot !== targetTrip\.slot/);
+  assert.match(agent, /currentAssignmentId = riderAssignments\?\.find/);
+  assert.match(agent, /kind: "switch_slot"[\s\S]*?driver_assignment_id: currentAssignmentId/);
+  assert.match(agent, /CURRENT car's driver_assignment_id/);
+  assert.match(agent, /block = await normalizeCrossSlotPlacement\(admin, thread\.group_id, block\)/);
+  assert.match(agent, /fallbackBlock\.block = await normalizeCrossSlotPlacement\(admin, thread\.group_id, fallbackBlock\.block\)/);
 });
 
 test("Crewmate driver reassignment reuses guarded transfer semantics with the other driver's consent", async () => {
