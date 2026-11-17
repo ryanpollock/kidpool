@@ -6,6 +6,7 @@ In ChatGPT Work Mode, run `sites-preview start "$PWD"`, open `http://terminal.lo
 
 ### Product-specific direction
 
+- Backpack-sheet batches must stay below Resend's 10 requests/second burst limit. `sendResendEmailWithRetry` spaces scheduled sends by at least 125ms and retries HTTP 429 responses (honoring `Retry-After`) with the same idempotency key; do not replace this with an unpaced recipient loop.
 - Prioritize operational clarity over visual novelty.
 - Use the selected "Next Action First" mobile concept as the visual target.
 - A driver confirmation request must dominate the home screen until explicitly resolved.
