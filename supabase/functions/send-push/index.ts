@@ -105,6 +105,59 @@ function isTestEmail(email: string): boolean {
   return email.endsWith("kidpool");
 }
 
+const RESEND_BATCH_MIN_INTERVAL_MS = 125;
+const RESEND_MAX_ATTEMPTS = 4;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resendRetryDelayMs(response: Response, attempt: number): number {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+
+    const retryAt = Date.parse(retryAfter);
+    if (Number.isFinite(retryAt)) return Math.max(0, retryAt - Date.now());
+  }
+
+  return Math.min(8000, 1000 * (2 ** attempt));
+}
+
+// Resend's Pro transactional plan allows 10 requests/second. Large scheduled
+// batches must stay below that burst limit, and still retry in case another
+// notification request shares the same window.
+async function sendResendEmailWithRetry(
+  body: Record<string, unknown>,
+  idempotencyKey: string,
+  options: { throttle?: boolean } = {},
+): Promise<Response> {
+  for (let attempt = 0; attempt < RESEND_MAX_ATTEMPTS; attempt++) {
+    if (options.throttle) await delay(RESEND_BATCH_MIN_INTERVAL_MS);
+
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (response.status !== 429 || attempt === RESEND_MAX_ATTEMPTS - 1) {
+      return response;
+    }
+
+    const retryDelay = resendRetryDelayMs(response, attempt);
+    console.warn(`[send-push] Resend rate limited; retrying in ${retryDelay}ms (attempt ${attempt + 2}/${RESEND_MAX_ATTEMPTS})`);
+    await delay(retryDelay);
+  }
+
+  throw new Error("Unreachable Resend retry state");
+}
+
 // Send a push notification + email to a single profile. Used by the inline
 // notification types (deadline_reminder, confirmation_reminder, assignment_request)
 // that handle their own recipient logic and return early before the main loop.
@@ -1555,26 +1608,18 @@ Questions? Reply to this email or check the FAQ in the app.`;
         const idempotencySuffix = nonce ? `-${nonce}` : "";
         const idempotencyKey = `backpack-sheet-${today}-${profile.id}${idempotencySuffix}`;
         try {
-          const res = await fetch("https://api.resend.com/emails", {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${RESEND_API_KEY}`,
-              "Content-Type": "application/json",
-              "Idempotency-Key": idempotencyKey,
-            },
-            body: JSON.stringify({
-              from: RESEND_FROM_EMAIL,
-              to: profile.email,
-              reply_to: RESEND_REPLY_TO,
-              subject: `${kidsNameStr} backpack sheet for ${todayLabel}`,
-              html: htmlBody,
-              text: textBody,
-              tags: [
-                { name: "type", value: "backpack_sheet" },
-                { name: "group", value: groupId ?? "unknown" },
-              ],
-            }),
-          });
+          const res = await sendResendEmailWithRetry({
+            from: RESEND_FROM_EMAIL,
+            to: profile.email,
+            reply_to: RESEND_REPLY_TO,
+            subject: `${kidsNameStr} backpack sheet for ${todayLabel}`,
+            html: htmlBody,
+            text: textBody,
+            tags: [
+              { name: "type", value: "backpack_sheet" },
+              { name: "group", value: groupId ?? "unknown" },
+            ],
+          }, idempotencyKey, { throttle: true });
           if (!res.ok) {
             const err = await res.text();
             console.error(`[send-push] Backpack sheet email to ${profile.email} failed:`, err);

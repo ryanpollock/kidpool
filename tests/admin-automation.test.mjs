@@ -1341,6 +1341,19 @@ test("backpack_sheet: send-push has the type with phone numbers + per-child sect
   assert.match(ts, /backpack_sheet/);
 });
 
+test("backpack_sheet: Resend batch is throttled and retries HTTP 429", async () => {
+  const ts = await readFile(sendPushUrl, "utf8");
+
+  // Stay below the account's 10 requests/second burst limit.
+  assert.match(ts, /RESEND_BATCH_MIN_INTERVAL_MS = 125/);
+  assert.match(ts, /sendResendEmailWithRetry\([\s\S]*?idempotencyKey, \{ throttle: true \}\)/);
+
+  // Retry transient rate limits, honoring the provider's Retry-After header.
+  assert.match(ts, /response\.status !== 429/);
+  assert.match(ts, /headers\.get\("retry-after"\)/);
+  assert.match(ts, /RESEND_MAX_ATTEMPTS = 4/);
+});
+
 test("backpack_sheet: cron migration creates wrapper function + 7 AM Pacific Mon–Fri schedule", async () => {
   const sql = await readFile(backpackSheetMigrationUrl, "utf8");
 
